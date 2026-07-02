@@ -5,25 +5,16 @@ import (
 	"io"
 	"sort"
 
-	"github.com/jjmerino/dabs/core/actions"
+	"github.com/jjmerino/dabs/core/params"
 )
 
-// Actions is the seam between the cli and core: everything the commands can
-// invoke. Defined here — where it is consumed — per Go interface convention;
-// actions.Real satisfies it, tests inject a fake.
-type Actions interface {
-	Up(actions.UpParams) error
-	Down(actions.DownParams) error
-	Ls(actions.LsParams) error
-}
-
-// CLI dispatches parsed commands to the injected Actions.
+// CLI dispatches parsed commands to the injected params.Actions.
 type CLI struct {
-	actions Actions
+	actions params.Actions
 }
 
 // New returns a CLI that delegates to a.
-func New(a Actions) *CLI {
+func New(a params.Actions) *CLI {
 	return &CLI{actions: a}
 }
 

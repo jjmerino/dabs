@@ -1,15 +1,13 @@
 package actions
 
-import "fmt"
+import (
+	"fmt"
 
-// UpParams are the inputs to the Up action.
-type UpParams struct {
-	Manifest string // path to manifest file or dir containing one
-	Fresh    bool   // recreate the container == pristine state
-}
+	"github.com/jjmerino/dabs/core/params"
+)
 
 // Up starts the sandbox.
-func Up(p UpParams) error {
+func Up(p params.Up) error {
 	fmt.Printf("actions.Up(%+v): [NOT BUILT YET!]\n", p)
 	return nil
 }

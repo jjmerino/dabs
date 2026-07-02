@@ -1,14 +1,13 @@
 package actions
 
-import "fmt"
+import (
+	"fmt"
 
-// DownParams are the inputs to the Down action.
-type DownParams struct {
-	Manifest string // path to manifest file or dir containing one
-}
+	"github.com/jjmerino/dabs/core/params"
+)
 
 // Down stops and removes the sandbox.
-func Down(p DownParams) error {
+func Down(p params.Down) error {
 	fmt.Printf("actions.Down(%+v): [NOT BUILT YET!]\n", p)
 	return nil
 }

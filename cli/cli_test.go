@@ -4,21 +4,21 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/jjmerino/dabs/core/actions"
+	"github.com/jjmerino/dabs/core/params"
 )
 
 // fakeActions records every delegation so tests can assert the cli parsed
 // argv into the right action call with the right params.
 type fakeActions struct {
-	up   []actions.UpParams
-	down []actions.DownParams
-	ls   []actions.LsParams
+	up   []params.Up
+	down []params.Down
+	ls   []params.Ls
 	err  error // returned from every action
 }
 
-func (f *fakeActions) Up(p actions.UpParams) error     { f.up = append(f.up, p); return f.err }
-func (f *fakeActions) Down(p actions.DownParams) error { f.down = append(f.down, p); return f.err }
-func (f *fakeActions) Ls(p actions.LsParams) error     { f.ls = append(f.ls, p); return f.err }
+func (f *fakeActions) Up(p params.Up) error     { f.up = append(f.up, p); return f.err }
+func (f *fakeActions) Down(p params.Down) error { f.down = append(f.down, p); return f.err }
+func (f *fakeActions) Ls(p params.Ls) error     { f.ls = append(f.ls, p); return f.err }
 
 func TestRunDelegatesToActions(t *testing.T) {
 	tests := []struct {
@@ -30,7 +30,7 @@ func TestRunDelegatesToActions(t *testing.T) {
 			name: "up with flag and manifest",
 			args: []string{"up", "--fresh", "m"},
 			want: func(t *testing.T, f *fakeActions) {
-				if len(f.up) != 1 || f.up[0] != (actions.UpParams{Manifest: "m", Fresh: true}) {
+				if len(f.up) != 1 || f.up[0] != (params.Up{Manifest: "m", Fresh: true}) {
 					t.Errorf("got %+v, want one Up{Manifest:m Fresh:true}", f.up)
 				}
 			},
@@ -39,7 +39,7 @@ func TestRunDelegatesToActions(t *testing.T) {
 			name: "up without flag",
 			args: []string{"up", "m"},
 			want: func(t *testing.T, f *fakeActions) {
-				if len(f.up) != 1 || f.up[0] != (actions.UpParams{Manifest: "m"}) {
+				if len(f.up) != 1 || f.up[0] != (params.Up{Manifest: "m"}) {
 					t.Errorf("got %+v, want one Up{Manifest:m}", f.up)
 				}
 			},
@@ -48,7 +48,7 @@ func TestRunDelegatesToActions(t *testing.T) {
 			name: "down",
 			args: []string{"down", "m"},
 			want: func(t *testing.T, f *fakeActions) {
-				if len(f.down) != 1 || f.down[0] != (actions.DownParams{Manifest: "m"}) {
+				if len(f.down) != 1 || f.down[0] != (params.Down{Manifest: "m"}) {
 					t.Errorf("got %+v, want one Down{Manifest:m}", f.down)
 				}
 			},

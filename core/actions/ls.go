@@ -1,12 +1,13 @@
 package actions
 
-import "fmt"
+import (
+	"fmt"
 
-// LsParams are the inputs to the Ls action.
-type LsParams struct{}
+	"github.com/jjmerino/dabs/core/params"
+)
 
 // Ls lists sandboxes.
-func Ls(p LsParams) error {
+func Ls(p params.Ls) error {
 	fmt.Printf("actions.Ls(%+v): [NOT BUILT YET!]\n", p)
 	return nil
 }

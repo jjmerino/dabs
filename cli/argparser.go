@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/jjmerino/dabs/core/actions"
+	"github.com/jjmerino/dabs/core/params"
 )
 
 // BadArgsError reports that a command's arguments don't parse.
@@ -32,8 +32,8 @@ func newFlagSet(cmd string) *flag.FlagSet {
 }
 
 // parseUp parses `dabs up [--fresh] <manifest|dir>` arguments.
-func parseUp(args []string) (actions.UpParams, error) {
-	var p actions.UpParams
+func parseUp(args []string) (params.Up, error) {
+	var p params.Up
 	fs := newFlagSet("up")
 	fs.BoolVar(&p.Fresh, "fresh", false, "recreate the container == pristine state")
 	if err := fs.Parse(args); err != nil {
@@ -48,8 +48,8 @@ func parseUp(args []string) (actions.UpParams, error) {
 }
 
 // parseDown parses `dabs down <manifest|dir>` arguments.
-func parseDown(args []string) (actions.DownParams, error) {
-	var p actions.DownParams
+func parseDown(args []string) (params.Down, error) {
+	var p params.Down
 	fs := newFlagSet("down")
 	if err := fs.Parse(args); err != nil {
 		return p, BadArgsError{Cmd: "down", Reason: err.Error()}
@@ -63,8 +63,8 @@ func parseDown(args []string) (actions.DownParams, error) {
 }
 
 // parseLs parses `dabs ls` arguments (there are none).
-func parseLs(args []string) (actions.LsParams, error) {
-	var p actions.LsParams
+func parseLs(args []string) (params.Ls, error) {
+	var p params.Ls
 	fs := newFlagSet("ls")
 	if err := fs.Parse(args); err != nil {
 		return p, BadArgsError{Cmd: "ls", Reason: err.Error()}

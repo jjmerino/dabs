@@ -13,7 +13,7 @@ then watch where they get stuck.
 - macOS 26+ on Apple Silicon with Apple's `container` CLI
   (`brew install container && container system start`).
   Each box is a lightweight Linux micro-VM (sub-second boot).
-- Other platforms: no local driver yet.
+- Linux: bwrap + overlayfs driver (bubblewrap 0.10+, docker as builder) — millisecond instance starts.
 
 ## Install
 

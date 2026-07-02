@@ -9,15 +9,16 @@ import (
 	"github.com/jjmerino/dabs/core/params"
 )
 
-// ServersList prints the registered servers.
+// ServersList prints the fleet: the local machine (when a local driver is
+// installed) plus every registered server, each as "<name>\t<strategy>
+// <destination>".
 func (r Real) ServersList(params.ServersList) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return err
 	}
-	if len(cfg.Servers) == 0 {
-		fmt.Fprintln(os.Stdout, "(no servers registered — dabs servers add <name> [host])")
-		return nil
+	if drv, ok := r.drivers["local"]; ok {
+		fmt.Fprintf(os.Stdout, "local\t%s this machine\n", drv.Kind())
 	}
 	names := make([]string, 0, len(cfg.Servers))
 	for name := range cfg.Servers {
@@ -25,7 +26,8 @@ func (r Real) ServersList(params.ServersList) error {
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		fmt.Fprintf(os.Stdout, "%s\t%s\n", name, cfg.Servers[name].Host)
+		s := cfg.Servers[name]
+		fmt.Fprintf(os.Stdout, "%s\t%s %s\n", name, s.Transport(), s.Host)
 	}
 	return nil
 }

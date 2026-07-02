@@ -214,3 +214,6 @@ func stdinIsTerminal() bool {
 func remove(ctn string) {
 	_ = exec.Command("container", "rm", "-f", ctn).Run()
 }
+
+// Kind identifies this driver.
+func (Driver) Kind() string { return "apple" }

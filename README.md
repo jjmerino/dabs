@@ -53,6 +53,25 @@ clean state, so "give me a fresh machine" is instant and there is nothing to
 clean up. `down <name> --dry` shows what a name matches; `--force` downs all
 matches.
 
+## Remote servers
+
+A sandbox can live on another machine that has dabs installed (a Mac mini or
+Linux box sitting around), reached over ssh with pubkey auth. Register it,
+then point a manifest at it:
+
+```bash
+dabs servers add homelab            # host defaults to the name; or: add homelab user@10.0.0.5
+dabs servers ls                     # name  strategy destination
+#   local     apple this machine
+#   homelab   ssh homelab
+dabs servers rm homelab             # unregister (remote sandboxes untouched)
+```
+
+Route a project to a server with `"target": "homelab"` in its `dabs.json`
+(omit for local). `dabs build`/`up` then run there; `dabs ls` aggregates the
+whole fleet with a target column; `run`/`down`/`mcp` address any instance by
+name wherever it lives.
+
 ## Hand a box to an agent (dabash)
 
 `dabs mcp <instance>` serves an MCP stdio server exposing exactly one tool,

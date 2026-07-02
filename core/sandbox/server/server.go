@@ -25,6 +25,7 @@ import (
 // (how we reach it) is decoupled from the server noun: ssh today, a future
 // "dabs serve" daemon later. Only ssh is implemented; New rejects others.
 type Driver struct {
+	via  string
 	host string
 
 	// The remote dabs path is resolved lazily, once (non-login shells lack
@@ -45,7 +46,10 @@ func New(via, host string) (*Driver, error) {
 	if host == "" {
 		return nil, fmt.Errorf(`server: empty "host"`)
 	}
-	return &Driver{host: host}, nil
+	if via == "" {
+		via = "ssh"
+	}
+	return &Driver{via: via, host: host}, nil
 }
 
 // dabsPath resolves (once) where dabs lives on the remote.
@@ -255,3 +259,6 @@ func runQuiet(c *exec.Cmd) error {
 	}
 	return nil
 }
+
+// Kind identifies this driver by its transport.
+func (d *Driver) Kind() string { return d.via }

@@ -56,4 +56,7 @@ type Driver interface {
 	Down(instance string) error
 	// Ls lists the instances this driver manages.
 	Ls() ([]Info, error)
+	// Kind is the driver's identity ("apple", "bwrap", "ssh", …) — the
+	// same tag it stamps on Info.Driver, reachable without any instances.
+	Kind() string
 }

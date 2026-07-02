@@ -325,3 +325,6 @@ func readJSON(path string, v any) error {
 	}
 	return json.Unmarshal(raw, v)
 }
+
+// Kind identifies this driver.
+func (Driver) Kind() string { return "bwrap" }

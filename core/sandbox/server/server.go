@@ -1,4 +1,4 @@
-// Package ssh implements sandbox.Driver by proxying every verb to a REMOTE
+// Package server implements sandbox.Driver by proxying every verb to a REMOTE
 // machine that has dabs installed, over ssh with pubkey auth (BatchMode —
 // never prompts). A Mac mini or Linux box sitting around becomes a seamless
 // sandbox host: the remote dabs picks its own local driver, this one just
@@ -7,7 +7,7 @@
 // Build ships the Dockerfile and context to a remote staging dir (like
 // docker ships context to its daemon) and builds there; instances live
 // entirely on the remote.
-package ssh
+package server
 
 import (
 	"bytes"
@@ -21,7 +21,9 @@ import (
 	"github.com/jjmerino/dabs/core/sandbox"
 )
 
-// Driver proxies to `dabs` on host.
+// Driver proxies dabs verbs to a remote machine running dabs. The TRANSPORT
+// (how we reach it) is decoupled from the server noun: ssh today, a future
+// "dabs serve" daemon later. Only ssh is implemented; New rejects others.
 type Driver struct {
 	host string
 
@@ -34,11 +36,14 @@ type Driver struct {
 	dabsErr error
 }
 
-// New returns a driver for host. Reachability and the remote dabs install
-// are verified on first use, not here.
-func New(host string) (*Driver, error) {
+// New returns a driver reaching host over the named transport. Reachability
+// and the remote dabs install are verified on first use, not here.
+func New(via, host string) (*Driver, error) {
+	if via != "" && via != "ssh" {
+		return nil, fmt.Errorf("server: unsupported transport %q (only ssh today)", via)
+	}
 	if host == "" {
-		return nil, fmt.Errorf(`ssh: target has an empty "host"`)
+		return nil, fmt.Errorf(`server: empty "host"`)
 	}
 	return &Driver{host: host}, nil
 }

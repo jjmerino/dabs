@@ -42,6 +42,23 @@ type Mcp struct {
 	Instance string // instance name, as reported by ls (e.g. demo-0)
 }
 
+// ServersList are the inputs to listing registered servers.
+type ServersList struct{}
+
+// ServersAdd are the inputs to registering a server: a remote machine with
+// dabs installed. Via names the transport (default "ssh"); Host is that
+// transport's address.
+type ServersAdd struct {
+	Name string // fleet name (what manifests put in "target")
+	Host string // transport address; defaults to Name
+	Via  string // transport strategy; default "ssh"
+}
+
+// ServersRemove are the inputs to unregistering a server.
+type ServersRemove struct {
+	Name string
+}
+
 // Actions is the contract every action provider satisfies: the real
 // implementations in core/actions, fakes in tests, RPC clients later.
 type Actions interface {
@@ -51,4 +68,7 @@ type Actions interface {
 	Down(Down) error
 	Ls(Ls) error
 	Mcp(Mcp) error
+	ServersList(ServersList) error
+	ServersAdd(ServersAdd) error
+	ServersRemove(ServersRemove) error
 }

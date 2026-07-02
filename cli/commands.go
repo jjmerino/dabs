@@ -13,7 +13,7 @@ var Commands = map[string]Command{
 	"build": {"build the sandbox image from the manifest's Dockerfile", (*CLI).runBuild},
 	"up":    {"start a NEW pristine instance (named <name>-<n>)", (*CLI).runUp},
 	"run":   {"execute a command inside an instance: run <instance> -- <cmd…>", (*CLI).runRun},
-	"down":  {"stop + remove an instance by name (see ls)", (*CLI).runDown},
+	"down":  {"stop + remove instances by name (--force downs all matches)", (*CLI).runDown},
 	"mcp":   {"serve the dabash MCP tool on stdio, curried to an instance", (*CLI).runMcp},
 	"ls":    {"list sandboxes", (*CLI).runLs},
 }

@@ -105,7 +105,7 @@ func (Driver) Run(instance string, cmd []string) error {
 		return fmt.Errorf("apple: no instance matching %q (see dabs ls)", instance)
 	}
 	if len(matches) > 1 {
-		return fmt.Errorf("apple: %q is ambiguous: %s (see dabs ls)", instance, strings.TrimPrefix(names(matches), ", "))
+		return fmt.Errorf("apple: %q is ambiguous: %s (see dabs ls)", instance, strings.Join(instanceNames(matches), ", "))
 	}
 	found := &matches[0]
 	ctn := found.ID
@@ -146,7 +146,7 @@ func (Driver) Exec(instance string, cmd []string) (string, error) {
 		return "", fmt.Errorf("apple: no instance matching %q (see dabs ls)", instance)
 	}
 	if len(matches) > 1 {
-		return "", fmt.Errorf("apple: %q is ambiguous: %s (see dabs ls)", instance, strings.TrimPrefix(names(matches), ", "))
+		return "", fmt.Errorf("apple: %q is ambiguous: %s (see dabs ls)", instance, strings.Join(instanceNames(matches), ", "))
 	}
 	found := &matches[0]
 	args := []string{"exec"}
@@ -165,31 +165,34 @@ func (Driver) Exec(instance string, cmd []string) (string, error) {
 	return string(out), nil
 }
 
-// Down removes the instance matching the (possibly abbreviated) name;
-// absent is not an error, but an ambiguous prefix is — never guess which
-// box to destroy.
-func (Driver) Down(instance string) error {
+// Down removes instances matching the (possibly abbreviated) name; absent
+// is not an error. On multiple matches it removes them all only under
+// force; otherwise it removes nothing and reports the matches — never
+// guess which box to destroy.
+func (Driver) Down(instance string, force bool) ([]string, error) {
 	ctns, err := list()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	matches := resolve(instance, ctns)
-	if len(matches) > 1 {
-		return fmt.Errorf("apple: %q is ambiguous: %s (see dabs ls)", instance, strings.TrimPrefix(names(matches), ", "))
+	if len(matches) > 1 && !force {
+		return nil, sandbox.AmbiguousError{Instance: instance, Matches: instanceNames(matches)}
 	}
-	if len(matches) == 1 {
-		remove(matches[0].ID)
+	removed := make([]string, 0, len(matches))
+	for _, c := range matches {
+		remove(c.ID)
+		removed = append(removed, strings.TrimPrefix(c.ID, prefix))
 	}
-	return nil
+	return removed, nil
 }
 
-// names renders container ids as user-facing instance names for errors.
-func names(ctns []listedContainer) string {
-	var b strings.Builder
+// instanceNames renders container ids as user-facing instance names.
+func instanceNames(ctns []listedContainer) []string {
+	out := make([]string, 0, len(ctns))
 	for _, c := range ctns {
-		fmt.Fprintf(&b, ", %s", strings.TrimPrefix(c.ID, prefix))
+		out = append(out, strings.TrimPrefix(c.ID, prefix))
 	}
-	return b.String()
+	return out
 }
 
 // Ls lists the instances dabs manages (running or not).

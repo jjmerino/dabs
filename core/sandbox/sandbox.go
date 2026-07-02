@@ -6,12 +6,25 @@
 // binary.
 package sandbox
 
+import "fmt"
+
 // Spec describes the sandbox a driver should provide. It is vendor-neutral:
 // drivers translate it into their own vocabulary.
 type Spec struct {
 	Name    string            // sandbox identity WITHIN dabs; the actual driver image name may vary vendor to vendor
 	Workdir string            // working directory inside the sandbox
 	Env     map[string]string // environment inside the sandbox
+}
+
+// AmbiguousError reports that an abbreviated instance name matched more
+// than one instance; nothing was done.
+type AmbiguousError struct {
+	Instance string   // the abbreviation as given
+	Matches  []string // the full instance names it matched
+}
+
+func (e AmbiguousError) Error() string {
+	return fmt.Sprintf("%q matches %d instances", e.Instance, len(e.Matches))
 }
 
 // Info is one existing sandbox instance as reported by a driver.
@@ -47,9 +60,13 @@ type Driver interface {
 	// returned instead of streamed. A non-zero exit is an error whose
 	// message includes the output.
 	Exec(instance string, cmd []string) (output string, err error)
-	// Down stops and removes the named instance. Removing an absent
-	// instance is not an error.
-	Down(instance string) error
+	// Down stops and removes instances matching the (possibly
+	// abbreviated) name and returns the resolved names it removed.
+	// Removing an absent instance is not an error. When the name
+	// matches MORE than one instance: force removes them all; without
+	// force nothing is removed and an AmbiguousError reports the
+	// matches.
+	Down(instance string, force bool) (removed []string, err error)
 	// Ls lists the instances this driver manages.
 	Ls() ([]Info, error)
 }

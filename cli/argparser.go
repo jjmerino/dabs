@@ -95,15 +95,26 @@ func parseMcp(args []string) (params.Mcp, error) {
 	return p, nil
 }
 
-// parseDown parses `dabs down <instance>` arguments (instance as reported
-// by ls, e.g. demo-0).
+// parseDown parses `dabs down [--force] <instance>` arguments (instance as
+// reported by ls, e.g. demo-0; --force downs every instance the name
+// matches).
 func parseDown(args []string) (params.Down, error) {
 	var p params.Down
 	fs := newFlagSet("down")
+	fs.BoolVar(&p.Force, "force", false, "down every instance the name matches")
 	if err := fs.Parse(args); err != nil {
 		return p, BadArgsError{Cmd: "down", Reason: err.Error()}
 	}
-	rest := fs.Args()
+	// Accept --force AFTER the instance too (`dabs down exo --force`):
+	// stdlib flag stops at the first positional, so pick it out of the rest.
+	rest := fs.Args()[:0:0]
+	for _, a := range fs.Args() {
+		if a == "--force" || a == "-force" {
+			p.Force = true
+			continue
+		}
+		rest = append(rest, a)
+	}
 	if len(rest) != 1 {
 		return p, BadArgsError{Cmd: "down", Reason: "expected exactly one <instance> argument (see dabs ls)"}
 	}

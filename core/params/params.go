@@ -34,6 +34,12 @@ type Down struct {
 // Ls are the inputs to the ls action.
 type Ls struct{}
 
+// Mcp are the inputs to the mcp action: serve the dabash MCP tool over
+// stdio, curried to one instance — the tool takes no sandbox parameter.
+type Mcp struct {
+	Instance string // instance name, as reported by ls (e.g. exo-0)
+}
+
 // Actions is the contract every action provider satisfies: the real
 // implementations in core/actions, fakes in tests, RPC clients later.
 type Actions interface {
@@ -42,4 +48,5 @@ type Actions interface {
 	Run(Run) error
 	Down(Down) error
 	Ls(Ls) error
+	Mcp(Mcp) error
 }

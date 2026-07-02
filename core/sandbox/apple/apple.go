@@ -134,6 +134,37 @@ func (Driver) Run(instance string, cmd []string) error {
 	return nil
 }
 
+// Exec runs cmd inside the named instance non-interactively and returns its
+// combined output. Like Run, workdir and env come from the instance itself.
+func (Driver) Exec(instance string, cmd []string) (string, error) {
+	ctns, err := list()
+	if err != nil {
+		return "", err
+	}
+	matches := resolve(instance, ctns)
+	if len(matches) == 0 {
+		return "", fmt.Errorf("apple: no instance matching %q (see dabs ls)", instance)
+	}
+	if len(matches) > 1 {
+		return "", fmt.Errorf("apple: %q is ambiguous: %s (see dabs ls)", instance, strings.TrimPrefix(names(matches), ", "))
+	}
+	found := &matches[0]
+	args := []string{"exec"}
+	if wd := found.Configuration.InitProcess.WorkingDirectory; wd != "" {
+		args = append(args, "-w", wd)
+	}
+	for _, kv := range found.Configuration.InitProcess.Environment {
+		args = append(args, "-e", kv)
+	}
+	args = append(args, found.ID)
+	args = append(args, cmd...)
+	out, err := exec.Command("container", args...).CombinedOutput()
+	if err != nil {
+		return string(out), fmt.Errorf("apple: exec in %s: %v: %s", found.ID, err, strings.TrimSpace(string(out)))
+	}
+	return string(out), nil
+}
+
 // Down removes the instance matching the (possibly abbreviated) name;
 // absent is not an error, but an ambiguous prefix is — never guess which
 // box to destroy.

@@ -43,6 +43,10 @@ type Driver interface {
 	// Run executes cmd inside the named instance, with the workdir and
 	// env the instance was created with, streams wired to the caller.
 	Run(instance string, cmd []string) error
+	// Exec is Run for programs: non-interactive, combined output
+	// returned instead of streamed. A non-zero exit is an error whose
+	// message includes the output.
+	Exec(instance string, cmd []string) (output string, err error)
 	// Down stops and removes the named instance. Removing an absent
 	// instance is not an error.
 	Down(instance string) error

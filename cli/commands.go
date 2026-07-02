@@ -14,6 +14,7 @@ var Commands = map[string]Command{
 	"up":    {"start a NEW pristine instance (named <name>-<n>)", (*CLI).runUp},
 	"run":   {"execute a command inside an instance: run <instance> -- <cmd…>", (*CLI).runRun},
 	"down":  {"stop + remove an instance by name (see ls)", (*CLI).runDown},
+	"mcp":   {"serve the dabash MCP tool on stdio, curried to an instance", (*CLI).runMcp},
 	"ls":    {"list sandboxes", (*CLI).runLs},
 }
 
@@ -47,6 +48,14 @@ func (c *CLI) runDown(args []string) error {
 		return err
 	}
 	return c.actions.Down(p)
+}
+
+func (c *CLI) runMcp(args []string) error {
+	p, err := parseMcp(args)
+	if err != nil {
+		return err
+	}
+	return c.actions.Mcp(p)
 }
 
 func (c *CLI) runLs(args []string) error {

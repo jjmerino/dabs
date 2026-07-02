@@ -180,12 +180,22 @@ func (d Driver) enter(instance string, cmd []string) (*exec.Cmd, error) {
 	if _, err := os.Stat("/etc/resolv.conf"); err == nil {
 		args = append(args, "--ro-bind", "/etc/resolv.conf", "/etc/resolv.conf")
 	}
+	haveHome := false
 	for _, kv := range meta.Env {
 		k, v, ok := strings.Cut(kv, "=")
 		if !ok {
 			continue
 		}
+		if k == "HOME" {
+			haveHome = true
+		}
 		args = append(args, "--setenv", k, v)
+	}
+	// Images often don't declare ENV HOME; docker defaults it to /root for
+	// the root user. Without it, `~` expands to nothing and per-box home
+	// state (the point of a fresh machine) lands in /.
+	if !haveHome {
+		args = append(args, "--setenv", "HOME", "/root")
 	}
 	args = append(args, cmd...)
 	return exec.Command("bwrap", args...), nil

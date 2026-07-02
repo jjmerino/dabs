@@ -46,11 +46,10 @@ func parseBuild(args []string) (params.Build, error) {
 	return p, nil
 }
 
-// parseUp parses `dabs up [--fresh] <manifest|dir>` arguments.
+// parseUp parses `dabs up <manifest|dir>` arguments.
 func parseUp(args []string) (params.Up, error) {
 	var p params.Up
 	fs := newFlagSet("up")
-	fs.BoolVar(&p.Fresh, "fresh", false, "recreate the container == pristine state")
 	if err := fs.Parse(args); err != nil {
 		return p, BadArgsError{Cmd: "up", Reason: err.Error()}
 	}
@@ -62,7 +61,26 @@ func parseUp(args []string) (params.Up, error) {
 	return p, nil
 }
 
-// parseDown parses `dabs down <name>` arguments (name as reported by ls).
+// parseRun parses `dabs run <instance> -- <cmd…>` arguments (instance as
+// reported by ls, e.g. exo-0). The `--` is required: it makes explicit where
+// dabs's arguments end and the sandboxed command begins.
+func parseRun(args []string) (params.Run, error) {
+	var p params.Run
+	fs := newFlagSet("run")
+	if err := fs.Parse(args); err != nil {
+		return p, BadArgsError{Cmd: "run", Reason: err.Error()}
+	}
+	rest := fs.Args()
+	if len(rest) < 3 || rest[1] != "--" {
+		return p, BadArgsError{Cmd: "run", Reason: "usage: run <instance> -- <cmd…> (see dabs ls)"}
+	}
+	p.Instance = rest[0]
+	p.Cmd = rest[2:]
+	return p, nil
+}
+
+// parseDown parses `dabs down <instance>` arguments (instance as reported
+// by ls, e.g. exo-0).
 func parseDown(args []string) (params.Down, error) {
 	var p params.Down
 	fs := newFlagSet("down")
@@ -71,9 +89,9 @@ func parseDown(args []string) (params.Down, error) {
 	}
 	rest := fs.Args()
 	if len(rest) != 1 {
-		return p, BadArgsError{Cmd: "down", Reason: "expected exactly one <name> argument (see dabs ls)"}
+		return p, BadArgsError{Cmd: "down", Reason: "expected exactly one <instance> argument (see dabs ls)"}
 	}
-	p.Name = rest[0]
+	p.Instance = rest[0]
 	return p, nil
 }
 

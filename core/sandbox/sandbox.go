@@ -14,10 +14,11 @@ type Spec struct {
 	Env     map[string]string // environment inside the sandbox
 }
 
-// Info is one existing sandbox as reported by a driver.
+// Info is one existing sandbox instance as reported by a driver.
 type Info struct {
 	Name   string
 	Status string
+	Driver string // which sandboxing system runs it (e.g. "apple")
 }
 
 // BuildSpec describes the image a driver should build for a sandbox.
@@ -28,17 +29,23 @@ type BuildSpec struct {
 	Context    string // absolute path to the build context directory
 }
 
-// Driver is one sandboxing system.
+// Driver is one sandboxing system. A sandbox INSTANCE is one running box
+// born pristine from the image; instances are named <spec.Name>-<id> where
+// id is random hex, and — like git SHAs — any unambiguous instance-name
+// prefix addresses the instance in the verbs below Up.
 type Driver interface {
-	// Build produces the sandbox's image from spec, replacing any
+	// Build produces the image for spec.Name's sandboxes, replacing any
 	// previous build.
 	Build(spec BuildSpec) error
-	// Up ensures the sandbox is running. fresh recreates it first,
-	// restoring the image's pristine state.
-	Up(spec Spec, fresh bool) error
-	// Down stops and removes the sandbox. Removing an absent sandbox is
-	// not an error.
-	Down(name string) error
-	// Ls lists the sandboxes this driver manages.
+	// Up creates and starts a NEW pristine instance from spec.Name's
+	// image and returns its instance name.
+	Up(spec Spec) (instance string, err error)
+	// Run executes cmd inside the named instance, with the workdir and
+	// env the instance was created with, streams wired to the caller.
+	Run(instance string, cmd []string) error
+	// Down stops and removes the named instance. Removing an absent
+	// instance is not an error.
+	Down(instance string) error
+	// Ls lists the instances this driver manages.
 	Ls() ([]Info, error)
 }

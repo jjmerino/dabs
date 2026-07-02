@@ -18,7 +18,7 @@ func (r Real) Ls(params.Ls) error {
 		return nil
 	}
 	for _, in := range infos {
-		fmt.Fprintf(os.Stdout, "%s\t%s\n", in.Name, in.Status)
+		fmt.Fprintf(os.Stdout, "%s\t%s\t%s\n", in.Name, in.Status, in.Driver)
 	}
 	return nil
 }

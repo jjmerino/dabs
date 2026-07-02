@@ -11,8 +11,9 @@ type Command struct {
 // CLI's injected Actions; the logic lives in core/actions.
 var Commands = map[string]Command{
 	"build": {"build the sandbox image from the manifest's Dockerfile", (*CLI).runBuild},
-	"up":    {"start the sandbox (--fresh recreates == pristine)", (*CLI).runUp},
-	"down":  {"stop + remove a sandbox by name (see ls)", (*CLI).runDown},
+	"up":    {"start a NEW pristine instance (named <name>-<n>)", (*CLI).runUp},
+	"run":   {"execute a command inside an instance: run <instance> -- <cmd…>", (*CLI).runRun},
+	"down":  {"stop + remove an instance by name (see ls)", (*CLI).runDown},
 	"ls":    {"list sandboxes", (*CLI).runLs},
 }
 
@@ -30,6 +31,14 @@ func (c *CLI) runUp(args []string) error {
 		return err
 	}
 	return c.actions.Up(p)
+}
+
+func (c *CLI) runRun(args []string) error {
+	p, err := parseRun(args)
+	if err != nil {
+		return err
+	}
+	return c.actions.Run(p)
 }
 
 func (c *CLI) runDown(args []string) error {

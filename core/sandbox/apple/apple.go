@@ -1,17 +1,21 @@
 //go:build darwin
 
 // Package apple implements sandbox.Driver on Apple's `container` CLI — each
-// sandbox is a lightweight Linux micro-VM (macOS 26+, Apple Silicon).
-// Each sandbox is a long-lived `sleep infinity` container; the image is the
-// clean state, so pristine reset = recreate from image.
+// sandbox instance is a lightweight Linux micro-VM (macOS 26+, Apple
+// Silicon). Every Up creates a new long-lived `sleep infinity` container
+// born pristine from the image.
 package apple
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
+	"unsafe"
 
 	"github.com/jjmerino/dabs/core/sandbox"
 )
@@ -30,7 +34,7 @@ func New() (Driver, error) {
 	return Driver{}, nil
 }
 
-func containerName(name string) string { return prefix + name }
+func containerName(instance string) string { return prefix + instance }
 
 // imageName is the local OCI tag a sandbox's image lives under. Image
 // references are driver-owned: an OCI tag means nothing to a cloud provider,
@@ -49,34 +53,115 @@ func (Driver) Build(spec sandbox.BuildSpec) error {
 	return nil
 }
 
-// Up ensures the sandbox container is running. fresh removes it first so the
-// image's clean state is restored.
-func (d Driver) Up(spec sandbox.Spec, fresh bool) error {
-	ctn := containerName(spec.Name)
-	if !fresh {
-		if state, err := d.state(ctn); err == nil && state == "running" {
-			return nil
-		}
+// Up creates and starts a new pristine instance named <spec.Name>-<id>,
+// id being random hex — unguessable, and addressable by unique prefix.
+func (d Driver) Up(spec sandbox.Spec) (string, error) {
+	id := make([]byte, 6)
+	if _, err := rand.Read(id); err != nil {
+		return "", fmt.Errorf("apple: generating instance id: %w", err)
 	}
-	remove(ctn) // fresh, stopped, or leftover — all collide on the name
-	args := []string{"run", "-d", "--name", ctn, "-w", spec.Workdir}
+	instance := fmt.Sprintf("%s-%s", spec.Name, hex.EncodeToString(id))
+	args := []string{"run", "-d", "--name", containerName(instance), "-w", spec.Workdir}
 	for k, v := range spec.Env {
 		args = append(args, "-e", fmt.Sprintf("%s=%s", k, v))
 	}
 	args = append(args, imageName(spec.Name), "sleep", "infinity")
 	if out, err := exec.Command("container", args...).CombinedOutput(); err != nil {
-		return fmt.Errorf("apple: container run %s: %v: %s", ctn, err, strings.TrimSpace(string(out)))
+		return "", fmt.Errorf("apple: container run %s: %v: %s", containerName(instance), err, strings.TrimSpace(string(out)))
+	}
+	return instance, nil
+}
+
+// resolve finds the dabs instance whose name starts with instancePrefix —
+// git-style: any unambiguous prefix addresses the instance. Exact matches
+// win outright (so a full name can't be shadowed by being a prefix of
+// another). Returns the matched containers (0, 1, or more).
+func resolve(instancePrefix string, ctns []listedContainer) []listedContainer {
+	want := containerName(instancePrefix)
+	var matches []listedContainer
+	for _, c := range ctns {
+		if c.ID == want {
+			return []listedContainer{c}
+		}
+		if strings.HasPrefix(c.ID, want) {
+			matches = append(matches, c)
+		}
+	}
+	return matches
+}
+
+// Run executes cmd inside the named instance with the workdir and env the
+// instance was created with (read back from the vendor, not a manifest),
+// output streamed to this process. When stdin is a terminal it is attached
+// with a TTY so interactive shells work; `container exec -i` on a
+// non-terminal stdin fails with ENODEV, so batch runs get no stdin.
+func (Driver) Run(instance string, cmd []string) error {
+	ctns, err := list()
+	if err != nil {
+		return err
+	}
+	matches := resolve(instance, ctns)
+	if len(matches) == 0 {
+		return fmt.Errorf("apple: no instance matching %q (see dabs ls)", instance)
+	}
+	if len(matches) > 1 {
+		return fmt.Errorf("apple: %q is ambiguous: %s (see dabs ls)", instance, strings.TrimPrefix(names(matches), ", "))
+	}
+	found := &matches[0]
+	ctn := found.ID
+	args := []string{"exec"}
+	interactive := stdinIsTerminal()
+	if interactive {
+		args = append(args, "-i", "-t")
+	}
+	if wd := found.Configuration.InitProcess.WorkingDirectory; wd != "" {
+		args = append(args, "-w", wd)
+	}
+	for _, kv := range found.Configuration.InitProcess.Environment {
+		args = append(args, "-e", kv)
+	}
+	args = append(args, ctn)
+	args = append(args, cmd...)
+	c := exec.Command("container", args...)
+	if interactive {
+		c.Stdin = os.Stdin
+	}
+	c.Stdout = os.Stdout
+	c.Stderr = os.Stderr
+	if err := c.Run(); err != nil {
+		return fmt.Errorf("apple: exec in %s: %w", ctn, err)
 	}
 	return nil
 }
 
-// Down removes the sandbox container; absent is not an error.
-func (Driver) Down(name string) error {
-	remove(containerName(name))
+// Down removes the instance matching the (possibly abbreviated) name;
+// absent is not an error, but an ambiguous prefix is — never guess which
+// box to destroy.
+func (Driver) Down(instance string) error {
+	ctns, err := list()
+	if err != nil {
+		return err
+	}
+	matches := resolve(instance, ctns)
+	if len(matches) > 1 {
+		return fmt.Errorf("apple: %q is ambiguous: %s (see dabs ls)", instance, strings.TrimPrefix(names(matches), ", "))
+	}
+	if len(matches) == 1 {
+		remove(matches[0].ID)
+	}
 	return nil
 }
 
-// Ls lists the containers dabs manages (running or not).
+// names renders container ids as user-facing instance names for errors.
+func names(ctns []listedContainer) string {
+	var b strings.Builder
+	for _, c := range ctns {
+		fmt.Fprintf(&b, ", %s", strings.TrimPrefix(c.ID, prefix))
+	}
+	return b.String()
+}
+
+// Ls lists the instances dabs manages (running or not).
 func (d Driver) Ls() ([]sandbox.Info, error) {
 	ctns, err := list()
 	if err != nil {
@@ -87,16 +172,23 @@ func (d Driver) Ls() ([]sandbox.Info, error) {
 		if !strings.HasPrefix(c.ID, prefix) {
 			continue
 		}
-		infos = append(infos, sandbox.Info{Name: strings.TrimPrefix(c.ID, prefix), Status: c.Status.State})
+		infos = append(infos, sandbox.Info{Name: strings.TrimPrefix(c.ID, prefix), Status: c.Status.State, Driver: "apple"})
 	}
 	return infos, nil
 }
 
 // listedContainer is the slice of `container ls --format json` output dabs
 // reads; the CLI has no name/template filters (json|table|yaml|toml only),
-// so we parse JSON and filter ourselves.
+// so we parse JSON and filter ourselves. InitProcess carries the workdir and
+// env an instance was created with — Run reads them back from here.
 type listedContainer struct {
-	ID     string `json:"id"`
+	ID            string `json:"id"`
+	Configuration struct {
+		InitProcess struct {
+			WorkingDirectory string   `json:"workingDirectory"`
+			Environment      []string `json:"environment"`
+		} `json:"initProcess"`
+	} `json:"configuration"`
 	Status struct {
 		State string `json:"state"`
 	} `json:"status"`
@@ -114,19 +206,13 @@ func list() ([]listedContainer, error) {
 	return ctns, nil
 }
 
-// state returns the container's state ("running", "stopped", …) or an error
-// if it does not exist.
-func (Driver) state(ctn string) (string, error) {
-	ctns, err := list()
-	if err != nil {
-		return "", err
-	}
-	for _, c := range ctns {
-		if c.ID == ctn {
-			return c.Status.State, nil
-		}
-	}
-	return "", fmt.Errorf("apple: %s not found", ctn)
+// stdinIsTerminal reports whether stdin is a real TTY, via the terminal
+// ioctl. A char-device check is NOT enough: /dev/null is a char device too.
+// (darwin-only file, so raw syscall beats pulling in x/term.)
+func stdinIsTerminal() bool {
+	var t syscall.Termios
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, os.Stdin.Fd(), syscall.TIOCGETA, uintptr(unsafe.Pointer(&t)))
+	return errno == 0
 }
 
 // remove force-removes a container, tolerating absence.

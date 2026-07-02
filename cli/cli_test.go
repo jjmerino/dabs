@@ -12,6 +12,7 @@ import (
 type fakeActions struct {
 	build []params.Build
 	up    []params.Up
+	run   []params.Run
 	down  []params.Down
 	ls    []params.Ls
 	err   error // returned from every action
@@ -19,6 +20,7 @@ type fakeActions struct {
 
 func (f *fakeActions) Build(p params.Build) error { f.build = append(f.build, p); return f.err }
 func (f *fakeActions) Up(p params.Up) error       { f.up = append(f.up, p); return f.err }
+func (f *fakeActions) Run(p params.Run) error     { f.run = append(f.run, p); return f.err }
 func (f *fakeActions) Down(p params.Down) error   { f.down = append(f.down, p); return f.err }
 func (f *fakeActions) Ls(p params.Ls) error       { f.ls = append(f.ls, p); return f.err }
 
@@ -38,16 +40,7 @@ func TestRunDelegatesToActions(t *testing.T) {
 			},
 		},
 		{
-			name: "up with flag and manifest",
-			args: []string{"up", "--fresh", "m"},
-			want: func(t *testing.T, f *fakeActions) {
-				if len(f.up) != 1 || f.up[0] != (params.Up{ManifestPath: "m", Fresh: true}) {
-					t.Errorf("got %+v, want one Up{ManifestPath:m Fresh:true}", f.up)
-				}
-			},
-		},
-		{
-			name: "up without flag",
+			name: "up",
 			args: []string{"up", "m"},
 			want: func(t *testing.T, f *fakeActions) {
 				if len(f.up) != 1 || f.up[0] != (params.Up{ManifestPath: "m"}) {
@@ -56,11 +49,21 @@ func TestRunDelegatesToActions(t *testing.T) {
 			},
 		},
 		{
-			name: "down",
-			args: []string{"down", "e2e"},
+			name: "run with command tail",
+			args: []string{"run", "exo-0", "--", "echo", "--flag", "hi"},
 			want: func(t *testing.T, f *fakeActions) {
-				if len(f.down) != 1 || f.down[0] != (params.Down{Name: "e2e"}) {
-					t.Errorf("got %+v, want one Down{Name:e2e}", f.down)
+				if len(f.run) != 1 || f.run[0].Instance != "exo-0" ||
+					len(f.run[0].Cmd) != 3 || f.run[0].Cmd[1] != "--flag" {
+					t.Errorf("got %+v, want one Run{Instance:exo-0 Cmd:[echo --flag hi]}", f.run)
+				}
+			},
+		},
+		{
+			name: "down",
+			args: []string{"down", "exo-0"},
+			want: func(t *testing.T, f *fakeActions) {
+				if len(f.down) != 1 || f.down[0] != (params.Down{Instance: "exo-0"}) {
+					t.Errorf("got %+v, want one Down{Instance:exo-0}", f.down)
 				}
 			},
 		},
@@ -102,7 +105,7 @@ func TestRunErrorsReachNoAction(t *testing.T) {
 			if err != tt.wantErr {
 				t.Errorf("Run(%v) = %v, want %v", tt.args, err, tt.wantErr)
 			}
-			if len(f.build)+len(f.up)+len(f.down)+len(f.ls) != 0 {
+			if len(f.build)+len(f.up)+len(f.run)+len(f.down)+len(f.ls) != 0 {
 				t.Errorf("action was called despite error %v", err)
 			}
 		})

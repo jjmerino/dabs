@@ -18,12 +18,17 @@ type Build struct {
 // Up are the inputs to the up action.
 type Up struct {
 	ManifestPath string // path to manifest file or dir containing one
-	Fresh        bool   // recreate the container == pristine state
+}
+
+// Run are the inputs to the run action.
+type Run struct {
+	Instance string   // instance name, as reported by ls (e.g. exo-0)
+	Cmd      []string // command to execute inside the instance
 }
 
 // Down are the inputs to the down action.
 type Down struct {
-	Name string // sandbox name, as reported by ls
+	Instance string // instance name, as reported by ls (e.g. exo-0)
 }
 
 // Ls are the inputs to the ls action.
@@ -34,6 +39,7 @@ type Ls struct{}
 type Actions interface {
 	Build(Build) error
 	Up(Up) error
+	Run(Run) error
 	Down(Down) error
 	Ls(Ls) error
 }

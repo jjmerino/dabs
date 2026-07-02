@@ -31,10 +31,15 @@ type Driver struct {
 	root string
 }
 
-// New returns the driver, or an error if bwrap is not installed.
+// New returns the driver, or an error if a required tool is missing. bwrap
+// enters instances; docker is the image builder. Both are the developer's
+// to install — dabs only checks and points the way.
 func New() (Driver, error) {
 	if _, err := exec.LookPath("bwrap"); err != nil {
-		return Driver{}, fmt.Errorf("bwrap: 'bwrap' not found; install: apt install bubblewrap")
+		return Driver{}, fmt.Errorf("bwrap: 'bwrap' not found; install: apt install bubblewrap (or your distro's bubblewrap package)")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		return Driver{}, fmt.Errorf("bwrap: 'docker' not found (dabs builds images with it); install: https://docs.docker.com/engine/install/")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {

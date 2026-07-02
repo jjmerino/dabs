@@ -10,12 +10,31 @@ then watch where they get stuck.
 
 ## Requirements
 
-- macOS 26+ on Apple Silicon with Apple's `container` CLI
-  (`brew install container && container system start`).
-  Each box is a lightweight Linux micro-VM (sub-second boot).
-- Linux: bwrap + overlayfs driver (bubblewrap 0.10+, docker as builder) — millisecond instance starts.
+dabs is a single static binary with no runtime dependencies of its own. It
+drives platform tools you install yourself — it detects them and points you
+at the install command, but never installs anything for you.
+
+- **macOS** 26+ on Apple Silicon — Apple's `container` CLI. Each box is a
+  lightweight Linux micro-VM (sub-second boot).
+  `brew install container && container system start`
+- **Linux** — `bubblewrap` (enters boxes) + `docker` (builds images). Boxes
+  are bwrap + overlayfs; millisecond starts.
+  `apt install bubblewrap` · docker: https://docs.docker.com/engine/install/
+- **Remote servers** (any of the above, driven over ssh) — `ssh` with pubkey
+  auth on your side; dabs installed on the server.
+- No Windows driver yet.
 
 ## Install
+
+Prebuilt binary — download from
+[Releases](https://github.com/jjmerino/dabs/releases), then put it on your
+PATH:
+
+```bash
+chmod +x dabs && mv dabs ~/.local/bin/   # or anywhere on PATH
+```
+
+Or build from source (needs Go 1.23+):
 
 ```bash
 go install github.com/jjmerino/dabs@latest

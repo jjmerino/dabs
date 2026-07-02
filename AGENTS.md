@@ -111,6 +111,15 @@ system. Vendor tools lie: Apple's `container` is not Docker-flag-compatible;
 `exec -i` fails on non-TTY stdin; docker export drops resolv.conf. The Linux
 (bwrap) driver is exercised over ssh on a real host.
 
+**Dependencies.** dabs itself has ZERO third-party Go deps and no cgo, so it
+is a static binary that cross-compiles to every target with a plain
+`GOOS=… GOARCH=… go build` (keep it that way). What it needs are external
+tools AT RUNTIME, per driver — Apple `container` (macOS); `bwrap` + `docker`
+(Linux); `ssh`/`scp` (servers). dabs never installs these: each driver's
+`New()` checks for its tools and returns an error with the install command.
+When you add a driver that shells out to a tool, add the same preflight —
+detect, point at the install, never auto-install (users are developers).
+
 **Layout**
 
 ```

@@ -13,12 +13,12 @@ import (
 func main() {
 	// All deps are constructed here, one per line, in dependency order.
 	// Do not nest New calls — keep the wiring flat and readable.
-	drv, err := localDriver()
+	drivers, order, err := buildDrivers()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "dabs: %v\n", err)
 		os.Exit(1)
 	}
-	a := actions.New(drv)
+	a := actions.New(drivers, order)
 	c := cli.New(a)
 
 	err = c.Run(os.Args[1:])

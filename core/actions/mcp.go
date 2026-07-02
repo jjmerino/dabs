@@ -8,11 +8,12 @@ import (
 	"github.com/jjmerino/dabs/core/params"
 )
 
-// Mcp serves the dabash MCP tool on stdio, curried to the named instance:
-// every dabash call executes inside that instance and nowhere else. Blocks
-// until stdin closes (the MCP client hanging up).
+// Mcp serves the dabash MCP tool on stdio, curried to the matched instance
+// wherever in the fleet it lives: every dabash call executes inside that
+// instance and nowhere else. Blocks until stdin closes (the MCP client
+// hanging up).
 func (r Real) Mcp(p params.Mcp) error {
-	instance, err := r.resolveOne(p.Instance)
+	m, err := r.resolveOne(p.Instance)
 	if err != nil {
 		return err
 	}
@@ -21,7 +22,7 @@ func (r Real) Mcp(p params.Mcp) error {
 		if cwd != "" {
 			line = "cd " + shellQuote(cwd) + " && (" + command + ")"
 		}
-		return r.driver.Exec(instance, []string{"sh", "-c", line})
+		return m.driver.Exec(m.name, []string{"sh", "-c", line})
 	})
 }
 

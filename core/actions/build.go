@@ -10,9 +10,14 @@ import (
 	"github.com/jjmerino/dabs/core/sandbox"
 )
 
-// Build resolves the manifest and builds its sandbox image.
+// Build resolves the manifest and builds its sandbox image on the
+// manifest's target (local by default).
 func (r Real) Build(p params.Build) error {
 	m, err := manifest.Load(p.ManifestPath)
+	if err != nil {
+		return err
+	}
+	drv, err := r.driverFor(m.Target)
 	if err != nil {
 		return err
 	}
@@ -21,7 +26,7 @@ func (r Real) Build(p params.Build) error {
 		Dockerfile: filepath.Join(m.Dir, m.Dockerfile),
 		Context:    filepath.Join(m.Dir, m.Context),
 	}
-	if err := r.driver.Build(spec); err != nil {
+	if err := drv.Build(spec); err != nil {
 		return err
 	}
 	fmt.Fprintf(os.Stdout, "%s built\n", m.Name)

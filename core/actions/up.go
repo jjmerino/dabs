@@ -10,9 +10,14 @@ import (
 )
 
 // Up resolves the manifest and starts a NEW pristine instance of its
-// sandbox, reporting the instance name.
+// sandbox on the manifest's target (local by default), reporting the
+// instance name.
 func (r Real) Up(p params.Up) error {
 	m, err := manifest.Load(p.ManifestPath)
+	if err != nil {
+		return err
+	}
+	drv, err := r.driverFor(m.Target)
 	if err != nil {
 		return err
 	}
@@ -21,9 +26,13 @@ func (r Real) Up(p params.Up) error {
 		Workdir: m.Workdir,
 		Env:     m.Env,
 	}
-	instance, err := r.driver.Up(spec)
+	instance, err := drv.Up(spec)
 	if err != nil {
 		return err
+	}
+	if m.Target != "" {
+		fmt.Fprintf(os.Stdout, "%s up on %s\n", instance, m.Target)
+		return nil
 	}
 	fmt.Fprintf(os.Stdout, "%s up\n", instance)
 	return nil

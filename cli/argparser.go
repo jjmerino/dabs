@@ -31,6 +31,21 @@ func newFlagSet(cmd string) *flag.FlagSet {
 	return fs
 }
 
+// parseBuild parses `dabs build <manifest|dir>` arguments.
+func parseBuild(args []string) (params.Build, error) {
+	var p params.Build
+	fs := newFlagSet("build")
+	if err := fs.Parse(args); err != nil {
+		return p, BadArgsError{Cmd: "build", Reason: err.Error()}
+	}
+	rest := fs.Args()
+	if len(rest) != 1 {
+		return p, BadArgsError{Cmd: "build", Reason: "expected exactly one <manifest|dir> argument"}
+	}
+	p.ManifestPath = rest[0]
+	return p, nil
+}
+
 // parseUp parses `dabs up [--fresh] <manifest|dir>` arguments.
 func parseUp(args []string) (params.Up, error) {
 	var p params.Up
@@ -43,11 +58,11 @@ func parseUp(args []string) (params.Up, error) {
 	if len(rest) != 1 {
 		return p, BadArgsError{Cmd: "up", Reason: "expected exactly one <manifest|dir> argument"}
 	}
-	p.Manifest = rest[0]
+	p.ManifestPath = rest[0]
 	return p, nil
 }
 
-// parseDown parses `dabs down <manifest|dir>` arguments.
+// parseDown parses `dabs down <name>` arguments (name as reported by ls).
 func parseDown(args []string) (params.Down, error) {
 	var p params.Down
 	fs := newFlagSet("down")
@@ -56,9 +71,9 @@ func parseDown(args []string) (params.Down, error) {
 	}
 	rest := fs.Args()
 	if len(rest) != 1 {
-		return p, BadArgsError{Cmd: "down", Reason: "expected exactly one <manifest|dir> argument"}
+		return p, BadArgsError{Cmd: "down", Reason: "expected exactly one <name> argument (see dabs ls)"}
 	}
-	p.Manifest = rest[0]
+	p.Name = rest[0]
 	return p, nil
 }
 

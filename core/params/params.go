@@ -10,15 +10,20 @@
 // fields (funcs, channels, io types) — then it does not go in this file.
 package params
 
+// Build are the inputs to the build action.
+type Build struct {
+	ManifestPath string // path to manifest file or dir containing one
+}
+
 // Up are the inputs to the up action.
 type Up struct {
-	Manifest string // path to manifest file or dir containing one
-	Fresh    bool   // recreate the container == pristine state
+	ManifestPath string // path to manifest file or dir containing one
+	Fresh        bool   // recreate the container == pristine state
 }
 
 // Down are the inputs to the down action.
 type Down struct {
-	Manifest string // path to manifest file or dir containing one
+	Name string // sandbox name, as reported by ls
 }
 
 // Ls are the inputs to the ls action.
@@ -27,6 +32,7 @@ type Ls struct{}
 // Actions is the contract every action provider satisfies: the real
 // implementations in core/actions, fakes in tests, RPC clients later.
 type Actions interface {
+	Build(Build) error
 	Up(Up) error
 	Down(Down) error
 	Ls(Ls) error

@@ -2,12 +2,16 @@ package actions
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/jjmerino/dabs/core/params"
 )
 
-// Down stops and removes the sandbox.
-func Down(p params.Down) error {
-	fmt.Printf("actions.Down(%+v): [NOT BUILT YET!]\n", p)
+// Down removes the named sandbox.
+func (r Real) Down(p params.Down) error {
+	if err := r.driver.Down(p.Name); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stdout, "%s down\n", p.Name)
 	return nil
 }

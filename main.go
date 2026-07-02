@@ -13,10 +13,15 @@ import (
 func main() {
 	// All deps are constructed here, one per line, in dependency order.
 	// Do not nest New calls — keep the wiring flat and readable.
-	a := actions.Real{}
+	drv, err := localDriver()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "dabs: %v\n", err)
+		os.Exit(1)
+	}
+	a := actions.New(drv)
 	c := cli.New(a)
 
-	err := c.Run(os.Args[1:])
+	err = c.Run(os.Args[1:])
 	if err == nil {
 		return
 	}

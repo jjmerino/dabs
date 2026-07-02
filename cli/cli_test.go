@@ -10,15 +10,17 @@ import (
 // fakeActions records every delegation so tests can assert the cli parsed
 // argv into the right action call with the right params.
 type fakeActions struct {
-	up   []params.Up
-	down []params.Down
-	ls   []params.Ls
-	err  error // returned from every action
+	build []params.Build
+	up    []params.Up
+	down  []params.Down
+	ls    []params.Ls
+	err   error // returned from every action
 }
 
-func (f *fakeActions) Up(p params.Up) error     { f.up = append(f.up, p); return f.err }
-func (f *fakeActions) Down(p params.Down) error { f.down = append(f.down, p); return f.err }
-func (f *fakeActions) Ls(p params.Ls) error     { f.ls = append(f.ls, p); return f.err }
+func (f *fakeActions) Build(p params.Build) error { f.build = append(f.build, p); return f.err }
+func (f *fakeActions) Up(p params.Up) error       { f.up = append(f.up, p); return f.err }
+func (f *fakeActions) Down(p params.Down) error   { f.down = append(f.down, p); return f.err }
+func (f *fakeActions) Ls(p params.Ls) error       { f.ls = append(f.ls, p); return f.err }
 
 func TestRunDelegatesToActions(t *testing.T) {
 	tests := []struct {
@@ -27,11 +29,20 @@ func TestRunDelegatesToActions(t *testing.T) {
 		want func(t *testing.T, f *fakeActions)
 	}{
 		{
+			name: "build",
+			args: []string{"build", "m"},
+			want: func(t *testing.T, f *fakeActions) {
+				if len(f.build) != 1 || f.build[0] != (params.Build{ManifestPath: "m"}) {
+					t.Errorf("got %+v, want one Build{ManifestPath:m}", f.build)
+				}
+			},
+		},
+		{
 			name: "up with flag and manifest",
 			args: []string{"up", "--fresh", "m"},
 			want: func(t *testing.T, f *fakeActions) {
-				if len(f.up) != 1 || f.up[0] != (params.Up{Manifest: "m", Fresh: true}) {
-					t.Errorf("got %+v, want one Up{Manifest:m Fresh:true}", f.up)
+				if len(f.up) != 1 || f.up[0] != (params.Up{ManifestPath: "m", Fresh: true}) {
+					t.Errorf("got %+v, want one Up{ManifestPath:m Fresh:true}", f.up)
 				}
 			},
 		},
@@ -39,17 +50,17 @@ func TestRunDelegatesToActions(t *testing.T) {
 			name: "up without flag",
 			args: []string{"up", "m"},
 			want: func(t *testing.T, f *fakeActions) {
-				if len(f.up) != 1 || f.up[0] != (params.Up{Manifest: "m"}) {
-					t.Errorf("got %+v, want one Up{Manifest:m}", f.up)
+				if len(f.up) != 1 || f.up[0] != (params.Up{ManifestPath: "m"}) {
+					t.Errorf("got %+v, want one Up{ManifestPath:m}", f.up)
 				}
 			},
 		},
 		{
 			name: "down",
-			args: []string{"down", "m"},
+			args: []string{"down", "e2e"},
 			want: func(t *testing.T, f *fakeActions) {
-				if len(f.down) != 1 || f.down[0] != (params.Down{Manifest: "m"}) {
-					t.Errorf("got %+v, want one Down{Manifest:m}", f.down)
+				if len(f.down) != 1 || f.down[0] != (params.Down{Name: "e2e"}) {
+					t.Errorf("got %+v, want one Down{Name:e2e}", f.down)
 				}
 			},
 		},
@@ -91,7 +102,7 @@ func TestRunErrorsReachNoAction(t *testing.T) {
 			if err != tt.wantErr {
 				t.Errorf("Run(%v) = %v, want %v", tt.args, err, tt.wantErr)
 			}
-			if len(f.up)+len(f.down)+len(f.ls) != 0 {
+			if len(f.build)+len(f.up)+len(f.down)+len(f.ls) != 0 {
 				t.Errorf("action was called despite error %v", err)
 			}
 		})

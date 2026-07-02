@@ -10,9 +10,18 @@ type Command struct {
 // Each Run composes a pure parser from argparser.go with the action on the
 // CLI's injected Actions; the logic lives in core/actions.
 var Commands = map[string]Command{
-	"up":   {"start the sandbox (--fresh recreates == pristine)", (*CLI).runUp},
-	"down": {"stop + remove the sandbox", (*CLI).runDown},
-	"ls":   {"list sandboxes", (*CLI).runLs},
+	"build": {"build the sandbox image from the manifest's Dockerfile", (*CLI).runBuild},
+	"up":    {"start the sandbox (--fresh recreates == pristine)", (*CLI).runUp},
+	"down":  {"stop + remove a sandbox by name (see ls)", (*CLI).runDown},
+	"ls":    {"list sandboxes", (*CLI).runLs},
+}
+
+func (c *CLI) runBuild(args []string) error {
+	p, err := parseBuild(args)
+	if err != nil {
+		return err
+	}
+	return c.actions.Build(p)
 }
 
 func (c *CLI) runUp(args []string) error {

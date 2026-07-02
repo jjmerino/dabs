@@ -1,7 +1,26 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"os"
 
+	"github.com/jjmerino/dabs/cli"
+	"github.com/jjmerino/dabs/core/actions"
+)
+
+// main owns the process boundary: it installs the real actions, injects
+// argv, prints errors generically, and translates cli errors into exit codes.
 func main() {
-	fmt.Println("[NOT BUILT YET!]")
+	err := cli.New(actions.Real{}).Run(os.Args[1:])
+	if err == nil {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "dabs: %v\n", err)
+	switch err.(type) {
+	case cli.NoCommandError, cli.UnknownCommandError, cli.BadArgsError:
+		fmt.Fprintln(os.Stderr)
+		cli.Usage(os.Stderr)
+		os.Exit(2)
+	}
+	os.Exit(1)
 }

@@ -21,6 +21,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/jjmerino/dabs/core/sandbox"
 )
@@ -167,9 +168,17 @@ func (d Driver) enter(instance string, cmd []string) (*exec.Cmd, error) {
 		"--dev", "/dev",
 		"--proc", "/proc",
 		"--unshare-user", "--uid", "0", "--gid", "0", // look like root, as in the container the image was built for
+		"--unshare-pid", // /proc shows only the box's processes, not the host's
+		"--unshare-uts", "--hostname", instance,
 		"--die-with-parent",
 		"--chdir", meta.Workdir,
 		"--clearenv",
+	}
+	// docker export does not carry the runtime-injected resolv.conf, so the
+	// box's copy is empty and DNS (package installs, downloads) would fail.
+	// The network is shared with the host anyway; share its DNS config too.
+	if _, err := os.Stat("/etc/resolv.conf"); err == nil {
+		args = append(args, "--ro-bind", "/etc/resolv.conf", "/etc/resolv.conf")
 	}
 	for _, kv := range meta.Env {
 		k, v, ok := strings.Cut(kv, "=")
@@ -190,6 +199,21 @@ func imageOf(instance string) string {
 	return instance
 }
 
+// lock serializes entries into one instance: concurrent overlayfs mounts
+// sharing an upper dir are unsupported by the kernel (observed corrupting
+// writes). Callers hold the flock for the duration of the command.
+func (d Driver) lock(instance string) (unlock func(), err error) {
+	f, err := os.OpenFile(filepath.Join(d.instanceDir(instance), "lock"), os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("bwrap: %w", err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("bwrap: locking %s: %w", instance, err)
+	}
+	return func() { f.Close() }, nil // closing releases the flock
+}
+
 // Run executes cmd inside the instance, streams wired to the caller. bwrap
 // inherits stdio directly, so interactive use needs no TTY plumbing.
 func (d Driver) Run(instance string, cmd []string) error {
@@ -197,6 +221,11 @@ func (d Driver) Run(instance string, cmd []string) error {
 	if err != nil {
 		return err
 	}
+	unlock, err := d.lock(instance)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	c.Stdin = os.Stdin
 	c.Stdout = os.Stdout
 	c.Stderr = os.Stderr
@@ -213,6 +242,11 @@ func (d Driver) Exec(instance string, cmd []string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	unlock, err := d.lock(instance)
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
 	out, err := c.CombinedOutput()
 	if err != nil {
 		return string(out), fmt.Errorf("bwrap: exec in %s: %v: %s", instance, err, strings.TrimSpace(string(out)))

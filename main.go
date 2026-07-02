@@ -11,7 +11,12 @@ import (
 // main owns the process boundary: it installs the real actions, injects
 // argv, prints errors generically, and translates cli errors into exit codes.
 func main() {
-	err := cli.New(actions.Real{}).Run(os.Args[1:])
+	// All deps are constructed here, one per line, in dependency order.
+	// Do not nest New calls — keep the wiring flat and readable.
+	a := actions.Real{}
+	c := cli.New(a)
+
+	err := c.Run(os.Args[1:])
 	if err == nil {
 		return
 	}

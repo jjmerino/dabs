@@ -51,20 +51,20 @@ func TestRunDelegatesToActions(t *testing.T) {
 		},
 		{
 			name: "run with command tail",
-			args: []string{"run", "exo-0", "--", "echo", "--flag", "hi"},
+			args: []string{"run", "demo-0", "--", "echo", "--flag", "hi"},
 			want: func(t *testing.T, f *fakeActions) {
-				if len(f.run) != 1 || f.run[0].Instance != "exo-0" ||
+				if len(f.run) != 1 || f.run[0].Instance != "demo-0" ||
 					len(f.run[0].Cmd) != 3 || f.run[0].Cmd[1] != "--flag" {
-					t.Errorf("got %+v, want one Run{Instance:exo-0 Cmd:[echo --flag hi]}", f.run)
+					t.Errorf("got %+v, want one Run{Instance:demo-0 Cmd:[echo --flag hi]}", f.run)
 				}
 			},
 		},
 		{
 			name: "down",
-			args: []string{"down", "exo-0"},
+			args: []string{"down", "demo-0"},
 			want: func(t *testing.T, f *fakeActions) {
-				if len(f.down) != 1 || f.down[0] != (params.Down{Instance: "exo-0"}) {
-					t.Errorf("got %+v, want one Down{Instance:exo-0}", f.down)
+				if len(f.down) != 1 || f.down[0] != (params.Down{Instance: "demo-0"}) {
+					t.Errorf("got %+v, want one Down{Instance:demo-0}", f.down)
 				}
 			},
 		},

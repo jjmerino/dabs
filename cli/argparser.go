@@ -62,7 +62,7 @@ func parseUp(args []string) (params.Up, error) {
 }
 
 // parseRun parses `dabs run <instance> -- <cmd…>` arguments (instance as
-// reported by ls, e.g. exo-0). The `--` is required: it makes explicit where
+// reported by ls, e.g. demo-0). The `--` is required: it makes explicit where
 // dabs's arguments end and the sandboxed command begins.
 func parseRun(args []string) (params.Run, error) {
 	var p params.Run
@@ -96,7 +96,7 @@ func parseMcp(args []string) (params.Mcp, error) {
 }
 
 // parseDown parses `dabs down <instance>` arguments (instance as reported
-// by ls, e.g. exo-0).
+// by ls, e.g. demo-0).
 func parseDown(args []string) (params.Down, error) {
 	var p params.Down
 	fs := newFlagSet("down")

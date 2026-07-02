@@ -22,13 +22,13 @@ type Up struct {
 
 // Run are the inputs to the run action.
 type Run struct {
-	Instance string   // instance name, as reported by ls (e.g. exo-0)
+	Instance string   // instance name, as reported by ls (e.g. demo-0)
 	Cmd      []string // command to execute inside the instance
 }
 
 // Down are the inputs to the down action.
 type Down struct {
-	Instance string // instance name, as reported by ls (e.g. exo-0)
+	Instance string // instance name, as reported by ls (e.g. demo-0)
 }
 
 // Ls are the inputs to the ls action.
@@ -37,7 +37,7 @@ type Ls struct{}
 // Mcp are the inputs to the mcp action: serve the dabash MCP tool over
 // stdio, curried to one instance — the tool takes no sandbox parameter.
 type Mcp struct {
-	Instance string // instance name, as reported by ls (e.g. exo-0)
+	Instance string // instance name, as reported by ls (e.g. demo-0)
 }
 
 // Actions is the contract every action provider satisfies: the real

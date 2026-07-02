@@ -90,4 +90,70 @@ get honestly stuck. A dumb agent can. Its confusion is the signal.
 
 `name` is required; the rest default sensibly. Paths resolve relative to
 the manifest's directory. `dabs build`/`up` accept the manifest file or a
-directory containing `dabs.json`.
+directory containing `dabs.json`. `"target": "<server>"` routes the sandbox
+to a registered server (see `dabs servers`); omit for local.
+
+## Working on the codebase
+
+If you are changing dabs itself, not just using it:
+
+**Build, test, verify**
+
+```bash
+gofmt -w . && go vet ./...
+go build ./...            # keep BOTH green: darwin and `GOOS=linux go build ./...`
+go test ./...             # unit tests are hermetic (fakes) — no sandboxes needed
+./util/reinstall.sh       # rebuild + install to $GOBIN
+```
+
+A change that touches a driver is not proven by unit tests — drive the real
+system. Vendor tools lie: Apple's `container` is not Docker-flag-compatible;
+`exec -i` fails on non-TTY stdin; docker export drops resolv.conf. The Linux
+(bwrap) driver is exercised over ssh on a real host.
+
+**Layout**
+
+```
+main.go / driver*.go   composition root: build the driver fleet, wire deps
+                       one per line, no nested New. driver_<os>.go is
+                       build-tagged; OS code never compiles into a foreign
+                       binary.
+cli/                   argv → typed params. Pure parsers (one stdlib
+                       FlagSet per command). Owns dispatch errors.
+core/params/           leaf contract: params structs + Actions interface.
+                       Litmus: if it can't become a .proto (logic, deps,
+                       funcs), it doesn't belong here.
+core/config/           ~/.dabs/config.json (servers/fleet) load + save.
+core/manifest/         dabs.json load + defaults.
+core/actions/          ALL policy: manifest loading, instance-name
+                       resolution across the fleet, --force/--dry, routing
+                       by target, user-facing messages.
+core/sandbox/          mechanical driver contract — exact names in, state
+                       out. Zero vendor imports, zero logic.
+core/sandbox/<kind>/   one driver per kind (apple, bwrap, server). Drivers
+                       do no resolution, no policy, no messaging.
+core/mcpserve/         the dabash MCP server, pure over an injected exec.
+```
+
+**Rules that keep it clean**
+
+- Zero third-party dependencies. `go.mod` has no require block; keep it so.
+- `cli` and `core/actions` never import each other — they meet only in main.
+  Drivers import only `core/sandbox`; nothing imports a driver except the
+  build-tagged selection files.
+- Drivers stay mechanical. New policy (resolution, force/dry, aggregation)
+  goes in `core/actions`; a driver only ever takes exact names.
+- New verb checklist: params struct + Actions method → action file →
+  pure parser → command-table entry + runX → fake method in cli_test.go.
+- The MCP server must never write non-protocol bytes to stdout — stdout is
+  the protocol channel.
+- Self-contained: no references to private projects, machines, usernames, or
+  home paths anywhere (code, comments, tests, commit messages). Example
+  names are neutral (`demo-0`, `myproj`).
+- Commit messages say WHY, and for driver changes include what was run
+  against the real system and what it printed.
+
+**Git**
+
+- Never commit or push unless explicitly told to. Make and verify the
+  changes; leave committing and pushing to the human.

@@ -12,12 +12,16 @@ import (
 // every dabash call executes inside that instance and nowhere else. Blocks
 // until stdin closes (the MCP client hanging up).
 func (r Real) Mcp(p params.Mcp) error {
+	instance, err := r.resolveOne(p.Instance)
+	if err != nil {
+		return err
+	}
 	return mcpserve.Serve(os.Stdin, os.Stdout, func(command, cwd string) (string, error) {
 		line := command
 		if cwd != "" {
 			line = "cd " + shellQuote(cwd) + " && (" + command + ")"
 		}
-		return r.driver.Exec(p.Instance, []string{"sh", "-c", line})
+		return r.driver.Exec(instance, []string{"sh", "-c", line})
 	})
 }
 

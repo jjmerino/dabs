@@ -4,9 +4,12 @@
 // live in subpackages (sandbox/apple, …) and are injected at the composition
 // root; OS-coupled ones are build-tagged so they never ship in a foreign
 // binary.
+//
+// Drivers are MECHANICAL: they take EXACT instance names and expose what
+// exists. All policy — abbreviation/prefix resolution, ambiguity handling,
+// force/dry semantics — is dabs domain logic and lives in core/actions,
+// which resolves against Ls and then addresses the driver exactly.
 package sandbox
-
-import "fmt"
 
 // Spec describes the sandbox a driver should provide. It is vendor-neutral:
 // drivers translate it into their own vocabulary.
@@ -14,17 +17,6 @@ type Spec struct {
 	Name    string            // sandbox identity WITHIN dabs; the actual driver image name may vary vendor to vendor
 	Workdir string            // working directory inside the sandbox
 	Env     map[string]string // environment inside the sandbox
-}
-
-// AmbiguousError reports that an abbreviated instance name matched more
-// than one instance; nothing was done.
-type AmbiguousError struct {
-	Instance string   // the abbreviation as given
-	Matches  []string // the full instance names it matched
-}
-
-func (e AmbiguousError) Error() string {
-	return fmt.Sprintf("%q matches %d instances", e.Instance, len(e.Matches))
 }
 
 // Info is one existing sandbox instance as reported by a driver.
@@ -43,9 +35,8 @@ type BuildSpec struct {
 }
 
 // Driver is one sandboxing system. A sandbox INSTANCE is one running box
-// born pristine from the image; instances are named <spec.Name>-<id> where
-// id is random hex, and — like git SHAs — any unambiguous instance-name
-// prefix addresses the instance in the verbs below Up.
+// born pristine from the image, named <spec.Name>-<id> with a random hex id.
+// Every instance parameter below is an EXACT name from Ls.
 type Driver interface {
 	// Build produces the image for spec.Name's sandboxes, replacing any
 	// previous build.
@@ -53,20 +44,16 @@ type Driver interface {
 	// Up creates and starts a NEW pristine instance from spec.Name's
 	// image and returns its instance name.
 	Up(spec Spec) (instance string, err error)
-	// Run executes cmd inside the named instance, with the workdir and
-	// env the instance was created with, streams wired to the caller.
+	// Run executes cmd inside the instance, with the workdir and env the
+	// instance was created with, streams wired to the caller.
 	Run(instance string, cmd []string) error
 	// Exec is Run for programs: non-interactive, combined output
 	// returned instead of streamed. A non-zero exit is an error whose
 	// message includes the output.
 	Exec(instance string, cmd []string) (output string, err error)
-	// Down stops and removes instances matching the (possibly
-	// abbreviated) name and returns the resolved names it removed.
-	// Removing an absent instance is not an error. When the name
-	// matches MORE than one instance: force removes them all; without
-	// force nothing is removed and an AmbiguousError reports the
-	// matches.
-	Down(instance string, force bool) (removed []string, err error)
+	// Down stops and removes the instance. Removing an absent instance
+	// is not an error.
+	Down(instance string) error
 	// Ls lists the instances this driver manages.
 	Ls() ([]Info, error)
 }

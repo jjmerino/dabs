@@ -72,22 +72,15 @@ func (d Driver) Up(spec sandbox.Spec) (string, error) {
 	return instance, nil
 }
 
-// resolve finds the dabs instance whose name starts with instancePrefix —
-// git-style: any unambiguous prefix addresses the instance. Exact matches
-// win outright (so a full name can't be shadowed by being a prefix of
-// another). Returns the matched containers (0, 1, or more).
-func resolve(instancePrefix string, ctns []listedContainer) []listedContainer {
-	want := containerName(instancePrefix)
-	var matches []listedContainer
-	for _, c := range ctns {
-		if c.ID == want {
-			return []listedContainer{c}
-		}
-		if strings.HasPrefix(c.ID, want) {
-			matches = append(matches, c)
+// find returns the container for an EXACT instance name, or nil.
+func find(instance string, ctns []listedContainer) *listedContainer {
+	want := containerName(instance)
+	for i := range ctns {
+		if ctns[i].ID == want {
+			return &ctns[i]
 		}
 	}
-	return matches
+	return nil
 }
 
 // Run executes cmd inside the named instance with the workdir and env the
@@ -100,14 +93,10 @@ func (Driver) Run(instance string, cmd []string) error {
 	if err != nil {
 		return err
 	}
-	matches := resolve(instance, ctns)
-	if len(matches) == 0 {
-		return fmt.Errorf("apple: no instance matching %q (see dabs ls)", instance)
+	found := find(instance, ctns)
+	if found == nil {
+		return fmt.Errorf("apple: no instance %q (see dabs ls)", instance)
 	}
-	if len(matches) > 1 {
-		return fmt.Errorf("apple: %q is ambiguous: %s (see dabs ls)", instance, strings.Join(instanceNames(matches), ", "))
-	}
-	found := &matches[0]
 	ctn := found.ID
 	args := []string{"exec"}
 	interactive := stdinIsTerminal()
@@ -141,14 +130,10 @@ func (Driver) Exec(instance string, cmd []string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	matches := resolve(instance, ctns)
-	if len(matches) == 0 {
-		return "", fmt.Errorf("apple: no instance matching %q (see dabs ls)", instance)
+	found := find(instance, ctns)
+	if found == nil {
+		return "", fmt.Errorf("apple: no instance %q (see dabs ls)", instance)
 	}
-	if len(matches) > 1 {
-		return "", fmt.Errorf("apple: %q is ambiguous: %s (see dabs ls)", instance, strings.Join(instanceNames(matches), ", "))
-	}
-	found := &matches[0]
 	args := []string{"exec"}
 	if wd := found.Configuration.InitProcess.WorkingDirectory; wd != "" {
 		args = append(args, "-w", wd)
@@ -165,34 +150,10 @@ func (Driver) Exec(instance string, cmd []string) (string, error) {
 	return string(out), nil
 }
 
-// Down removes instances matching the (possibly abbreviated) name; absent
-// is not an error. On multiple matches it removes them all only under
-// force; otherwise it removes nothing and reports the matches — never
-// guess which box to destroy.
-func (Driver) Down(instance string, force bool) ([]string, error) {
-	ctns, err := list()
-	if err != nil {
-		return nil, err
-	}
-	matches := resolve(instance, ctns)
-	if len(matches) > 1 && !force {
-		return nil, sandbox.AmbiguousError{Instance: instance, Matches: instanceNames(matches)}
-	}
-	removed := make([]string, 0, len(matches))
-	for _, c := range matches {
-		remove(c.ID)
-		removed = append(removed, strings.TrimPrefix(c.ID, prefix))
-	}
-	return removed, nil
-}
-
-// instanceNames renders container ids as user-facing instance names.
-func instanceNames(ctns []listedContainer) []string {
-	out := make([]string, 0, len(ctns))
-	for _, c := range ctns {
-		out = append(out, strings.TrimPrefix(c.ID, prefix))
-	}
-	return out
+// Down removes the exactly-named instance; absent is not an error.
+func (Driver) Down(instance string) error {
+	remove(containerName(instance))
+	return nil
 }
 
 // Ls lists the instances dabs manages (running or not).

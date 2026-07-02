@@ -30,6 +30,7 @@ type Run struct {
 type Down struct {
 	Instance string // instance name, as reported by ls (e.g. demo-0)
 	Force    bool   // when the name matches several instances, down them all
+	Dry      bool   // only show what the name matches; down nothing
 }
 
 // Ls are the inputs to the ls action.

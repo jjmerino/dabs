@@ -102,18 +102,22 @@ func parseDown(args []string) (params.Down, error) {
 	var p params.Down
 	fs := newFlagSet("down")
 	fs.BoolVar(&p.Force, "force", false, "down every instance the name matches")
+	fs.BoolVar(&p.Dry, "dry", false, "only show what the name matches; down nothing")
 	if err := fs.Parse(args); err != nil {
 		return p, BadArgsError{Cmd: "down", Reason: err.Error()}
 	}
-	// Accept --force AFTER the instance too (`dabs down exo --force`):
-	// stdlib flag stops at the first positional, so pick it out of the rest.
+	// Accept flags AFTER the instance too (`dabs down exo --force`):
+	// stdlib flag stops at the first positional, so pick them out of the rest.
 	rest := fs.Args()[:0:0]
 	for _, a := range fs.Args() {
-		if a == "--force" || a == "-force" {
+		switch a {
+		case "--force", "-force":
 			p.Force = true
-			continue
+		case "--dry", "-dry":
+			p.Dry = true
+		default:
+			rest = append(rest, a)
 		}
-		rest = append(rest, a)
 	}
 	if len(rest) != 1 {
 		return p, BadArgsError{Cmd: "down", Reason: "expected exactly one <instance> argument (see dabs ls)"}

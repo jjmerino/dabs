@@ -106,7 +106,7 @@ func parseDown(args []string) (params.Down, error) {
 	if err := fs.Parse(args); err != nil {
 		return p, BadArgsError{Cmd: "down", Reason: err.Error()}
 	}
-	// Accept flags AFTER the instance too (`dabs down exo --force`):
+	// Accept flags AFTER the instance too (`dabs down demo --force`):
 	// stdlib flag stops at the first positional, so pick them out of the rest.
 	rest := fs.Args()[:0:0]
 	for _, a := range fs.Args() {

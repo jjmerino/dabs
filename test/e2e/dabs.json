@@ -1,0 +1,4 @@
+{
+  "name": "dabs-e2e",
+  "env": { "E2E": "yes" }
+}

@@ -26,7 +26,7 @@ func (r Real) Ls(params.Ls) error {
 		if key != "local" {
 			stop = tui.Spinner(key)
 		}
-		infos, err := drv.Ls()
+		infos, err := lsTimeout(drv, remoteTimeout)
 		if stop != nil {
 			stop()
 		}

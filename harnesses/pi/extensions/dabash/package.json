@@ -1,0 +1,11 @@
+{
+  "name": "dabash-pi",
+  "version": "0.1.0",
+  "description": "pi extension: a sandbox-only shell tool",
+  "type": "module",
+  "exo": "index.ts",
+  "peerDependencies": {
+    "@earendil-works/coding-agent": "*",
+    "@sinclair/typebox": "*"
+  }
+}

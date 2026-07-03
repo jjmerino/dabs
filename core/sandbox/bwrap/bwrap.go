@@ -152,7 +152,11 @@ func (d Driver) Up(spec sandbox.Spec) (string, error) {
 			return "", fmt.Errorf("bwrap: %w", err)
 		}
 	}
-	meta := instanceMeta{Workdir: spec.Workdir, Env: mergeEnv(im.Env, spec.Env)}
+	env := mergeEnv(im.Env, spec.Env)
+	// DABS_NAME marks the box: anything running inside can detect it is
+	// sandboxed (the dabash guard keys on this).
+	env = append(env, "DABS_NAME="+instance)
+	meta := instanceMeta{Workdir: spec.Workdir, Env: env}
 	if err := writeJSON(filepath.Join(dir, "meta.json"), meta); err != nil {
 		return "", err
 	}

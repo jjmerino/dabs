@@ -27,6 +27,8 @@ func (f *fakeActions) Mcp(params.Mcp) error                     { return f.err }
 func (f *fakeActions) ServersList(params.ServersList) error     { return f.err }
 func (f *fakeActions) ServersAdd(params.ServersAdd) error       { return f.err }
 func (f *fakeActions) ServersRemove(params.ServersRemove) error { return f.err }
+func (f *fakeActions) Install(params.Install) error             { return f.err }
+func (f *fakeActions) Uninstall(params.Uninstall) error         { return f.err }
 
 func TestRunDelegatesToActions(t *testing.T) {
 	tests := []struct {

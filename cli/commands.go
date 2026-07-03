@@ -12,13 +12,33 @@ type Command struct {
 // Each Run composes a pure parser from argparser.go with the action on the
 // CLI's injected Actions; the logic lives in core/actions.
 var Commands = map[string]Command{
-	"build":   {"build the sandbox image from the manifest's Dockerfile", (*CLI).runBuild},
-	"up":      {"start a NEW pristine instance (named <name>-<n>)", (*CLI).runUp},
-	"run":     {"execute a command inside an instance: run <instance> -- <cmd…>", (*CLI).runRun},
-	"down":    {"stop + remove instances by name (--force downs all matches)", (*CLI).runDown},
-	"mcp":     {"serve the dabash MCP tool on stdio, curried to an instance", (*CLI).runMcp},
-	"ls":      {"list sandboxes", (*CLI).runLs},
-	"servers": {"manage registered servers: servers [ls] | add <name> [host] | rm <name>", (*CLI).runServers},
+	"build":     {"build the sandbox image from the manifest's Dockerfile", (*CLI).runBuild},
+	"up":        {"start a NEW pristine instance (named <name>-<n>)", (*CLI).runUp},
+	"run":       {"execute a command inside an instance: run <instance> -- <cmd…>", (*CLI).runRun},
+	"down":      {"stop + remove instances by name (--force downs all matches)", (*CLI).runDown},
+	"mcp":       {"serve the dabash MCP tool on stdio, curried to an instance", (*CLI).runMcp},
+	"ls":        {"list sandboxes", (*CLI).runLs},
+	"servers":   {"manage registered servers: servers [ls] | add <name> [host] | rm <name>", (*CLI).runServers},
+	"install":   {"install the dabash integration for a harness: install [pi|claude]", (*CLI).runInstall},
+	"uninstall": {"remove a harness integration: uninstall <pi|claude>", (*CLI).runUninstall},
+}
+
+func (c *CLI) runInstall(args []string) error {
+	h := ""
+	if len(args) > 1 {
+		return BadArgsError{Cmd: "install", Reason: "usage: install [pi|claude]"}
+	}
+	if len(args) == 1 {
+		h = args[0]
+	}
+	return c.actions.Install(params.Install{Harness: h})
+}
+
+func (c *CLI) runUninstall(args []string) error {
+	if len(args) != 1 {
+		return BadArgsError{Cmd: "uninstall", Reason: "usage: uninstall <pi|claude>"}
+	}
+	return c.actions.Uninstall(params.Uninstall{Harness: args[0]})
 }
 
 func (c *CLI) runBuild(args []string) error {

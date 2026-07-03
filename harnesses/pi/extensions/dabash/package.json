@@ -1,11 +1,11 @@
 {
   "name": "dabash-pi",
   "version": "0.1.0",
-  "description": "pi extension: a sandbox-only shell tool",
+  "description": "pi extension: bridges pi to a dabs box's MCP tools",
   "type": "module",
-  "exo": "index.ts",
+  "pi": "index.ts",
   "peerDependencies": {
-    "@earendil-works/coding-agent": "*",
+    "@earendil-works/pi-coding-agent": "*",
     "@sinclair/typebox": "*"
   }
 }

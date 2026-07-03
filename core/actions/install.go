@@ -3,8 +3,8 @@ package actions
 import (
 	"bufio"
 	"fmt"
+	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -47,20 +47,16 @@ func (r Real) Install(p params.Install) error {
 	if !ok {
 		return fmt.Errorf("unknown harness %q (known: pi, claude)", p.Harness)
 	}
-	src, err := sourceDir(t.srcRel)
-	if err != nil {
-		return err
-	}
 	dst, err := t.dest()
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Install %s\n  from %s\n  to   %s\nProceed? [y/N] ", t.summary, src, dst)
+	fmt.Printf("Install %s\n  to %s\nProceed? [y/N] ", t.summary, dst)
 	if !confirm() {
 		fmt.Println("cancelled")
 		return nil
 	}
-	if err := copyTree(src, dst); err != nil {
+	if err := writeFS(r.harness, t.srcRel, dst); err != nil {
 		return err
 	}
 	fmt.Printf("installed %s %s → %s\n", t.name, t.what, dst)
@@ -108,41 +104,6 @@ func printInstallHelp(targets map[string]harnessTarget) error {
 	return nil
 }
 
-// sourceDir resolves a path inside the dabs source tree, relative to the
-// running binary's module (via `go env` is unavailable at runtime; we walk
-// up from the executable, then fall back to the checkout next to it).
-func sourceDir(rel string) (string, error) {
-	exe, err := os.Executable()
-	if err == nil {
-		// Common dev layout: repo/… with the binary in repo/ or on PATH.
-		if p := findUp(filepath.Dir(exe), rel); p != "" {
-			return p, nil
-		}
-	}
-	if wd, err := os.Getwd(); err == nil {
-		if p := findUp(wd, rel); p != "" {
-			return p, nil
-		}
-	}
-	return "", fmt.Errorf("install: cannot locate %s in the dabs source tree; run from a dabs checkout", rel)
-}
-
-// findUp walks up from start looking for a directory containing rel.
-func findUp(start, rel string) string {
-	dir := start
-	for {
-		cand := filepath.Join(dir, rel)
-		if fi, err := os.Stat(cand); err == nil && fi.IsDir() {
-			return cand
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return ""
-		}
-		dir = parent
-	}
-}
-
 func home(parts ...string) (string, error) {
 	h, err := os.UserHomeDir()
 	if err != nil {
@@ -160,17 +121,31 @@ func confirm() bool {
 	return a == "y" || a == "yes"
 }
 
-// copyTree copies a directory tree, replacing the destination.
-func copyTree(src, dst string) error {
+// writeFS copies the srcRel subtree of the embedded harness FS to dst,
+// replacing the destination.
+func writeFS(fsys fs.FS, srcRel, dst string) error {
 	if err := os.RemoveAll(dst); err != nil {
 		return fmt.Errorf("install: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return fmt.Errorf("install: %w", err)
-	}
-	// cp -R keeps this short and portable enough for macOS + Linux.
-	if out, err := exec.Command("cp", "-R", src, dst).CombinedOutput(); err != nil {
-		return fmt.Errorf("install: cp: %v: %s", err, strings.TrimSpace(string(out)))
-	}
-	return nil
+	return fs.WalkDir(fsys, srcRel, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return fmt.Errorf("install: %w", err)
+		}
+		rel, err := filepath.Rel(srcRel, p)
+		if err != nil {
+			return fmt.Errorf("install: %w", err)
+		}
+		out := filepath.Join(dst, rel)
+		if d.IsDir() {
+			return os.MkdirAll(out, 0o755)
+		}
+		data, err := fs.ReadFile(fsys, p)
+		if err != nil {
+			return fmt.Errorf("install: %w", err)
+		}
+		if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
+			return fmt.Errorf("install: %w", err)
+		}
+		return os.WriteFile(out, data, 0o644)
+	})
 }

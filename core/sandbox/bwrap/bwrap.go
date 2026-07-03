@@ -31,15 +31,13 @@ type Driver struct {
 	root string
 }
 
-// New returns the driver, or an error if a required tool is missing. bwrap
-// enters instances; docker is the image builder. Both are the developer's
-// to install — dabs only checks and points the way.
+// New returns the driver, or an error if bwrap is missing. bwrap enters
+// instances (up/run/down/ls); docker is needed ONLY to build images and is
+// checked in Build, not here — so a host that only runs prebuilt images
+// (builds happen elsewhere) needs no docker.
 func New() (Driver, error) {
 	if _, err := exec.LookPath("bwrap"); err != nil {
 		return Driver{}, fmt.Errorf("bwrap: 'bwrap' not found; install: apt install bubblewrap (or your distro's bubblewrap package)")
-	}
-	if _, err := exec.LookPath("docker"); err != nil {
-		return Driver{}, fmt.Errorf("bwrap: 'docker' not found (dabs builds images with it); install: https://docs.docker.com/engine/install/")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -69,6 +67,9 @@ type instanceMeta struct {
 // Build runs `docker build` on the manifest's Dockerfile, then exports the
 // image's flattened rootfs to the image dir, replacing any previous build.
 func (d Driver) Build(spec sandbox.BuildSpec) error {
+	if _, err := exec.LookPath("docker"); err != nil {
+		return fmt.Errorf("bwrap: 'docker' not found (dabs builds images with it); install: https://docs.docker.com/engine/install/")
+	}
 	tag := "dabs-" + spec.Name
 	build := exec.Command("docker", "build", "-t", tag, "-f", spec.Dockerfile, spec.Context)
 	build.Stdout = os.Stdout

@@ -1,12 +1,9 @@
 # dabs — dumb agent boxes
 
 Disposable sandboxes you can hand to an AI agent. Each box is a pristine
-"fresh machine" built from a Dockerfile; agents get at most one way in — a
-single curried shell tool — and can't touch your host.
-
-Built for **dumb-user testing**: spawn naive LLM-powered users that try to
-figure out your CLI on a machine with no config, no history, and no help,
-then watch where they get stuck.
+"fresh machine" built from a Dockerfile; the agent reaches it through a
+single curried shell tool (dabash) and can't touch your host. Every `up` is
+a new instance; boxes run locally or on a remote server.
 
 ## Requirements
 

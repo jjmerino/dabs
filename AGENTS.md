@@ -1,12 +1,8 @@
-# AGENTS.md — delegating to dumb agents with dabs
+# AGENTS.md — running things in a dabs box
 
-You are (presumably) a capable agent with host access. dabs lets you spawn
-DUMB agents: sub-agents locked inside a disposable box with exactly one
-capability — a shell in that box. Use them to user-test a program the way a
-naive human would: no host files, no config, no memory of how it was built.
-
-Why bother: you know too much. You wrote the install script, so you can't
-get honestly stuck. A dumb agent can. Its confusion is the signal.
+You are (presumably) a capable agent with host access. dabs lets you run a
+command — or a whole sub-agent — inside a disposable box that has no view of
+your host. The box exposes exactly one way in: a shell tool, `dabash`.
 
 ## The loop
 
@@ -16,52 +12,48 @@ get honestly stuck. A dumb agent can. Its confusion is the signal.
    dabs build <dir-with-dabs.json>
    ```
 
-2. **Boot a fresh instance per test run** — every `up` is a NEW pristine box;
-   capture the instance name it prints:
+2. **Boot a fresh instance** — every `up` is a NEW pristine box; capture the
+   instance name it prints:
 
    ```bash
    dabs up <dir>          # → myproj-a3f9c21d4e02 up
    ```
 
-3. **Hand the box to a dumb agent.** `dabs mcp <instance>` is an MCP stdio
-   server exposing ONE tool: `dabash(command, cwd?)`. The instance is bound
-   at launch — the tool has no sandbox parameter, so the sub-agent cannot
-   reach any other box or your host. Launch the sub-agent with no builtin
-   tools and no user config:
+3. **Use it directly**, or **hand it to a sub-agent.** `dabs mcp <instance>`
+   is an MCP stdio server exposing ONE tool, `dabash(command, cwd?)`. The
+   instance is bound at launch — the tool has no sandbox parameter, so the
+   sub-agent cannot reach any other box or your host. Launch it with no
+   builtin tools and no user config:
 
    ```bash
    claude --setting-sources "" --tools "" --strict-mcp-config \
      --mcp-config '{"mcpServers":{"dabash":{"command":"dabs","args":["mcp","<instance>"]}}}' \
      --allowedTools "mcp__dabash__dabash" \
-     -p "<task prompt — see below>"
+     -p "<task>"
    ```
 
    Flag notes, learned the hard way: `--setting-sources ""` drops user
    config but KEEPS credentials (`--bare` breaks auth). `--allowedTools` is
-   required in `-p` mode or the run stalls on a permission prompt.
+   required in `-p` mode or the run stalls on a permission prompt. Pass the
+   FULL instance name to `dabs mcp` (not a prefix) — an exact name resolves
+   locally with no ssh probe, so the server starts instantly.
 
-4. **Read the transcript, then reap:**
+4. **Reap when done:**
 
    ```bash
    dabs down <instance>            # or: dabs down <name> --force  (all instances)
    dabs down <name> --dry          # preview what a name matches
    ```
 
-## Prompting the dumb agent
+## Notes
 
-- Tell it the truth about its world: "You have exactly one tool, dabash,
+- Tell the sub-agent the shape of its world: "You have one tool, dabash,
   which runs shell commands inside your machine. There is no other
   filesystem or host."
-- Give it a GOAL, not steps: "figure out how to <user journey>" — the point
-  is watching it try, not having it execute your plan.
-- Tell it to act like a first-time user: try the obvious command first,
-  read error messages, use --help. Forbid reading the program's source to
-  make progress — a real user wouldn't.
-- Do NOT ask it to judge success. Actors drive and leave a trace; YOU (or a
-  separate judge pass) score the trace afterward. Self-reported success
-  inflates.
-- One instance per sub-agent, one journey per instance. Instances are cheap
-  (`dabs up` again) and isolated; sharing a box couples runs.
+- One instance per sub-agent: instances are cheap (`dabs up` again) and
+  isolated; sharing a box couples runs.
+- Boxes are copies, not mounts — rebuild after editing source, and a box
+  only contains what its Dockerfile installed.
 
 ## Facts you must respect
 

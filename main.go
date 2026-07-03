@@ -18,7 +18,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "dabs: %v\n", err)
 		os.Exit(1)
 	}
-	a := actions.New(drivers, order)
+	a := actions.New(drivers, order, harnessFS)
 	c := cli.New(a)
 
 	err = c.Run(os.Args[1:])

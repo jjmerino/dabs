@@ -62,6 +62,9 @@ func (d Driver) Up(spec sandbox.Spec) (string, error) {
 	}
 	instance := fmt.Sprintf("%s-%s", spec.Name, hex.EncodeToString(id))
 	args := []string{"run", "-d", "--name", containerName(instance), "-w", spec.Workdir}
+	// DABS_NAME marks the box: anything running inside can detect it is
+	// sandboxed (the dabash guard keys on this).
+	args = append(args, "-e", "DABS_NAME="+instance)
 	for k, v := range spec.Env {
 		args = append(args, "-e", fmt.Sprintf("%s=%s", k, v))
 	}

@@ -2,6 +2,7 @@ package actions
 
 import (
 	"fmt"
+	"io/fs"
 	"strings"
 
 	"github.com/jjmerino/dabs/core/sandbox"
@@ -13,11 +14,13 @@ import (
 type Real struct {
 	drivers map[string]sandbox.Driver // key "local" + config target names
 	order   []string                  // stable iteration order for ls
+	harness fs.FS                     // bundled harness integrations (for install)
 }
 
-// New returns actions backed by the given drivers, listed in order.
-func New(drivers map[string]sandbox.Driver, order []string) Real {
-	return Real{drivers: drivers, order: order}
+// New returns actions backed by the given drivers (listed in order) and the
+// harness-integration filesystem used by install/uninstall.
+func New(drivers map[string]sandbox.Driver, order []string, harness fs.FS) Real {
+	return Real{drivers: drivers, order: order, harness: harness}
 }
 
 // driverFor resolves a manifest's target ("" = local) to its driver.

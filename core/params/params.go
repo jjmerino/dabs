@@ -59,6 +59,17 @@ type ServersRemove struct {
 	Name string
 }
 
+// Install are the inputs to installing a harness integration. Empty Harness
+// prints instructions.
+type Install struct {
+	Harness string // "pi" | "claude" | ""
+}
+
+// Uninstall are the inputs to removing a harness integration.
+type Uninstall struct {
+	Harness string // "pi" | "claude"
+}
+
 // Actions is the contract every action provider satisfies: the real
 // implementations in core/actions, fakes in tests, RPC clients later.
 type Actions interface {
@@ -71,4 +82,6 @@ type Actions interface {
 	ServersList(ServersList) error
 	ServersAdd(ServersAdd) error
 	ServersRemove(ServersRemove) error
+	Install(Install) error
+	Uninstall(Uninstall) error
 }

@@ -1,18 +1,17 @@
 //go:build e2e
 
-// End-to-end tests that drive the real `dabs` CLI (found on PATH, or via
-// $DABS_BIN) — dabs is treated as an installed binary, not imported as a
-// library. The dab under test is built from the current source at the start
-// of the run, and the boxes it creates are exercised in place — dabs picks
-// the platform's driver, the suite never does. Isolation is an isolated
-// $HOME (a fresh ~/.dabs for config/images/instances, removed on teardown)
-// plus unique per-box names, so runs never collide and assertions only ever
-// concern this suite's own "dabs-e2e-*" boxes — other boxes on the machine
-// are ignored.
+// End-to-end tests that drive the real `dabs` CLI as a plain command on PATH —
+// not imported as a library, not behind a helper that hides the binary. The
+// suite only runs inside its dabs box — a docker container (DABS_NAME set and
+// /.dockerenv present); anywhere else it exits without running. The box is the
+// isolation and must carry `dabs` on PATH. Inside, the boxes dabs creates are
+// exercised in place — dabs picks the platform's driver, the suite never does.
+// Per-run isolation is a fresh $HOME (its own ~/.dabs), removed on teardown,
+// plus unique "dabs-e2e-*" box names.
 //
-// Run:  go test -tags e2e ./test/e2e
-// Needs: dabs on PATH and its local-driver tools (dabs chooses the driver
-// by platform: Apple `container` on macOS, bwrap + docker on Linux).
+// Run:  inside a dabs box that has `dabs` on PATH (see run_e2e.sh).
+// Prebuilt mode (DABS_E2E_PREBUILT=<dir>): stage a base image instead of
+// building it, so no docker is needed inside the box.
 package e2e
 
 import (
@@ -25,7 +24,6 @@ import (
 )
 
 var (
-	dabsBin string // the CLI under test, from $DABS_BIN or "dabs"
 	home    string // isolated HOME for this run
 	baseDir string // this package dir: holds the base image dabs.json + Dockerfile
 )
@@ -37,6 +35,15 @@ const sandboxName = "dabs-e2e"
 func TestMain(m *testing.M) { os.Exit(setupAndRun(m)) }
 
 func setupAndRun(m *testing.M) int {
+	// Only run inside the supported box — a dabs-created docker container.
+	// Two checks: DABS_NAME marks a dabs box; /.dockerenv reliably marks a
+	// docker container (deliberate coupling — the supported box is docker).
+	_, inDocker := os.Stat("/.dockerenv")
+	if os.Getenv("DABS_NAME") == "" || inDocker != nil {
+		fmt.Fprintln(os.Stderr, "e2e: this suite runs only inside its dabs docker box; "+
+			"run ./run_e2e.sh (running `go test` directly won't work)")
+		return 1
+	}
 	var err error
 	home, err = os.MkdirTemp("", "dabs-e2e-home-")
 	if err != nil {
@@ -46,20 +53,6 @@ func setupAndRun(m *testing.M) int {
 	defer os.RemoveAll(home) // teardown: isolated HOME and everything under it
 	os.Setenv("HOME", home)
 
-	// The dab UNDER TEST is the CURRENT source: build it here so an e2e run
-	// exercises the change with the least latency (an incremental `go build`
-	// against a warm cache — no image rebuild). $DABS_BIN overrides, e.g. to
-	// point at an already-built/stable binary. The OUTER sandbox that hosts
-	// this run is a stable, cached environment and is never the thing tested.
-	dabsBin = os.Getenv("DABS_BIN")
-	if dabsBin == "" {
-		dabsBin = filepath.Join(home, "dabs")
-		if out, err := buildFromSource(dabsBin); err != nil {
-			fmt.Fprintf(os.Stderr, "setup: build dabs from source: %v\n%s\n", err, out)
-			return 1
-		}
-	}
-
 	// The base image the inner boxes come from is this package's own
 	// dabs.json + Dockerfile (name "dabs-e2e"); build it once with the source
 	// dabs and reuse it across tests.
@@ -68,49 +61,81 @@ func setupAndRun(m *testing.M) int {
 		fmt.Fprintln(os.Stderr, "setup:", err)
 		return 1
 	}
-	if out, code := runDabs("build", baseDir); code != 0 {
+	// Prebuilt mode (DABS_E2E_PREBUILT=<staged image dir>): copy a pre-staged
+	// base image into this run's isolated HOME instead of building it. This is
+	// what lets the suite run in a plain, UNPRIVILEGED container with no in-box
+	// docker (the build path needs docker; the bwrap run path does not).
+	if pre := os.Getenv("DABS_E2E_PREBUILT"); pre != "" {
+		dst := filepath.Join(home, ".dabs", "images", "dabs-e2e")
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			fmt.Fprintln(os.Stderr, "setup:", err)
+			return 1
+		}
+		if out, err := exec.Command("cp", "-a", pre, dst).CombinedOutput(); err != nil {
+			fmt.Fprintf(os.Stderr, "setup: stage prebuilt image: %v\n%s\n", err, out)
+			return 1
+		}
+	} else if out, code := run("dabs build " + baseDir); code != 0 {
 		fmt.Fprintf(os.Stderr, "setup: dabs build base failed:\n%s\n", out)
 		return 1
 	}
 	return m.Run()
 }
 
-// buildFromSource compiles the dabs binary under test from the repo source
-// (two dirs up from this test package) to out.
-func buildFromSource(out string) (string, error) {
-	wd, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-	repo, err := filepath.Abs(filepath.Join(wd, "..", ".."))
-	if err != nil {
-		return "", err
-	}
-	cmd := exec.Command("go", "build", "-o", out, ".")
-	cmd.Dir = repo
-	b, err := cmd.CombinedOutput()
-	return string(b), err
-}
-
 // --- helpers -----------------------------------------------------------------
 
-func runDabs(args ...string) (string, int) {
-	cmd := exec.Command(dabsBin, args...)
+// run executes a plain command line (argv[0] resolved on PATH) and returns
+// combined output + exit code. Call sites read as the shell line they run.
+func run(cmdline string) (string, int) {
+	argv := splitArgs(cmdline)
+	cmd := exec.Command(argv[0], argv[1:]...)
 	out, _ := cmd.CombinedOutput()
 	return string(out), cmd.ProcessState.ExitCode()
 }
 
-func dabs(t *testing.T, args ...string) (string, int) {
-	t.Helper()
-	return runDabs(args...)
-}
-
-func dabsStdin(t *testing.T, stdin string, args ...string) string {
-	t.Helper()
-	cmd := exec.Command(dabsBin, args...)
+func runStdin(stdin, cmdline string) string {
+	argv := splitArgs(cmdline)
+	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Stdin = strings.NewReader(stdin)
 	out, _ := cmd.CombinedOutput()
 	return string(out)
+}
+
+// splitArgs splits a command line on whitespace, keeping single/double-quoted
+// runs (with their spaces) as one argument and stripping the quotes — enough
+// to write a `sh -c '…'` command as one readable string.
+func splitArgs(s string) []string {
+	var args []string
+	var cur strings.Builder
+	var quote byte // 0, '\'' or '"'
+	inArg := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			} else {
+				cur.WriteByte(c)
+			}
+		case c == '\'' || c == '"':
+			quote, inArg = c, true
+		case c == ' ' || c == '\t':
+			if inArg {
+				args = append(args, cur.String())
+				cur.Reset()
+				inArg = false
+			}
+			continue
+		default:
+			cur.WriteByte(c)
+		}
+		inArg = true
+	}
+	if inArg {
+		args = append(args, cur.String())
+	}
+	return args
 }
 
 func writeManifest(dir, name, dockerfile string) {
@@ -124,14 +149,14 @@ func writeManifest(dir, name, dockerfile string) {
 // see each other's boxes (they share the isolated HOME).
 func clean(t *testing.T) {
 	t.Helper()
-	runDabs("down", sandboxName, "--force")
-	t.Cleanup(func() { runDabs("down", sandboxName, "--force") })
+	run("dabs down " + sandboxName + " --force")
+	t.Cleanup(func() { run("dabs down " + sandboxName + " --force") })
 }
 
 // up starts a fresh base instance and returns its full name.
 func up(t *testing.T) string {
 	t.Helper()
-	out, code := dabs(t, "up", baseDir)
+	out, code := run("dabs up " + baseDir)
 	if code != 0 {
 		t.Fatalf("up failed (%d): %s", code, out)
 	}
@@ -166,13 +191,13 @@ func wantNotContains(t *testing.T, out, bad string) {
 // --- dispatch ----------------------------------------------------------------
 
 func TestUsageNoArgs(t *testing.T) {
-	out, code := dabs(t)
+	out, code := run("dabs")
 	wantExit(t, 2, code)
 	wantContains(t, out, "usage: dabs")
 }
 
 func TestUnknownCommand(t *testing.T) {
-	out, code := dabs(t, "bogus")
+	out, code := run("dabs bogus")
 	wantExit(t, 2, code)
 	wantContains(t, out, "unknown command")
 }
@@ -180,9 +205,12 @@ func TestUnknownCommand(t *testing.T) {
 // --- build -------------------------------------------------------------------
 
 func TestBuild(t *testing.T) {
+	if os.Getenv("DABS_E2E_PREBUILT") != "" {
+		t.Skip("prebuilt mode: docker build path is tested on the host, not in-box")
+	}
 	d := filepath.Join(home, "bt")
 	writeManifest(d, "bt", "FROM alpine:3.20\nWORKDIR /work\n")
-	out, code := dabs(t, "build", d)
+	out, code := run("dabs build " + d)
 	wantExit(t, 0, code)
 	wantContains(t, out, "bt built")
 }
@@ -191,7 +219,7 @@ func TestBuild(t *testing.T) {
 
 func TestUpPrintsInstance(t *testing.T) {
 	clean(t)
-	out, code := dabs(t, "up", baseDir)
+	out, code := run("dabs up " + baseDir)
 	wantExit(t, 0, code)
 	wantContains(t, out, sandboxName+"-")
 	wantContains(t, out, " up")
@@ -203,14 +231,14 @@ func TestUpCreatesDistinctInstances(t *testing.T) {
 	if a == b {
 		t.Fatalf("two ups gave the same instance: %s", a)
 	}
-	out, _ := dabs(t, "ls")
+	out, _ := run("dabs ls")
 	wantContains(t, out, a)
 	wantContains(t, out, b)
 }
 
 func TestLsEmpty(t *testing.T) {
 	clean(t)
-	out, _ := dabs(t, "ls")
+	out, _ := run("dabs ls")
 	wantContains(t, out, "local")
 	wantContains(t, out, "this machine")
 	wantNotContains(t, out, sandboxName+"-") // none of OUR instances
@@ -219,7 +247,7 @@ func TestLsEmpty(t *testing.T) {
 func TestLsShowsInstanceAndDriver(t *testing.T) {
 	clean(t)
 	i := up(t)
-	out, _ := dabs(t, "ls")
+	out, _ := run("dabs ls")
 	wantContains(t, out, i)
 }
 
@@ -228,7 +256,8 @@ func TestLsShowsInstanceAndDriver(t *testing.T) {
 func TestRunEnvAndWorkdir(t *testing.T) {
 	clean(t)
 	i := up(t)
-	out, _ := dabs(t, "run", i, "--", "sh", "-c", "echo E2E=$E2E cwd=$(pwd); cat /work/marker.txt")
+	out, _ := run("dabs run " + i +
+		" -- sh -c 'echo E2E=$E2E cwd=$(pwd); cat /work/marker.txt'")
 	wantContains(t, out, "E2E=yes")
 	wantContains(t, out, "cwd=/work")
 	wantContains(t, out, "hello-from-image")
@@ -238,7 +267,7 @@ func TestRunPrefixResolves(t *testing.T) {
 	clean(t)
 	i := up(t)
 	prefix := i[:len(i)-6] // drop 6 hex chars; unique with a single instance
-	out, _ := dabs(t, "run", prefix, "--", "echo", "prefix-ok")
+	out, _ := run("dabs run " + prefix + " -- echo prefix-ok")
 	wantContains(t, out, "prefix-ok")
 }
 
@@ -246,28 +275,28 @@ func TestRunAmbiguous(t *testing.T) {
 	clean(t)
 	up(t)
 	up(t)
-	out, _ := dabs(t, "run", sandboxName, "--", "echo", "x")
+	out, _ := run("dabs run " + sandboxName + " -- echo x")
 	wantContains(t, out, "ambiguous")
 }
 
 func TestRunMissing(t *testing.T) {
-	out, _ := dabs(t, "run", "nope-missing", "--", "echo", "x")
+	out, _ := run("dabs run nope-missing -- echo x")
 	wantContains(t, out, "no instance matches")
 }
 
 func TestRunIsolationBetweenInstances(t *testing.T) {
 	clean(t)
 	a, b := up(t), up(t)
-	dabs(t, "run", a, "--", "touch", "/work/only-in-a")
-	out, _ := dabs(t, "run", b, "--", "ls", "/work")
+	run("dabs run " + a + " -- touch /work/only-in-a")
+	out, _ := run("dabs run " + b + " -- ls /work")
 	wantNotContains(t, out, "only-in-a")
 }
 
 func TestRunPersistenceWithinInstance(t *testing.T) {
 	clean(t)
 	i := up(t)
-	dabs(t, "run", i, "--", "touch", "/work/persisted")
-	out, _ := dabs(t, "run", i, "--", "ls", "/work")
+	run("dabs run " + i + " -- touch /work/persisted")
+	out, _ := run("dabs run " + i + " -- ls /work")
 	wantContains(t, out, "persisted")
 }
 
@@ -276,7 +305,7 @@ func TestRunPersistenceWithinInstance(t *testing.T) {
 func TestDownOne(t *testing.T) {
 	clean(t)
 	i := up(t)
-	out, _ := dabs(t, "down", i)
+	out, _ := run("dabs down " + i)
 	wantContains(t, out, i+" down")
 }
 
@@ -284,9 +313,9 @@ func TestDownDryListsAndKeeps(t *testing.T) {
 	clean(t)
 	up(t)
 	up(t)
-	out, _ := dabs(t, "down", sandboxName, "--dry")
+	out, _ := run("dabs down " + sandboxName + " --dry")
 	wantContains(t, out, "matches")
-	ls, _ := dabs(t, "ls")
+	ls, _ := run("dabs ls")
 	if strings.Count(ls, sandboxName+"-") != 2 {
 		t.Fatalf("expected 2 instances after --dry, got:\n%s", ls)
 	}
@@ -296,13 +325,13 @@ func TestDownForceReapsAll(t *testing.T) {
 	clean(t)
 	up(t)
 	up(t)
-	dabs(t, "down", sandboxName, "--force")
-	out, _ := dabs(t, "ls")
+	run("dabs down " + sandboxName + " --force")
+	out, _ := run("dabs ls")
 	wantNotContains(t, out, sandboxName+"-")
 }
 
 func TestDownMissingIsNotError(t *testing.T) {
-	out, code := dabs(t, "down", "nope-missing")
+	out, code := run("dabs down nope-missing")
 	wantExit(t, 0, code)
 	wantContains(t, out, "nothing matches")
 }
@@ -317,7 +346,7 @@ func TestMcpToolsListAndCall(t *testing.T) {
 		`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`,
 		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"dabash","arguments":{"command":"cat /work/marker.txt"}}}`,
 	}, "\n") + "\n"
-	out := dabsStdin(t, req, "mcp", i)
+	out := runStdin(req, "dabs mcp "+i)
 	wantContains(t, out, `"name":"dabash"`)
 	wantContains(t, out, "hello-from-image")
 }
@@ -325,47 +354,47 @@ func TestMcpToolsListAndCall(t *testing.T) {
 // --- servers -----------------------------------------------------------------
 
 func TestServersEmptyShowsLocalOnly(t *testing.T) {
-	out, _ := dabs(t, "servers", "ls")
+	out, _ := run("dabs servers ls")
 	wantContains(t, out, "local")
 	wantContains(t, out, "this machine")
 }
 
 func TestServersAddAndList(t *testing.T) {
-	dabs(t, "servers", "add", "s1", "host1.example")
-	t.Cleanup(func() { runDabs("servers", "rm", "s1") })
-	out, _ := dabs(t, "servers", "ls")
+	run("dabs servers add s1 host1.example")
+	t.Cleanup(func() { run("dabs servers rm s1") })
+	out, _ := run("dabs servers ls")
 	wantContains(t, out, "s1")
 	wantContains(t, out, "ssh host1.example")
 }
 
 func TestServersRemove(t *testing.T) {
-	dabs(t, "servers", "add", "s2", "host2")
-	dabs(t, "servers", "rm", "s2")
-	out, _ := dabs(t, "servers", "ls")
+	run("dabs servers add s2 host2")
+	run("dabs servers rm s2")
+	out, _ := run("dabs servers ls")
 	wantNotContains(t, out, "s2")
 }
 
 // --- install / uninstall -----------------------------------------------------
 
 func TestInstallBarePrintsInstructions(t *testing.T) {
-	out, _ := dabs(t, "install")
+	out, _ := run("dabs install")
 	wantContains(t, out, "dabs install <harness>")
 }
 
 func TestInstallAndUninstallClaude(t *testing.T) {
-	dabsStdin(t, "y\n", "install", "claude")
+	runStdin("y\n", "dabs install claude")
 	if _, err := os.Stat(filepath.Join(home, ".claude/skills/dabs/SKILL.md")); err != nil {
 		t.Fatalf("claude skill not installed: %v", err)
 	}
-	dabsStdin(t, "y\n", "uninstall", "claude")
+	runStdin("y\n", "dabs uninstall claude")
 	if _, err := os.Stat(filepath.Join(home, ".claude/skills/dabs")); !os.IsNotExist(err) {
 		t.Fatalf("claude skill not removed")
 	}
 }
 
 func TestInstallPi(t *testing.T) {
-	dabsStdin(t, "y\n", "install", "pi")
-	t.Cleanup(func() { dabsStdin(t, "y\n", "uninstall", "pi") })
+	runStdin("y\n", "dabs install pi")
+	t.Cleanup(func() { runStdin("y\n", "dabs uninstall pi") })
 	if _, err := os.Stat(filepath.Join(home, ".pi/extensions/dabash/index.ts")); err != nil {
 		t.Fatalf("pi extension not installed: %v", err)
 	}
@@ -376,6 +405,6 @@ func TestInstallPi(t *testing.T) {
 func TestDabsNamePresentInBox(t *testing.T) {
 	clean(t)
 	i := up(t)
-	out, _ := dabs(t, "run", i, "--", "sh", "-c", "echo DABS_NAME=$DABS_NAME")
+	out, _ := run("dabs run " + i + " -- sh -c 'echo DABS_NAME=$DABS_NAME'")
 	wantContains(t, out, "DABS_NAME="+i)
 }

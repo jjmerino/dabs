@@ -7,6 +7,7 @@ import (
 
 	"github.com/jjmerino/dabs/core/config"
 	"github.com/jjmerino/dabs/core/sandbox"
+	dockerdrv "github.com/jjmerino/dabs/core/sandbox/docker"
 	"github.com/jjmerino/dabs/core/sandbox/server"
 )
 
@@ -30,6 +31,20 @@ func buildDrivers() (map[string]sandbox.Driver, []string, error) {
 		return nil, nil, err
 	} else {
 		fmt.Fprintf(os.Stderr, "dabs: warning: local driver unavailable: %v\n", err)
+	}
+
+	// docker driver: selectable via dabs.json "driver":"docker". Registered
+	// whenever docker is present, regardless of platform.
+	if dkr, err := dockerdrv.New(); err == nil {
+		drivers["docker"] = dkr
+		order = append(order, "docker")
+		// INTERNAL privileged variant for running a nested sandbox in the box.
+		// Map-only (NOT in order): it creates the same containers "docker"
+		// already lists/resolves, so listing it too would double-count. It only
+		// differs at `up` time (adds --privileged -v /tmp).
+		if nd, err := dockerdrv.NewNested(); err == nil {
+			drivers["INTERNAL-docker-privileged-for-nested-sandboxing"] = nd
+		}
 	}
 
 	names := make([]string, 0, len(cfg.Servers))

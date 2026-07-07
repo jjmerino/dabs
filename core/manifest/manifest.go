@@ -19,7 +19,7 @@ type Manifest struct {
 	Env        map[string]string `json:"env"`
 	Dockerfile string            `json:"dockerfile"` // build recipe, relative to Dir; default Dockerfile
 	Context    string            `json:"context"`    // build context, relative to Dir; default .
-	Target     string            `json:"target"`     // where sandboxes live: a config target name; default local
+	Target     string            `json:"target"`     // which fleet driver runs the box (e.g. "docker", a server name); default local
 
 	// Dir is the directory containing the manifest file (context for
 	// relative paths). Set by Load, not part of the JSON.

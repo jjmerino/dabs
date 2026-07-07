@@ -23,7 +23,7 @@ On any machine where dabs works (macOS with `container`, or Linux with
 go test -tags e2e ./test/e2e
 ```
 
-`$DABS_BIN` overrides the binary under test (e.g. to test an installed/stable
+`$DABS_UNDER_TEST` overrides the binary under test (e.g. to test an installed/stable
 one instead of building from source). The suite is behind `//go:build e2e`,
 so a plain `go test ./...` stays hermetic and never touches sandboxes.
 

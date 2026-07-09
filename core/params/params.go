@@ -59,6 +59,12 @@ type ServersRemove struct {
 	Name string
 }
 
+// Auth are the inputs to the auth action: log a harness into a persistent host
+// vault so future sandboxes mount it and start already-authenticated.
+type Auth struct {
+	Provider string // "claude"
+}
+
 // Install are the inputs to installing a harness integration. Empty Harness
 // prints instructions.
 type Install struct {
@@ -75,6 +81,7 @@ type Uninstall struct {
 type Actions interface {
 	Build(Build) error
 	Up(Up) error
+	Auth(Auth) error
 	Run(Run) error
 	Down(Down) error
 	Ls(Ls) error

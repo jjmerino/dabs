@@ -13,6 +13,7 @@ type Command struct {
 // CLI's injected Actions; the logic lives in core/actions.
 var Commands = map[string]Command{
 	"build":     {"build the sandbox image from the manifest's Dockerfile", (*CLI).runBuild},
+	"auth":      {"log a harness into a persistent vault future boxes mount: auth claude", (*CLI).runAuth},
 	"up":        {"start a NEW pristine instance (named <name>-<n>)", (*CLI).runUp},
 	"run":       {"execute a command inside an instance: run <instance> -- <cmd…>", (*CLI).runRun},
 	"down":      {"stop + remove instances by name (--force downs all matches)", (*CLI).runDown},
@@ -39,6 +40,13 @@ func (c *CLI) runUninstall(args []string) error {
 		return BadArgsError{Cmd: "uninstall", Reason: "usage: uninstall <pi|claude>"}
 	}
 	return c.actions.Uninstall(params.Uninstall{Harness: args[0]})
+}
+
+func (c *CLI) runAuth(args []string) error {
+	if len(args) != 1 {
+		return BadArgsError{Cmd: "auth", Reason: "usage: auth <provider> (e.g. auth claude)"}
+	}
+	return c.actions.Auth(params.Auth{Provider: args[0]})
 }
 
 func (c *CLI) runBuild(args []string) error {

@@ -60,8 +60,9 @@ type imageMeta struct {
 }
 
 type instanceMeta struct {
-	Workdir string   `json:"workdir"`
-	Env     []string `json:"env"` // K=V, image env merged with spec env
+	Workdir string          `json:"workdir"`
+	Env     []string        `json:"env"`    // K=V, image env merged with spec env
+	Mounts  []sandbox.Mount `json:"mounts"` // live host paths bound into the box
 }
 
 // Build runs `docker build` on the manifest's Dockerfile, then exports the
@@ -157,7 +158,7 @@ func (d Driver) Up(spec sandbox.Spec) (string, error) {
 	// DABS_NAME marks the box: anything running inside can detect it is
 	// sandboxed (the dabash guard keys on this).
 	env = append(env, "DABS_NAME="+instance)
-	meta := instanceMeta{Workdir: spec.Workdir, Env: env}
+	meta := instanceMeta{Workdir: spec.Workdir, Env: env, Mounts: spec.Mounts}
 	if err := writeJSON(filepath.Join(dir, "meta.json"), meta); err != nil {
 		return "", err
 	}
@@ -189,6 +190,14 @@ func (d Driver) enter(instance string, cmd []string) (*exec.Cmd, error) {
 	// The network is shared with the host anyway; share its DNS config too.
 	if _, err := os.Stat("/etc/resolv.conf"); err == nil {
 		args = append(args, "--ro-bind", "/etc/resolv.conf", "/etc/resolv.conf")
+	}
+	// Live host mounts: writes pass through to the host and outlive the box.
+	for _, m := range meta.Mounts {
+		bind := "--bind"
+		if m.RO {
+			bind = "--ro-bind"
+		}
+		args = append(args, bind, m.Host, m.Path)
 	}
 	haveHome := false
 	for _, kv := range meta.Env {

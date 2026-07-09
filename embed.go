@@ -8,3 +8,9 @@ import "embed"
 //
 //go:embed all:harnesses
 var harnessFS embed.FS
+
+// imagesFS bundles dabs-owned build recipes (the auth box, …) INTO the binary,
+// so commands like `dabs auth claude` build their image from any install.
+//
+//go:embed all:images
+var imagesFS embed.FS

@@ -68,6 +68,14 @@ func (d Driver) Up(spec sandbox.Spec) (string, error) {
 	for k, v := range spec.Env {
 		args = append(args, "-e", fmt.Sprintf("%s=%s", k, v))
 	}
+	// Live host mounts: writes pass through to the host and outlive the box.
+	for _, m := range spec.Mounts {
+		mount := fmt.Sprintf("type=bind,source=%s,target=%s", m.Host, m.Path)
+		if m.RO {
+			mount += ",readonly"
+		}
+		args = append(args, "--mount", mount)
+	}
 	args = append(args, imageName(spec.Name), "sleep", "infinity")
 	if out, err := exec.Command("container", args...).CombinedOutput(); err != nil {
 		return "", fmt.Errorf("apple: container run %s: %v: %s", containerName(instance), err, strings.TrimSpace(string(out)))

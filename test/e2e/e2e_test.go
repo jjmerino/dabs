@@ -351,6 +351,32 @@ func TestMcpToolsListAndCall(t *testing.T) {
 	wantContains(t, out, "hello-from-image")
 }
 
+// --- auth --------------------------------------------------------------------
+
+// TestAuthClaudeCapturesCredential drives `dabs auth claude` against the FAKE
+// claude baked into the prebuilt base image (a real CLI named `claude` that
+// only "logs in" by writing a credential). It proves the live vault mount
+// captures that credential onto the host: the login writes inside the box, and
+// it lands in the host vault (~/.dabs/auth/claude) because the vault is
+// bind-mounted read-write. This is the driver's mount support under test —
+// bwrap in the runner. DABS_AUTH_IMAGE reuses the prebuilt image, so nothing
+// is built in-box.
+func TestAuthClaudeCapturesCredential(t *testing.T) {
+	clean(t)
+	t.Setenv("DABS_AUTH_IMAGE", sandboxName) // reuse the prebuilt base image
+
+	out, code := run("dabs auth claude")
+	wantExit(t, 0, code)
+	wantContains(t, out, "claude authenticated")
+
+	cred := filepath.Join(home, ".dabs", "auth", "claude", ".credentials.json")
+	data, err := os.ReadFile(cred)
+	if err != nil {
+		t.Fatalf("credential not captured to vault: %v", err)
+	}
+	wantContains(t, string(data), "fake-token")
+}
+
 // --- servers -----------------------------------------------------------------
 
 func TestServersEmptyShowsLocalOnly(t *testing.T) {

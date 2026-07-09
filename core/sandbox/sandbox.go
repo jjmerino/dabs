@@ -11,12 +11,23 @@
 // which resolves against Ls and then addresses the driver exactly.
 package sandbox
 
+// Mount is a live host directory (or file) attached into a box at Path.
+// Unlike image layers, a mount is read-write-through by default: writes inside
+// the box land on the host and persist past the box. Drivers that cannot mount
+// ignore it; the apple driver honors it.
+type Mount struct {
+	Host string // absolute host path (the source of truth, outlives the box)
+	Path string // absolute path inside the box
+	RO   bool   // mount read-only (box can read but not write back)
+}
+
 // Spec describes the sandbox a driver should provide. It is vendor-neutral:
 // drivers translate it into their own vocabulary.
 type Spec struct {
 	Name    string            // sandbox identity WITHIN dabs; the actual driver image name may vary vendor to vendor
 	Workdir string            // working directory inside the sandbox
 	Env     map[string]string // environment inside the sandbox
+	Mounts  []Mount           // live host paths attached into the box
 }
 
 // Info is one existing sandbox instance as reported by a driver.

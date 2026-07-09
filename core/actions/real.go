@@ -15,12 +15,14 @@ type Real struct {
 	drivers map[string]sandbox.Driver // key "local" + config target names
 	order   []string                  // stable iteration order for ls
 	harness fs.FS                     // bundled harness integrations (for install)
+	images  fs.FS                     // bundled build recipes (for auth, …)
 }
 
-// New returns actions backed by the given drivers (listed in order) and the
-// harness-integration filesystem used by install/uninstall.
-func New(drivers map[string]sandbox.Driver, order []string, harness fs.FS) Real {
-	return Real{drivers: drivers, order: order, harness: harness}
+// New returns actions backed by the given drivers (listed in order), the
+// harness-integration filesystem used by install/uninstall, and the bundled
+// image recipes used by auth.
+func New(drivers map[string]sandbox.Driver, order []string, harness, images fs.FS) Real {
+	return Real{drivers: drivers, order: order, harness: harness, images: images}
 }
 
 // driverFor resolves a manifest's target ("" = local) to its driver.

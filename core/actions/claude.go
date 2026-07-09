@@ -62,19 +62,8 @@ func (r Real) Claude(p params.Claude) error {
 	name := "claude"
 	if img := os.Getenv("DABS_CLAUDE_IMAGE"); img != "" {
 		name = img
-	} else {
-		ctxDir, err := r.stageImage("claude")
-		if err != nil {
-			return err
-		}
-		defer os.RemoveAll(ctxDir)
-		if err := drv.Build(sandbox.BuildSpec{
-			Name:       name,
-			Dockerfile: filepath.Join(ctxDir, "Dockerfile"),
-			Context:    ctxDir,
-		}); err != nil {
-			return err
-		}
+	} else if err := r.buildImageIfMissing(drv, "claude", name); err != nil {
+		return err
 	}
 
 	// 4. A fresh worktree off HEAD, kept after exit.

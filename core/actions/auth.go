@@ -54,19 +54,8 @@ func (r Real) Auth(p params.Auth) error {
 	name := "auth-" + p.Provider
 	if img := os.Getenv("DABS_AUTH_IMAGE"); img != "" {
 		name = img
-	} else {
-		ctxDir, err := r.stageImage(p.Provider)
-		if err != nil {
-			return err
-		}
-		defer os.RemoveAll(ctxDir)
-		if err := drv.Build(sandbox.BuildSpec{
-			Name:       name,
-			Dockerfile: filepath.Join(ctxDir, "Dockerfile"),
-			Context:    ctxDir,
-		}); err != nil {
-			return err
-		}
+	} else if err := r.buildImageIfMissing(drv, p.Provider, name); err != nil {
+		return err
 	}
 
 	instance, err := drv.Up(sandbox.Spec{
@@ -125,6 +114,29 @@ func vaultDir(provider string) (string, error) {
 		return "", fmt.Errorf("auth: home: %w", err)
 	}
 	return filepath.Join(home, ".dabs", "auth", provider), nil
+}
+
+// buildImageIfMissing builds the image named imageName from the bundled recipe
+// for provider, unless the driver reports it is already built — so repeated
+// `dabs auth`/`dabs claude` runs skip the redundant rebuild.
+func (r Real) buildImageIfMissing(drv sandbox.Driver, provider, imageName string) error {
+	built, err := drv.HasImage(imageName)
+	if err != nil {
+		return err
+	}
+	if built {
+		return nil
+	}
+	ctxDir, err := r.stageImage(provider)
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(ctxDir)
+	return drv.Build(sandbox.BuildSpec{
+		Name:       imageName,
+		Dockerfile: filepath.Join(ctxDir, "Dockerfile"),
+		Context:    ctxDir,
+	})
 }
 
 // stageImage materializes the bundled build recipe for a provider into a temp

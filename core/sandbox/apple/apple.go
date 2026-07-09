@@ -83,6 +83,12 @@ func (d Driver) Up(spec sandbox.Spec) (string, error) {
 	return instance, nil
 }
 
+// HasImage reports whether name's image is already built.
+func (Driver) HasImage(name string) (bool, error) {
+	err := exec.Command("container", "image", "inspect", imageName(name)).Run()
+	return err == nil, nil
+}
+
 // find returns the container for an EXACT instance name, or nil.
 func find(instance string, ctns []listedContainer) *listedContainer {
 	want := containerName(instance)

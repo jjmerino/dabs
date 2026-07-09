@@ -345,5 +345,17 @@ func readJSON(path string, v any) error {
 	return json.Unmarshal(raw, v)
 }
 
+// HasImage reports whether name's image (a staged rootfs dir) already exists.
+func (d Driver) HasImage(name string) (bool, error) {
+	_, err := os.Stat(d.imageDir(name))
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, err
+}
+
 // Kind identifies this driver.
 func (Driver) Kind() string { return "bwrap" }

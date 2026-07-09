@@ -140,4 +140,10 @@ func (Driver) Ls() ([]sandbox.Info, error) {
 	return infos, nil
 }
 
+// HasImage reports whether name's image is already built.
+func (Driver) HasImage(name string) (bool, error) {
+	err := exec.Command("docker", "image", "inspect", imageName(name)).Run()
+	return err == nil, nil
+}
+
 func (Driver) Kind() string { return "docker" }

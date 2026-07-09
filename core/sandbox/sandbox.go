@@ -52,6 +52,10 @@ type Driver interface {
 	// Build produces the image for spec.Name's sandboxes, replacing any
 	// previous build.
 	Build(spec BuildSpec) error
+	// HasImage reports whether an image for name has already been built, so a
+	// caller can skip a redundant Build. A driver that cannot cheaply tell
+	// returns false (the caller then builds, which is safe and idempotent).
+	HasImage(name string) (bool, error)
 	// Up creates and starts a NEW pristine instance from spec.Name's
 	// image and returns its instance name.
 	Up(spec Spec) (instance string, err error)

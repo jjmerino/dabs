@@ -404,6 +404,26 @@ func TestClaudeRequiresGitRepo(t *testing.T) {
 	wantContains(t, out, "only supported for git repos")
 }
 
+// TestClaudeEmptyRepoIsRejected proves `dabs claude` fails clearly on a repo
+// with no commits yet (unborn HEAD) — there is nothing to branch a worktree off.
+func TestClaudeEmptyRepoIsRejected(t *testing.T) {
+	clean(t)
+	repo := filepath.Join(home, "emptyrepo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("git", "init", "-q")
+	cmd.Dir = repo
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+	out, code := runIn(repo, "dabs claude")
+	if code == 0 {
+		t.Fatalf("want non-zero exit on a repo with no commits; got 0\n%s", out)
+	}
+	wantContains(t, out, "no commits yet")
+}
+
 // TestClaudeWorktreeAndBox drives `dabs claude` in a real git repo against the
 // FAKE claude in the prebuilt image. It proves the whole flow: a fresh worktree
 // off HEAD is created under the vault dir and mounted into the box (the fake

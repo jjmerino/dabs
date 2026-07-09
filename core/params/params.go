@@ -67,8 +67,10 @@ type Auth struct {
 
 // Claude are the inputs to the claude action: start Claude Code in a fresh box
 // mounted on a git worktree of the current repo, with the shared auth/config
-// vault mounted in. No fields today; the current directory is the repo.
-type Claude struct{}
+// vault mounted in. The current directory is the repo.
+type Claude struct {
+	Shell bool // drop into an interactive shell instead of launching claude (for inspection)
+}
 
 // Install are the inputs to installing a harness integration. Empty Harness
 // prints instructions.

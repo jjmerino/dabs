@@ -26,7 +26,7 @@ import (
 // The box is torn down on exit; the worktree is KEPT (its path printed) so any
 // work done in the box is never silently discarded — the user reviews, merges,
 // or removes it.
-func (r Real) Claude(params.Claude) error {
+func (r Real) Claude(p params.Claude) error {
 	drv, err := r.driverFor("") // direct harness access is a local concern
 	if err != nil {
 		return err
@@ -36,6 +36,10 @@ func (r Real) Claude(params.Claude) error {
 	top, err := gitToplevel()
 	if err != nil {
 		return fmt.Errorf("claude: direct harness access is only supported for git repos")
+	}
+	// A worktree needs a commit to branch off; a fresh repo has an unborn HEAD.
+	if exec.Command("git", "rev-parse", "--verify", "HEAD").Run() != nil {
+		return fmt.Errorf("claude: repo has no commits yet — make an initial commit first")
 	}
 
 	// 2. The config/auth vault must exist to mount; warn if it holds no
@@ -83,6 +87,7 @@ func (r Real) Claude(params.Claude) error {
 	instance, err := drv.Up(sandbox.Spec{
 		Name:    name,
 		Workdir: "/work",
+		Env:     claudeConfigEnv, // reuse the vault as Claude's whole config dir
 		Mounts: []sandbox.Mount{
 			{Host: worktree, Path: "/work"},
 			{Host: vault, Path: authClaudeDir},
@@ -94,7 +99,12 @@ func (r Real) Claude(params.Claude) error {
 	defer drv.Down(instance)
 
 	fmt.Fprintf(os.Stdout, "worktree %s (branch %s) → box\n", worktree, branch)
-	if err := drv.Run(instance, []string{"claude"}); err != nil {
+	entry := []string{"claude"}
+	if p.Shell {
+		entry = []string{"bash"}
+		fmt.Fprintf(os.Stdout, "--shell: dropping into bash (claude not launched)\n")
+	}
+	if err := drv.Run(instance, entry); err != nil {
 		return fmt.Errorf("claude: %w", err)
 	}
 	fmt.Fprintf(os.Stdout, "\nworktree kept at %s (branch %s)\n", worktree, branch)

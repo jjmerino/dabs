@@ -11,10 +11,20 @@ import (
 	"github.com/jjmerino/dabs/core/sandbox"
 )
 
-// authClaudeDir is the box path where Claude Code keeps its credential. The
+// authClaudeDir is the box path where Claude Code keeps ALL its state. The
 // vault is mounted here read-write so the login — and every later token
 // refresh — writes straight through to the host and outlives the box.
+//
+// CLAUDE_CONFIG_DIR points Claude Code at this single directory for everything:
+// without it Claude splits its state, writing the main config to ~/.claude.json
+// (a HOME-level file OUTSIDE this dir) which the mount would not capture, so a
+// later box would find the credential but not the config and re-onboard.
 const authClaudeDir = "/root/.claude"
+
+// claudeConfigEnv makes Claude Code consolidate all its state under the mounted
+// vault, so both `dabs auth claude` (capture) and `dabs claude` (reuse) share
+// one directory.
+var claudeConfigEnv = map[string]string{"CLAUDE_CONFIG_DIR": authClaudeDir}
 
 // Auth logs a harness into a persistent host vault. It boots a throwaway box
 // with the vault mounted live at the harness's credential path, runs the
@@ -62,6 +72,7 @@ func (r Real) Auth(p params.Auth) error {
 	instance, err := drv.Up(sandbox.Spec{
 		Name:    name,
 		Workdir: "/work",
+		Env:     claudeConfigEnv,
 		Mounts:  []sandbox.Mount{{Host: vault, Path: authClaudeDir}},
 	})
 	if err != nil {

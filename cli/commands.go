@@ -51,10 +51,16 @@ func (c *CLI) runAuth(args []string) error {
 }
 
 func (c *CLI) runClaude(args []string) error {
-	if len(args) != 0 {
-		return BadArgsError{Cmd: "claude", Reason: "usage: claude (run inside a git repo)"}
+	p := params.Claude{}
+	for _, a := range args {
+		switch a {
+		case "--shell":
+			p.Shell = true
+		default:
+			return BadArgsError{Cmd: "claude", Reason: "usage: claude [--shell] (run inside a git repo)"}
+		}
 	}
-	return c.actions.Claude(params.Claude{})
+	return c.actions.Claude(p)
 }
 
 func (c *CLI) runBuild(args []string) error {

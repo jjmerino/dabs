@@ -130,4 +130,4 @@ containing `dabs.json`.
 
 ## License
 
-[MIT](LICENSE)
+[Apache 2.0](LICENSE)

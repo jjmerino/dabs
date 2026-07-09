@@ -65,6 +65,11 @@ type Auth struct {
 	Provider string // "claude"
 }
 
+// Claude are the inputs to the claude action: start Claude Code in a fresh box
+// mounted on a git worktree of the current repo, with the shared auth/config
+// vault mounted in. No fields today; the current directory is the repo.
+type Claude struct{}
+
 // Install are the inputs to installing a harness integration. Empty Harness
 // prints instructions.
 type Install struct {
@@ -82,6 +87,7 @@ type Actions interface {
 	Build(Build) error
 	Up(Up) error
 	Auth(Auth) error
+	Claude(Claude) error
 	Run(Run) error
 	Down(Down) error
 	Ls(Ls) error

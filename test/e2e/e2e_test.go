@@ -93,6 +93,16 @@ func run(cmdline string) (string, int) {
 	return string(out), cmd.ProcessState.ExitCode()
 }
 
+// runIn is run with an explicit working directory, for cwd-sensitive commands
+// like `dabs claude` (which keys off the git repo containing the cwd).
+func runIn(dir, cmdline string) (string, int) {
+	argv := splitArgs(cmdline)
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Dir = dir
+	out, _ := cmd.CombinedOutput()
+	return string(out), cmd.ProcessState.ExitCode()
+}
+
 func runStdin(stdin, cmdline string) string {
 	argv := splitArgs(cmdline)
 	cmd := exec.Command(argv[0], argv[1:]...)
@@ -375,6 +385,69 @@ func TestAuthClaudeCapturesCredential(t *testing.T) {
 		t.Fatalf("credential not captured to vault: %v", err)
 	}
 	wantContains(t, string(data), "fake-token")
+}
+
+// --- claude ------------------------------------------------------------------
+
+// TestClaudeRequiresGitRepo proves `dabs claude` refuses to run outside a git
+// repo — direct harness access is a git-repo-only feature.
+func TestClaudeRequiresGitRepo(t *testing.T) {
+	clean(t)
+	dir := filepath.Join(home, "notrepo")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out, code := runIn(dir, "dabs claude")
+	if code == 0 {
+		t.Fatalf("want non-zero exit outside a git repo; got 0\n%s", out)
+	}
+	wantContains(t, out, "only supported for git repos")
+}
+
+// TestClaudeWorktreeAndBox drives `dabs claude` in a real git repo against the
+// FAKE claude in the prebuilt image. It proves the whole flow: a fresh worktree
+// off HEAD is created under the vault dir and mounted into the box (the fake
+// sees the repo's file at /work), the box runs, and the worktree is KEPT after
+// exit. DABS_CLAUDE_IMAGE reuses the prebuilt image, so nothing is built in-box.
+func TestClaudeWorktreeAndBox(t *testing.T) {
+	clean(t)
+	t.Setenv("DABS_CLAUDE_IMAGE", sandboxName) // reuse the prebuilt base image
+
+	repo := filepath.Join(home, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range [][]string{
+		{"git", "init", "-q"},
+		{"git", "config", "user.email", "e2e@dabs.test"},
+		{"git", "config", "user.name", "e2e"},
+	} {
+		cmd := exec.Command(c[0], c[1:]...)
+		cmd.Dir = repo
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%v: %v\n%s", c, err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repo, "marker.txt"), []byte("in-worktree\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range [][]string{{"git", "add", "-A"}, {"git", "commit", "-qm", "init"}} {
+		cmd := exec.Command(c[0], c[1:]...)
+		cmd.Dir = repo
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%v: %v\n%s", c, err, out)
+		}
+	}
+
+	out, code := runIn(repo, "dabs claude")
+	wantExit(t, 0, code)
+	wantContains(t, out, "worktree kept at")
+
+	// A worktree was created under the vault worktrees dir and outlives the box.
+	entries, err := os.ReadDir(filepath.Join(home, ".dabs", "worktrees"))
+	if err != nil || len(entries) == 0 {
+		t.Fatalf("expected a kept worktree under ~/.dabs/worktrees; err=%v entries=%v", err, entries)
+	}
 }
 
 // --- servers -----------------------------------------------------------------

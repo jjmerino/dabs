@@ -20,6 +20,7 @@ var Commands = map[string]Command{
 	"auth":      {"log a harness into a persistent vault future boxes mount: auth claude", (*CLI).runAuth},
 	"recipe":    {"run a named recipe box: recipe <name> (e.g. recipe claude)", (*CLI).runRecipe},
 	"recipes":   {"list the known recipes and what each mounts", (*CLI).runRecipes},
+	"worktrees": {"inspect/reap recipe worktrees: worktrees [ls | diff <name> | rm <name> | prune] [--force]", (*CLI).runWorktrees},
 	"up":        {"start a NEW box from a manifest (dir or dabs.json); to run a recipe use `recipe`", (*CLI).runUp},
 	"run":       {"execute a command inside an instance: run <instance> -- <cmd…>", (*CLI).runRun},
 	"down":      {"stop + remove instances by name (--force downs all matches)", (*CLI).runDown},
@@ -60,6 +61,28 @@ func (c *CLI) runRecipe(args []string) error {
 		return BadArgsError{Cmd: "recipe", Reason: "usage: recipe <name> (see: dabs recipes)"}
 	}
 	return c.actions.Recipe(params.Recipe{Name: args[0]})
+}
+
+func (c *CLI) runWorktrees(args []string) error {
+	p := params.Worktrees{}
+	var pos []string
+	for _, a := range args {
+		if a == "--force" || a == "-f" {
+			p.Force = true
+			continue
+		}
+		pos = append(pos, a)
+	}
+	if len(pos) > 2 {
+		return BadArgsError{Cmd: "worktrees", Reason: "usage: worktrees [ls | diff <name> | rm <name> | prune] [--force]"}
+	}
+	if len(pos) > 0 {
+		p.Sub = pos[0]
+	}
+	if len(pos) > 1 {
+		p.Name = pos[1]
+	}
+	return c.actions.Worktrees(p)
 }
 
 func (c *CLI) runRecipes(args []string) error {

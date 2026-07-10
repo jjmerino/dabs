@@ -71,6 +71,15 @@ type fakeData struct {
 	noCommits map[string]bool   // GitHasCommits false for these tops
 	worktrees []string          // recorded GitAddWorktree dests
 	mkdirs    []string
+	dirs      map[string][]string // ReadDir results
+	states    map[string]wtState  // GitState by worktree path
+	removed   []string            // recorded GitRemoveWorktree
+}
+
+type wtState struct {
+	branch string
+	dirty  bool
+	ahead  int
 }
 
 func (f *fakeData) HomeDir() (string, error) { return f.home, nil }
@@ -109,6 +118,16 @@ func (f *fakeData) GitToplevel(dir string) (string, error) {
 func (f *fakeData) GitHasCommits(top string) bool { return !f.noCommits[top] }
 func (f *fakeData) GitAddWorktree(_, _, dest string) error {
 	f.worktrees = append(f.worktrees, dest)
+	return nil
+}
+func (f *fakeData) ReadDir(dir string) ([]string, error) { return f.dirs[dir], nil }
+func (f *fakeData) GitState(wt string) (string, bool, int, error) {
+	s := f.states[wt]
+	return s.branch, s.dirty, s.ahead, nil
+}
+func (f *fakeData) GitDiff(wt string) (string, error) { return "diff of " + wt, nil }
+func (f *fakeData) GitRemoveWorktree(wt string) error {
+	f.removed = append(f.removed, wt)
 	return nil
 }
 

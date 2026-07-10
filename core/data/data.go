@@ -35,4 +35,15 @@ type Data interface {
 	// GitAddWorktree creates a new worktree of top at dest on a new branch off
 	// HEAD.
 	GitAddWorktree(top, branch, dest string) error
+	// ReadDir returns the entry names of dir (empty if dir is absent).
+	ReadDir(dir string) ([]string, error)
+	// GitState reports a worktree's branch and whether it holds unreviewed work:
+	// dirty = uncommitted changes; ahead = commits on its branch not in the
+	// repo's checked-out branch. A worktree with neither is safe to drop.
+	GitState(worktree string) (branch string, dirty bool, ahead int, err error)
+	// GitDiff returns the worktree's changes (uncommitted + commits ahead of
+	// base) as a unified diff.
+	GitDiff(worktree string) (string, error)
+	// GitRemoveWorktree removes the worktree and deletes its branch.
+	GitRemoveWorktree(worktree string) error
 }

@@ -23,6 +23,7 @@ func (f *fakeActions) Up(p params.Up) error                     { f.up = append(
 func (f *fakeActions) Auth(params.Auth) error                   { return f.err }
 func (f *fakeActions) Recipe(params.Recipe) error               { return f.err }
 func (f *fakeActions) Recipes(params.Recipes) error             { return f.err }
+func (f *fakeActions) Worktrees(params.Worktrees) error         { return f.err }
 func (f *fakeActions) Run(p params.Run) error                   { f.run = append(f.run, p); return f.err }
 func (f *fakeActions) Down(p params.Down) error                 { f.down = append(f.down, p); return f.err }
 func (f *fakeActions) Ls(p params.Ls) error                     { f.ls = append(f.ls, p); return f.err }

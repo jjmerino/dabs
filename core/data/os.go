@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -38,6 +39,93 @@ func (OS) GitAddWorktree(top, branch, dest string) error {
 	cmd := exec.Command("git", "-C", top, "worktree", "add", "-b", branch, dest, "HEAD")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git worktree add: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func (OS) ReadDir(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	return names, nil
+}
+
+// baseBranch returns the branch checked out in the worktree's main repo — the
+// point new work is measured against.
+func baseBranch(worktree string) string {
+	out, err := exec.Command("git", "-C", worktree, "worktree", "list", "--porcelain").Output()
+	if err != nil {
+		return ""
+	}
+	// First "branch refs/heads/<x>" line belongs to the main worktree.
+	for _, line := range strings.Split(string(out), "\n") {
+		if b, ok := strings.CutPrefix(line, "branch refs/heads/"); ok {
+			return b
+		}
+	}
+	return ""
+}
+
+func (OS) GitState(worktree string) (string, bool, int, error) {
+	branch, err := exec.Command("git", "-C", worktree, "rev-parse", "--abbrev-ref", "HEAD").Output()
+	if err != nil {
+		return "", false, 0, fmt.Errorf("git: %v", err)
+	}
+	status, err := exec.Command("git", "-C", worktree, "status", "--porcelain").Output()
+	if err != nil {
+		return "", false, 0, fmt.Errorf("git status: %v", err)
+	}
+	dirty := len(strings.TrimSpace(string(status))) > 0
+	ahead := 0
+	if base := baseBranch(worktree); base != "" {
+		if out, err := exec.Command("git", "-C", worktree, "rev-list", "--count", base+"..HEAD").Output(); err == nil {
+			fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &ahead)
+		}
+	}
+	return strings.TrimSpace(string(branch)), dirty, ahead, nil
+}
+
+func (OS) GitDiff(worktree string) (string, error) {
+	var b strings.Builder
+	if base := baseBranch(worktree); base != "" {
+		out, _ := exec.Command("git", "-C", worktree, "diff", base+"...HEAD").Output()
+		b.Write(out)
+	}
+	out, _ := exec.Command("git", "-C", worktree, "diff", "HEAD").Output() // uncommitted
+	b.Write(out)
+	return b.String(), nil
+}
+
+func (OS) GitRemoveWorktree(worktree string) error {
+	branch, _, _, _ := OS{}.GitState(worktree)
+	// Resolve the main repo (via the shared git dir) before deleting anything.
+	common, _ := exec.Command("git", "-C", worktree, "rev-parse", "--git-common-dir").Output()
+	cd := strings.TrimSpace(string(common))
+	if cd != "" && !filepath.IsAbs(cd) {
+		cd = filepath.Join(worktree, cd)
+	}
+	repo := ""
+	if cd != "" {
+		repo = filepath.Dir(cd) // common dir is <repo>/.git
+	}
+	// Delete the worktree directory outright — the most reliable removal — then
+	// let git drop its now-dangling registration and the branch.
+	if err := os.RemoveAll(worktree); err != nil {
+		return fmt.Errorf("remove worktree dir %s: %w", worktree, err)
+	}
+	if repo != "" {
+		exec.Command("git", "-C", repo, "worktree", "prune").Run()
+		if branch != "" {
+			exec.Command("git", "-C", repo, "branch", "-D", branch).Run()
+		}
 	}
 	return nil
 }

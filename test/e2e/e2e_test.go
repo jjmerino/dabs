@@ -578,6 +578,42 @@ func TestRecipeNewWorktree(t *testing.T) {
 	vaultHasToken(t)
 }
 
+// TestWorktreesInspectAndGuardedReap: a recipe leaves a worktree with the box's
+// uncommitted write; `dabs worktrees` lists it as having work, `rm` refuses to
+// discard it, and `rm --force` reaps it.
+func TestWorktreesInspectAndGuardedReap(t *testing.T) {
+	clean(t)
+	installRecipes(t)
+	os.RemoveAll(filepath.Join(home, ".dabs", "worktrees")) // isolate from other tests' kept worktrees
+	repo := filepath.Join(home, "wtreap")
+	gitRepo(t, repo)
+	if _, code := runIn(repo, "dabs recipe claude-new-worktree"); code != 0 {
+		t.Fatalf("recipe failed")
+	}
+	entries, err := os.ReadDir(filepath.Join(home, ".dabs", "worktrees"))
+	if err != nil || len(entries) == 0 {
+		t.Fatalf("no worktree created: %v", err)
+	}
+	name := entries[0].Name()
+
+	out, code := run("dabs worktrees")
+	wantExit(t, 0, code)
+	wantContains(t, out, "HAS WORK") // the box wrote from-box.txt (uncommitted)
+
+	out, code = run("dabs worktrees rm " + name)
+	if code == 0 {
+		t.Fatalf("rm removed a worktree with unreviewed work without --force\n%s", out)
+	}
+	wantContains(t, out, "unreviewed work")
+
+	out, code = run("dabs worktrees rm " + name + " --force")
+	wantExit(t, 0, code)
+	wantContains(t, out, "removed")
+	if e, _ := os.ReadDir(filepath.Join(home, ".dabs", "worktrees")); len(e) != 0 {
+		t.Fatalf("worktree not reaped after --force: %v", e)
+	}
+}
+
 // --- cli documentation & robustness (dumb-user findings) ---------------------
 
 // TestHelpRendersAndPointsToFull: `dabs --help` is not an error — it prints

@@ -76,6 +76,13 @@ type Recipes struct {
 	Print bool // print the full bundled recipes YAML (the authoring format) instead of a summary
 }
 
+// Worktrees are the inputs to inspecting/reaping recipe-created git worktrees.
+type Worktrees struct {
+	Sub   string // "" | "ls" | "diff" | "rm" | "prune"
+	Name  string // for diff/rm
+	Force bool   // approve discarding a worktree that holds unreviewed work
+}
+
 // Install are the inputs to installing a harness integration. Empty Harness
 // prints instructions.
 type Install struct {
@@ -95,6 +102,7 @@ type Actions interface {
 	Auth(Auth) error
 	Recipe(Recipe) error
 	Recipes(Recipes) error
+	Worktrees(Worktrees) error
 	Run(Run) error
 	Down(Down) error
 	Ls(Ls) error

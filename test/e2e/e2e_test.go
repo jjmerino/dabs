@@ -492,6 +492,7 @@ func TestRecipesLists(t *testing.T) {
 	out, code := run("dabs recipes")
 	wantExit(t, 0, code)
 	wantContains(t, out, "claude")              // bundled
+	wantContains(t, out, "fresh-claude")        // bundled (logged-out throwaway)
 	wantContains(t, out, "claude-mounted")      // user
 	wantContains(t, out, "claude-isolated")     // user
 	wantContains(t, out, "claude-new-worktree") // user

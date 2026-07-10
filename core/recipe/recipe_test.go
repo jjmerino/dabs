@@ -15,7 +15,7 @@ func TestBundledRegistryIsValid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bundled recipes.yaml does not parse: %v", err)
 	}
-	for _, want := range []string{"shell", "claude"} {
+	for _, want := range []string{"shell", "claude", "fresh-claude"} {
 		rec, err := reg.Get(want)
 		if err != nil {
 			t.Fatalf("bundled registry missing %q: %v", want, err)
@@ -30,6 +30,35 @@ func TestBundledRegistryIsValid(t *testing.T) {
 			if _, _, err := s.Kind(); err != nil {
 				t.Errorf("recipe %q has an invalid source: %v", want, err)
 			}
+		}
+	}
+}
+
+// fresh-claude is the throwaway-auth box: it must mount NOTHING from the
+// credential vault (~/.dabs/auth/claude), so `claude` in the box stays logged
+// out and forces a fresh /login. If any source ever points at the vault, the
+// box would leak/refresh the real session — the whole point is defeated.
+func TestFreshClaudeMountsNoVault(t *testing.T) {
+	reg, err := recipe.Parse(recipe.Bundled)
+	if err != nil {
+		t.Fatalf("bundled recipes.yaml does not parse: %v", err)
+	}
+	rec, err := reg.Get("fresh-claude")
+	if err != nil {
+		t.Fatalf("bundled registry missing fresh-claude: %v", err)
+	}
+	for _, s := range rec.Sources {
+		for _, origin := range []string{s.Mount, s.Worktree, s.Copy} {
+			if strings.Contains(origin, ".dabs/auth") || strings.Contains(origin, "auth/claude") {
+				t.Errorf("fresh-claude source %+v references the credential vault — it must mount nothing from it", s)
+			}
+		}
+	}
+	// Belt and braces: no source at all may be a mount (mounts are the only live
+	// bind back to the host; a logged-out box needs only the worktree of code).
+	for _, s := range rec.Sources {
+		if s.Mount != "" {
+			t.Errorf("fresh-claude has a live mount %q → %q; it must not bind any host credential path", s.Mount, s.Path)
 		}
 	}
 }

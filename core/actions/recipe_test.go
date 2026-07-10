@@ -436,6 +436,54 @@ func TestRecipeUnknownImageErrors(t *testing.T) {
 	}
 }
 
+// CONTRACT: `dabs recipe` with no name runs the project dabs.yaml's default.
+func TestRecipeRunsLocalDefault(t *testing.T) {
+	fd := baseData()
+	fd.files = map[string][]byte{"dabs.yaml": []byte(`default: dev
+recipes:
+  dev:
+    image: img
+    command: [devcmd]
+    sources:
+      - mount: /d
+        path: /work
+`)}
+	fd.exists["/d"] = true
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	if err := newReal("", fd, drv).Recipe(params.Recipe{}); err != nil { // no name
+		t.Fatalf("default recipe: %v", err)
+	}
+	if len(drv.runs) != 1 || drv.runs[0][0] != "devcmd" {
+		t.Errorf("default not run: %v", drv.runs)
+	}
+}
+
+// CONTRACT: no name and no default is an error that forces a choice — never a
+// silent pick.
+func TestRecipeNoNameNoDefaultErrors(t *testing.T) {
+	fd := baseData()
+	err := newReal("", fd, &fakeDriver{}).Recipe(params.Recipe{})
+	if err == nil || !strings.Contains(err.Error(), "no default") {
+		t.Fatalf("want no-default error, got %v", err)
+	}
+}
+
+// CONTRACT: a project dabs.yaml recipe overrides a global one of the same name.
+func TestLocalRecipeOverridesGlobal(t *testing.T) {
+	fd := baseData()
+	fd.files = map[string][]byte{
+		"/home/t/.dabs/recipes.yaml": []byte("recipes:\n  x:\n    image: img\n    command: [fromglobal]\n"),
+		"dabs.yaml":                  []byte("recipes:\n  x:\n    image: img\n    command: [fromlocal]\n"),
+	}
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	if err := newReal("", fd, drv).Recipe(params.Recipe{Name: "x"}); err != nil {
+		t.Fatalf("recipe x: %v", err)
+	}
+	if len(drv.runs) != 1 || drv.runs[0][0] != "fromlocal" {
+		t.Errorf("local recipe did not win: %v", drv.runs)
+	}
+}
+
 // CONTRACT: the box is always torn down, even when its command fails.
 func TestRecipeDownEvenWhenRunFails(t *testing.T) {
 	y := `recipes:

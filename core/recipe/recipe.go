@@ -19,8 +19,10 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// Registry is the whole recipes file: one top-level `recipes:` map.
+// Registry is a recipes file: a top-level `recipes:` map and an optional
+// `default:` naming the recipe `dabs recipe` runs when given no name.
 type Registry struct {
+	Default string            `json:"default,omitempty"`
 	Recipes map[string]Recipe `json:"recipes"`
 }
 
@@ -133,8 +135,12 @@ func Parse(data []byte) (Registry, error) {
 	return reg, nil
 }
 
-// Merge overlays other onto reg, letting other's recipes win by name (this is
-// how a user's ~/.dabs/recipes.yaml overrides the bundled defaults).
-func (reg Registry) Merge(other Registry) {
+// Merge overlays other onto reg: other's recipes win by name, and its `default`
+// (if set) takes over. This is the precedence chain bundled → ~/.dabs →
+// local dabs.yaml, each merged onto the last.
+func (reg *Registry) Merge(other Registry) {
 	maps.Copy(reg.Recipes, other.Recipes)
+	if other.Default != "" {
+		reg.Default = other.Default
+	}
 }

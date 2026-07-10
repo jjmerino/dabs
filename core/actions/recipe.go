@@ -27,12 +27,19 @@ func (r Real) Recipe(p params.Recipe) error {
 	if err != nil {
 		return err
 	}
-	rec, err := reg.Get(p.Name)
+	name := p.Name
+	if name == "" {
+		if reg.Default == "" {
+			return fmt.Errorf("no recipe given and no default set — choose one: %s (or set `default:` in dabs.yaml)", strings.Join(reg.Names(), ", "))
+		}
+		name = reg.Default
+	}
+	rec, err := reg.Get(name)
 	if err != nil {
 		return err
 	}
 	if len(rec.Command) == 0 {
-		return fmt.Errorf("recipe %q: no command to run", p.Name)
+		return fmt.Errorf("recipe %q: no command to run", name)
 	}
 	drv, err := r.driverFor("") // recipes are a local concern
 	if err != nil {
@@ -48,21 +55,21 @@ func (r Real) Recipe(p params.Recipe) error {
 	for i, s := range rec.Sources {
 		kind, origin, err := s.Kind()
 		if err != nil {
-			return fmt.Errorf("recipe %q: %w", p.Name, err)
+			return fmt.Errorf("recipe %q: %w", name, err)
 		}
 		host, err := r.expandPath(origin)
 		if err != nil {
-			return fmt.Errorf("recipe %q: %w", p.Name, err)
+			return fmt.Errorf("recipe %q: %w", name, err)
 		}
 		kinds[i], origins[i] = kind, host
 		switch kind {
 		case "worktree":
 			top, err := r.data.GitToplevel(host)
 			if err != nil {
-				return fmt.Errorf("recipe %q: worktree %s: %w", p.Name, s.Path, err)
+				return fmt.Errorf("recipe %q: worktree %s: %w", name, s.Path, err)
 			}
 			if !r.data.GitHasCommits(top) {
-				return fmt.Errorf("recipe %q: worktree %s: repo has no commits yet — make an initial commit first", p.Name, s.Path)
+				return fmt.Errorf("recipe %q: worktree %s: repo has no commits yet — make an initial commit first", name, s.Path)
 			}
 			tops[i] = top
 		case "mount", "copy":
@@ -70,14 +77,14 @@ func (r Real) Recipe(p params.Recipe) error {
 			// mistake (e.g. `dabs recipe claude` before `dabs auth claude`),
 			// and gives a cryptic driver failure if passed through.
 			if _, err := r.data.Stat(host); errors.Is(err, fs.ErrNotExist) {
-				return fmt.Errorf("recipe %q: %s source %s does not exist", p.Name, kind, host)
+				return fmt.Errorf("recipe %q: %s source %s does not exist", name, kind, host)
 			} else if err != nil {
-				return fmt.Errorf("recipe %q: %s source %s: %w", p.Name, kind, host, err)
+				return fmt.Errorf("recipe %q: %s source %s: %w", name, kind, host, err)
 			}
 		}
 	}
 
-	image, err := r.ensureImage(drv, p.Name, rec.Image)
+	image, err := r.ensureImage(drv, name, rec.Image)
 	if err != nil {
 		return err
 	}
@@ -121,7 +128,7 @@ func (r Real) Recipe(p params.Recipe) error {
 	for _, c := range copies {
 		script := fmt.Sprintf("mkdir -p '%s' && cp -a '%s/.' '%s/'", c.dest, c.src, c.dest)
 		if out, err := drv.Exec(instance, []string{"sh", "-c", script}); err != nil {
-			return fmt.Errorf("recipe %q: copy into %s: %w: %s", p.Name, c.dest, err, out)
+			return fmt.Errorf("recipe %q: copy into %s: %w: %s", name, c.dest, err, out)
 		}
 	}
 
@@ -129,7 +136,7 @@ func (r Real) Recipe(p params.Recipe) error {
 		fmt.Fprintf(os.Stdout, "worktree %s → box\n", k)
 	}
 	if err := drv.Run(instance, rec.Command); err != nil {
-		return fmt.Errorf("recipe %q: %w", p.Name, err)
+		return fmt.Errorf("recipe %q: %w", name, err)
 	}
 	for _, k := range kept {
 		fmt.Fprintf(os.Stdout, "\nworktree kept: %s\n", k)
@@ -161,7 +168,11 @@ func (r Real) Recipes(p params.Recipes) error {
 		if img == "" {
 			img = "build:" + rec.Image.Dockerfile
 		}
-		fmt.Fprintf(os.Stdout, "%-14s image=%s cmd=%s\n", n, img, strings.Join(rec.Command, " "))
+		mark := ""
+		if n == reg.Default {
+			mark = " (default)"
+		}
+		fmt.Fprintf(os.Stdout, "%-14s image=%s cmd=%s%s\n", n, img, strings.Join(rec.Command, " "), mark)
 		for _, s := range rec.Sources {
 			if kind, origin, err := s.Kind(); err == nil {
 				fmt.Fprintf(os.Stdout, "  %-8s %s → %s\n", kind, origin, s.Path)
@@ -173,31 +184,40 @@ func (r Real) Recipes(p params.Recipes) error {
 
 type copyOp struct{ src, dest string }
 
-// loadRegistry parses the bundled recipes and overlays the user's
-// ~/.dabs/recipes.yaml (missing file is fine). All IO goes through the data seam.
+// loadRegistry builds the effective registry: bundled defaults, overlaid by the
+// user's ~/.dabs/recipes.yaml, overlaid by the project's ./dabs.yaml. Later
+// sources win (recipes by name, and `default`). Missing files are fine.
 func (r Real) loadRegistry() (recipe.Registry, error) {
 	reg, err := recipe.Parse(recipe.Bundled)
 	if err != nil {
 		return recipe.Registry{}, fmt.Errorf("recipe: bundled registry: %w", err)
 	}
-	home, err := r.data.HomeDir()
-	if err != nil {
-		return reg, nil
+	if home, err := r.data.HomeDir(); err == nil {
+		if err := r.mergeRecipeFile(&reg, filepath.Join(home, ".dabs", "recipes.yaml")); err != nil {
+			return reg, err
+		}
 	}
-	userPath := filepath.Join(home, ".dabs", "recipes.yaml")
-	b, err := r.data.ReadFile(userPath)
-	if errors.Is(err, fs.ErrNotExist) {
-		return reg, nil
+	if err := r.mergeRecipeFile(&reg, "dabs.yaml"); err != nil { // project-local, cwd
+		return reg, err
 	}
-	if err != nil {
-		return reg, fmt.Errorf("recipe: %s: %w", userPath, err)
-	}
-	user, err := recipe.Parse(b)
-	if err != nil {
-		return reg, fmt.Errorf("recipe: %s: %w", userPath, err)
-	}
-	reg.Merge(user)
 	return reg, nil
+}
+
+// mergeRecipeFile overlays a recipes file onto reg if it exists.
+func (r Real) mergeRecipeFile(reg *recipe.Registry, path string) error {
+	b, err := r.data.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("recipe: %s: %w", path, err)
+	}
+	parsed, err := recipe.Parse(b)
+	if err != nil {
+		return fmt.Errorf("recipe: %s: %w", path, err)
+	}
+	reg.Merge(parsed)
+	return nil
 }
 
 // ensureImage makes the recipe's image available and returns the name to run.

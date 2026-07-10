@@ -614,6 +614,29 @@ func TestWorktreesInspectAndGuardedReap(t *testing.T) {
 	}
 }
 
+// TestRecipeLocalDabsYamlDefault: a project's ./dabs.yaml adds recipes and a
+// default; `dabs recipe` with no name runs the default.
+func TestRecipeLocalDabsYamlDefault(t *testing.T) {
+	clean(t)
+	dir := filepath.Join(home, "proj")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	yaml := "default: probe\nrecipes:\n  probe:\n    image: " + sandboxName +
+		"\n    command: [sh, -c, \"echo LOCAL_DEFAULT_RAN\"]\n"
+	if err := os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, code := runIn(dir, "dabs recipes")
+	wantExit(t, 0, code)
+	wantContains(t, out, "probe")
+	wantContains(t, out, "(default)")
+
+	out, code = runIn(dir, "dabs recipe") // no name → default
+	wantExit(t, 0, code)
+	wantContains(t, out, "LOCAL_DEFAULT_RAN")
+}
+
 // --- cli documentation & robustness (dumb-user findings) ---------------------
 
 // TestHelpRendersAndPointsToFull: `dabs --help` is not an error — it prints

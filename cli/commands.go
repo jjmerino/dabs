@@ -57,10 +57,14 @@ func (c *CLI) runAuth(args []string) error {
 }
 
 func (c *CLI) runRecipe(args []string) error {
-	if len(args) != 1 {
-		return BadArgsError{Cmd: "recipe", Reason: "usage: recipe <name> (see: dabs recipes)"}
+	if len(args) > 1 {
+		return BadArgsError{Cmd: "recipe", Reason: "usage: recipe [<name>] (no name runs the dabs.yaml default; see: dabs recipes)"}
 	}
-	return c.actions.Recipe(params.Recipe{Name: args[0]})
+	p := params.Recipe{}
+	if len(args) == 1 {
+		p.Name = args[0]
+	}
+	return c.actions.Recipe(p)
 }
 
 func (c *CLI) runWorktrees(args []string) error {

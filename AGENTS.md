@@ -38,7 +38,21 @@ via a recipe (`dabs recipe claude`).
            path: /work
    ```
 
-4. **Reap when done:**
+   Recipes resolve **bundled → `~/.dabs/recipes.yaml` (global) → `./dabs.yaml`
+   (project)**, later winning. A project's `dabs.yaml` can add recipes and set a
+   `default:`; `dabs recipe` with no name runs that default (no default set → it
+   errors and lists the choices, so an agent must pick). `dabs.json` is
+   unchanged — the low-level single-box manifest for `dabs build`/`up`.
+
+4. **Reap the worktrees an agent left** (recipes keep them):
+
+   ```bash
+   dabs worktrees               # list them; HAS WORK vs clean
+   dabs worktrees diff <name>   # what the agent changed
+   dabs worktrees rm <name>     # or `prune`; refuses unreviewed work unless --force
+   ```
+
+5. **Reap boxes when done:**
 
    ```bash
    dabs down <instance>            # or: dabs down <name> --force  (all instances)

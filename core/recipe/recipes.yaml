@@ -37,3 +37,25 @@ recipes:
       # `worktree:` for `copy:` to hand the box a throwaway snapshot instead.
       - worktree: .
         path: /work
+
+  # dabs recipe fresh-claude — a DETACHED, logged-OUT Claude Code box. Unlike
+  # `claude` above, it mounts NOTHING from the ~/.dabs/auth/claude vault: the box
+  # boots with an empty /root/.claude, so `claude` reports "Not logged in" and
+  # forces a fresh `/login`. That login — and everything else the box writes —
+  # is box-local and dies with the box; it NEVER touches your real vault or leaks
+  # your session history/config to (or from) the host.
+  #
+  # Agents: use when you want an isolated agent with throwaway/fresh auth — e.g.
+  # reviewing UNTRUSTED code, where you must not expose your real Claude session.
+  fresh-claude:
+    image: claude                         # same bundled image as `claude` (has Claude Code)
+    command: [claude]                     # drops straight into the box → the /login flow
+    env:
+      # Pin ALL Claude state to a box-local dir. Nothing is mounted here, so the
+      # dir starts empty (logged out) and is destroyed with the box — no vault.
+      CLAUDE_CONFIG_DIR: /root/.claude
+    sources:
+      # ONLY the code — a fresh git branch off HEAD, mounted live. Deliberately
+      # NO ~/.dabs/auth/claude mount: that is what keeps this box logged out.
+      - worktree: .
+        path: /work

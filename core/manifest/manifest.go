@@ -4,13 +4,33 @@ package manifest
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 )
 
 // DefaultFilename is the manifest filename looked up when given a directory.
 const DefaultFilename = "dabs.json"
+
+// friendlyType turns a Go type from a json decode error into plain words, so a
+// bad manifest says "must be an object" instead of leaking map[string]string.
+func friendlyType(t reflect.Type) string {
+	switch t.Kind() {
+	case reflect.Map, reflect.Struct:
+		return "an object"
+	case reflect.Slice, reflect.Array:
+		return "a list"
+	case reflect.String:
+		return "text"
+	case reflect.Bool:
+		return "true or false"
+	default:
+		return t.String()
+	}
+}
 
 // Manifest describes a program's sandbox.
 type Manifest struct {
@@ -35,11 +55,18 @@ func Load(pathOrDir string) (Manifest, error) {
 		path = filepath.Join(pathOrDir, DefaultFilename)
 	}
 	raw, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return m, fmt.Errorf("no manifest at %q — build/up take a manifest file or a directory containing a dabs.json (to run a recipe, use: dabs recipe <name>)", pathOrDir)
+	}
 	if err != nil {
 		return m, fmt.Errorf("manifest: %w", err)
 	}
 	if err := json.Unmarshal(raw, &m); err != nil {
-		return m, fmt.Errorf("manifest %s: %w", path, err)
+		var te *json.UnmarshalTypeError
+		if errors.As(err, &te) {
+			return m, fmt.Errorf("manifest %s: field %q must be %s (got %s)", path, te.Field, friendlyType(te.Type), te.Value)
+		}
+		return m, fmt.Errorf("manifest %s: invalid JSON: %w", path, err)
 	}
 	if m.Name == "" {
 		return m, fmt.Errorf("manifest %s: missing required 'name'", path)

@@ -72,7 +72,9 @@ type Recipe struct {
 }
 
 // Recipes are the inputs to listing the known recipes.
-type Recipes struct{}
+type Recipes struct {
+	Print bool // print the full bundled recipes YAML (the authoring format) instead of a summary
+}
 
 // Install are the inputs to installing a harness integration. Empty Harness
 // prints instructions.

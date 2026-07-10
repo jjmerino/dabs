@@ -139,7 +139,13 @@ func (r Real) Recipe(p params.Recipe) error {
 
 // Recipes lists the known recipes and, for each, its image and what it places
 // into the box — so a user (or agent) can see what a recipe does before running.
-func (r Real) Recipes(params.Recipes) error {
+func (r Real) Recipes(p params.Recipes) error {
+	// --print dumps the bundled recipes YAML — the authoring format, comments
+	// and all — so `~/.dabs/recipes.yaml` can be written without guessing.
+	if p.Print {
+		os.Stdout.Write(recipe.Bundled)
+		return nil
+	}
 	reg, err := r.loadRegistry()
 	if err != nil {
 		return err

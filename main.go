@@ -22,6 +22,19 @@ func main() {
 	a := actions.New(drivers, order, harnessFS, imagesFS, data.OS{})
 	c := cli.New(a)
 
+	// Help is not an error: render it to stdout and exit 0. Basic help points
+	// agents at the full guide; the full guide is the bundled AGENTS.md.
+	if args := os.Args[1:]; len(args) == 1 {
+		switch args[0] {
+		case "-h", "--help", "help":
+			cli.Usage(os.Stdout)
+			return
+		case "--help-full", "--help-full-for-agents":
+			os.Stdout.Write(agentsGuide)
+			return
+		}
+	}
+
 	err = c.Run(os.Args[1:])
 	if err == nil {
 		return

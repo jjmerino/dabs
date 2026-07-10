@@ -14,3 +14,10 @@ var harnessFS embed.FS
 //
 //go:embed all:images
 var imagesFS embed.FS
+
+// agentsGuide is the full agent-facing guide, printed by
+// `dabs --help-full-for-agents`. It is the repo's AGENTS.md, bundled so the
+// complete instructions ship in any install.
+//
+//go:embed AGENTS.md
+var agentsGuide []byte

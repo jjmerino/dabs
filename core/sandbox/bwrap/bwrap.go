@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"unsafe"
 
 	"github.com/jjmerino/dabs/core/sandbox"
 )
@@ -255,13 +256,26 @@ func (d Driver) Run(instance string, cmd []string) error {
 		return err
 	}
 	defer unlock()
-	c.Stdin = os.Stdin
+	// Attach stdin only from a real terminal. Wiring a non-terminal stdin (an
+	// open pipe with no EOF) makes an interactive command like `sh` block
+	// forever; leaving it nil gives the process /dev/null → EOF, so it exits
+	// instead of hanging. (Matches the apple driver.)
+	if stdinIsTerminal() {
+		c.Stdin = os.Stdin
+	}
 	c.Stdout = os.Stdout
 	c.Stderr = os.Stderr
 	if err := c.Run(); err != nil {
 		return fmt.Errorf("bwrap: run in %s: %w", instance, err)
 	}
 	return nil
+}
+
+// stdinIsTerminal reports whether stdin is a real TTY (Linux TCGETS ioctl).
+func stdinIsTerminal() bool {
+	var t syscall.Termios
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, os.Stdin.Fd(), syscall.TCGETS, uintptr(unsafe.Pointer(&t)))
+	return errno == 0
 }
 
 // Exec runs cmd inside the instance non-interactively and returns combined

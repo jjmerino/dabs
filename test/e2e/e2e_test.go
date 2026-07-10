@@ -15,12 +15,14 @@
 package e2e
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 var (
@@ -101,6 +103,17 @@ func runIn(dir, cmdline string) (string, int) {
 	cmd.Dir = dir
 	out, _ := cmd.CombinedOutput()
 	return string(out), cmd.ProcessState.ExitCode()
+}
+
+// runTimeout runs a command with a deadline; the bool reports whether it timed
+// out (i.e. hung). Used to prove a command returns instead of blocking.
+func runTimeout(d time.Duration, cmdline string) (string, bool) {
+	argv := splitArgs(cmdline)
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	out, _ := cmd.CombinedOutput()
+	return string(out), ctx.Err() == context.DeadlineExceeded
 }
 
 func runStdin(stdin, cmdline string) string {
@@ -419,6 +432,9 @@ const e2eRecipes = `recipes:
         path: /root/.claude
       - worktree: .
         path: /work
+  shellhang:
+    image: dabs-e2e
+    command: [sh]
 `
 
 // installRecipes writes the e2e recipes to ~/.dabs/recipes.yaml and ensures the
@@ -562,7 +578,79 @@ func TestRecipeNewWorktree(t *testing.T) {
 	vaultHasToken(t)
 }
 
+// --- cli documentation & robustness (dumb-user findings) ---------------------
+
+// TestHelpRendersAndPointsToFull: `dabs --help` is not an error — it prints
+// usage and points agents at the full guide, which `--help-full-for-agents`
+// prints.
+func TestHelpRendersAndPointsToFull(t *testing.T) {
+	out, code := run("dabs --help")
+	wantExit(t, 0, code)
+	wantContains(t, out, "usage: dabs")
+	wantContains(t, out, "--help-full-for-agents")
+	full, code := run("dabs --help-full-for-agents")
+	wantExit(t, 0, code)
+	wantContains(t, full, "dabs box") // the bundled AGENTS.md guide
+}
+
+// TestUpBareNameHintsRecipe: `dabs up <name>` (not a manifest) fails with a hint
+// that up takes a manifest and recipes are run with `dabs recipe`.
+func TestUpBareNameHintsRecipe(t *testing.T) {
+	out, code := run("dabs up not-a-manifest")
+	if code == 0 {
+		t.Fatalf("want non-zero exit; got 0\n%s", out)
+	}
+	wantContains(t, out, "manifest")
+	wantContains(t, out, "recipe")
+}
+
+// TestManifestEnvTypeErrorIsFriendly: a wrong-typed field says what it should be,
+// not the Go struct type.
+func TestManifestEnvTypeErrorIsFriendly(t *testing.T) {
+	d := filepath.Join(home, "badenv")
+	os.MkdirAll(d, 0o755)
+	os.WriteFile(filepath.Join(d, "dabs.json"), []byte(`{"name":"x","env":[1,2]}`), 0o644)
+	out, code := run("dabs build " + d)
+	if code == 0 {
+		t.Fatalf("want non-zero exit; got 0\n%s", out)
+	}
+	wantContains(t, out, "must be an object")
+	wantNotContains(t, out, "map[string]string")
+}
+
+// TestRecipesPrintShowsFormat: `dabs recipes --print` dumps the authoring YAML,
+// so the format is discoverable without reverse-engineering the binary.
+func TestRecipesPrintShowsFormat(t *testing.T) {
+	out, code := run("dabs recipes --print")
+	wantExit(t, 0, code)
+	wantContains(t, out, "recipes:")
+	wantContains(t, out, "sources:")
+}
+
+// TestRecipeInteractiveDoesNotHang: a recipe whose command is a bare interactive
+// shell must EXIT when run without a terminal, not block forever.
+func TestRecipeInteractiveDoesNotHang(t *testing.T) {
+	clean(t)
+	installRecipes(t)
+	out, timedOut := runTimeout(45*time.Second, "dabs recipe shellhang")
+	if timedOut {
+		t.Fatalf("`dabs recipe` with an interactive shell hung with no TTY:\n%s", out)
+	}
+}
+
 // --- servers -----------------------------------------------------------------
+
+// TestServersAddRejectsFlagName: a flag-shaped name is rejected, not silently
+// stored as a server literally named "--help".
+func TestServersAddRejectsFlagName(t *testing.T) {
+	out, code := run("dabs servers add --help")
+	if code == 0 {
+		t.Fatalf("want non-zero exit; got 0\n%s", out)
+	}
+	wantContains(t, out, "cannot start with")
+	ls, _ := run("dabs servers ls")
+	wantNotContains(t, ls, "--help")
+}
 
 func TestServersEmptyShowsLocalOnly(t *testing.T) {
 	out, _ := run("dabs servers ls")

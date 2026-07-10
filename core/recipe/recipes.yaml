@@ -1,0 +1,39 @@
+# The recipes dabs ships with. `dabs recipe <name>` runs one; `dabs recipes`
+# lists them. Copy an entry into ~/.dabs/recipes.yaml to tweak it, or add your
+# own there — user entries override these by name.
+recipes:
+
+  # dabs recipe shell — a shell in a clean box over your current directory. The
+  # generic out-of-the-box example: no auth, no git repo needed, just an image
+  # and a live-mounted /work. This is the recipe to copy when writing your own.
+  shell:
+    image: shell                          # built from the bundled image recipe (alpine)
+    command: [sh]
+    sources:
+      # Your current directory, mounted live — edits inside the box persist on
+      # the host. Swap `mount:` for `copy:` to hand the box a disposable snapshot.
+      - mount: .
+        path: /work
+
+  # dabs recipe claude — a fresh, isolated Claude Code box on a git worktree of
+  # the current repo, already logged in from `dabs auth claude`. This is the
+  # whole definition: no mounts are hidden in dabs' code.
+  claude:
+    image: claude                         # reuse ~/.dabs/images/claude
+                                          #   (built from the bundled image recipe on first use)
+    command: [claude]                     # what to run once the box is up
+    env:
+      # Keep ALL Claude state in the mounted dir below, so login AND config land
+      # in the vault. Without this, config goes to ~/.claude.json — a HOME-level
+      # file outside the mount — and is lost with the box, forcing re-onboarding.
+      CLAUDE_CONFIG_DIR: /root/.claude
+    sources:
+      # The login/config vault from `dabs auth claude` — a LIVE mount, so a token
+      # refresh inside the box writes straight back to the host and outlives it.
+      - mount: ~/.dabs/auth/claude
+        path: /root/.claude
+      # The code — a fresh git branch off HEAD of this repo, mounted live so the
+      # agent works in isolation and you review the branch afterward. Swap
+      # `worktree:` for `copy:` to hand the box a throwaway snapshot instead.
+      - worktree: .
+        path: /work

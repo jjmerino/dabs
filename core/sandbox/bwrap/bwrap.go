@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"unsafe"
 
 	"github.com/jjmerino/dabs/core/sandbox"
 )
@@ -60,8 +61,9 @@ type imageMeta struct {
 }
 
 type instanceMeta struct {
-	Workdir string   `json:"workdir"`
-	Env     []string `json:"env"` // K=V, image env merged with spec env
+	Workdir string          `json:"workdir"`
+	Env     []string        `json:"env"`    // K=V, image env merged with spec env
+	Mounts  []sandbox.Mount `json:"mounts"` // live host paths bound into the box
 }
 
 // Build runs `docker build` on the manifest's Dockerfile, then exports the
@@ -157,7 +159,7 @@ func (d Driver) Up(spec sandbox.Spec) (string, error) {
 	// DABS_NAME marks the box: anything running inside can detect it is
 	// sandboxed (the dabash guard keys on this).
 	env = append(env, "DABS_NAME="+instance)
-	meta := instanceMeta{Workdir: spec.Workdir, Env: env}
+	meta := instanceMeta{Workdir: spec.Workdir, Env: env, Mounts: spec.Mounts}
 	if err := writeJSON(filepath.Join(dir, "meta.json"), meta); err != nil {
 		return "", err
 	}
@@ -189,6 +191,14 @@ func (d Driver) enter(instance string, cmd []string) (*exec.Cmd, error) {
 	// The network is shared with the host anyway; share its DNS config too.
 	if _, err := os.Stat("/etc/resolv.conf"); err == nil {
 		args = append(args, "--ro-bind", "/etc/resolv.conf", "/etc/resolv.conf")
+	}
+	// Live host mounts: writes pass through to the host and outlive the box.
+	for _, m := range meta.Mounts {
+		bind := "--bind"
+		if m.RO {
+			bind = "--ro-bind"
+		}
+		args = append(args, bind, m.Host, m.Path)
 	}
 	haveHome := false
 	for _, kv := range meta.Env {
@@ -246,13 +256,26 @@ func (d Driver) Run(instance string, cmd []string) error {
 		return err
 	}
 	defer unlock()
-	c.Stdin = os.Stdin
+	// Attach stdin only from a real terminal. Wiring a non-terminal stdin (an
+	// open pipe with no EOF) makes an interactive command like `sh` block
+	// forever; leaving it nil gives the process /dev/null → EOF, so it exits
+	// instead of hanging. (Matches the apple driver.)
+	if stdinIsTerminal() {
+		c.Stdin = os.Stdin
+	}
 	c.Stdout = os.Stdout
 	c.Stderr = os.Stderr
 	if err := c.Run(); err != nil {
 		return fmt.Errorf("bwrap: run in %s: %w", instance, err)
 	}
 	return nil
+}
+
+// stdinIsTerminal reports whether stdin is a real TTY (Linux TCGETS ioctl).
+func stdinIsTerminal() bool {
+	var t syscall.Termios
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, os.Stdin.Fd(), syscall.TCGETS, uintptr(unsafe.Pointer(&t)))
+	return errno == 0
 }
 
 // Exec runs cmd inside the instance non-interactively and returns combined
@@ -334,6 +357,18 @@ func readJSON(path string, v any) error {
 		return err
 	}
 	return json.Unmarshal(raw, v)
+}
+
+// HasImage reports whether name's image (a staged rootfs dir) already exists.
+func (d Driver) HasImage(name string) (bool, error) {
+	_, err := os.Stat(d.imageDir(name))
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, err
 }
 
 // Kind identifies this driver.

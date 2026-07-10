@@ -260,5 +260,10 @@ func runQuiet(c *exec.Cmd) error {
 	return nil
 }
 
+// HasImage does not cheaply probe the remote, so it reports false and lets the
+// caller rebuild (safe and idempotent). Remote sandboxes are addressed by
+// manifest target, never by the local-only build-skipping callers.
+func (d *Driver) HasImage(string) (bool, error) { return false, nil }
+
 // Kind identifies this driver by its transport.
 func (d *Driver) Kind() string { return d.via }

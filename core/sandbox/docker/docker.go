@@ -66,6 +66,14 @@ func (d Driver) Up(spec sandbox.Spec) (string, error) {
 	for k, v := range spec.Env {
 		args = append(args, "-e", fmt.Sprintf("%s=%s", k, v))
 	}
+	// Live host mounts: writes pass through to the host and outlive the box.
+	for _, m := range spec.Mounts {
+		mount := fmt.Sprintf("type=bind,source=%s,target=%s", m.Host, m.Path)
+		if m.RO {
+			mount += ",readonly"
+		}
+		args = append(args, "--mount", mount)
+	}
 	// sleep infinity keeps the box alive; docker exec inherits the container's
 	// env and image WORKDIR, so Run/Exec need not re-pass them.
 	args = append(args, imageName(spec.Name), "sleep", "infinity")
@@ -130,6 +138,12 @@ func (Driver) Ls() ([]sandbox.Info, error) {
 		infos = append(infos, sandbox.Info{Name: strings.TrimPrefix(name, prefix), Status: state, Driver: "docker"})
 	}
 	return infos, nil
+}
+
+// HasImage reports whether name's image is already built.
+func (Driver) HasImage(name string) (bool, error) {
+	err := exec.Command("docker", "image", "inspect", imageName(name)).Run()
+	return err == nil, nil
 }
 
 func (Driver) Kind() string { return "docker" }

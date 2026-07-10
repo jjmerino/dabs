@@ -1,0 +1,37 @@
+# Recipes for working ON dabs — run in a disposable box with `dabs recipe <name>`.
+# This is how we test and review dabs itself; reusable by any maintainer.
+# Recipes resolve bundled → ~/.dabs/recipes.yaml → this file (this file wins).
+# Both need `dabs auth claude` once; the login is MOUNTED into the box, never copied.
+default: review
+
+recipes:
+
+  # Agents: use when you want a thorough, sandboxed code review of the current
+  # branch vs `main` before merging. Opus reviews inside a throwaway COPY of the
+  # repo — it runs `git diff main...HEAD`, reads the code, builds it, and runs the
+  # tests to verify — then streams a ranked, evidence-backed review to your
+  # terminal. Capture it with:  dabs recipe review | tee review.md
+  review:
+    image: claude                         # bundled image: Claude Code + git
+    env: { CLAUDE_CONFIG_DIR: /root/.claude }
+    command: [sh, -c, "cd /work && exec claude -p 'Do a senior Go code review of this branch versus main. Run git diff main...HEAD and read the diff and changed files. Read AGENTS.md section Working on the codebase and check the diff respects the architecture: cli thin, core/actions policy, core/sandbox mechanical drivers, the data.Data and sandbox.Driver seams, zero third-party deps. Build both platforms (go build ./... and GOOS=linux go build ./...) and run go test ./cli/ ./core/... to verify. You are in a disposable copy, so exercise the code. Report ranked findings (blocker/major/minor/nit) with file:line on Go style, architecture and seams, and test quality, then an overall verdict.' --model claude-opus-4-8 --allowedTools Bash Read Grep Glob"]
+    sources:
+      - mount: ~/.dabs/auth/claude        # your Claude login — mounted, never copied
+        path: /root/.claude
+      - copy: .                           # throwaway copy of the repo (with .git) to diff, build, test
+        path: /work
+
+  # Agents: use when you changed dabs's CLI, help text, errors, or recipes and
+  # want to know whether a brand-new user can still figure it out. Drops a naive
+  # Haiku on a fresh machine that has ONLY dabs (built from this tree) + Claude
+  # Code, and asks it to discover and use dabs on its own — then report friction
+  # and bugs. If the dumb user gets stuck, that is a UX bug.
+  dumb-user:
+    image: { dockerfile: contrib/recipes/dumb-user.Dockerfile, context: . }
+    env: { CLAUDE_CONFIG_DIR: /root/.claude }
+    command: [sh, -c, "cd /work && go build -o /usr/local/bin/dabs . && exec claude -p 'You are a brand-new user on a fresh machine. A CLI called dabs is installed; you have never seen it. Figure out what it does and become productive on your own, using whatever help the tool provides. Try: discover its commands, start an isolated box and run a command inside it, and create your own recipe. Then report what you did, how you discovered how, what worked, and what was confusing or broken. Be blunt and honest.' --model claude-haiku-4-5 --allowedTools Bash Write Read Edit"]
+    sources:
+      - mount: ~/.dabs/auth/claude
+        path: /root/.claude
+      - copy: .                           # the agent builds dabs from this copy and tries it
+        path: /work

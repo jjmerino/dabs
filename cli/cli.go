@@ -43,4 +43,5 @@ func Usage(w io.Writer) {
 	for _, name := range names {
 		fmt.Fprintf(w, "  %-6s %s\n", name, Commands[name].Help)
 	}
+	fmt.Fprintln(w, "\nagents: `dabs --help-full-for-agents` prints the full guide (recipes, manifests, examples)")
 }

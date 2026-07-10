@@ -15,12 +15,14 @@
 package e2e
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 var (
@@ -91,6 +93,27 @@ func run(cmdline string) (string, int) {
 	cmd := exec.Command(argv[0], argv[1:]...)
 	out, _ := cmd.CombinedOutput()
 	return string(out), cmd.ProcessState.ExitCode()
+}
+
+// runIn is run with an explicit working directory, for cwd-sensitive commands
+// like `dabs claude` (which keys off the git repo containing the cwd).
+func runIn(dir, cmdline string) (string, int) {
+	argv := splitArgs(cmdline)
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Dir = dir
+	out, _ := cmd.CombinedOutput()
+	return string(out), cmd.ProcessState.ExitCode()
+}
+
+// runTimeout runs a command with a deadline; the bool reports whether it timed
+// out (i.e. hung). Used to prove a command returns instead of blocking.
+func runTimeout(d time.Duration, cmdline string) (string, bool) {
+	argv := splitArgs(cmdline)
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	out, _ := cmd.CombinedOutput()
+	return string(out), ctx.Err() == context.DeadlineExceeded
 }
 
 func runStdin(stdin, cmdline string) string {
@@ -351,7 +374,342 @@ func TestMcpToolsListAndCall(t *testing.T) {
 	wantContains(t, out, "hello-from-image")
 }
 
+// --- auth --------------------------------------------------------------------
+
+// TestAuthClaudeCapturesCredential drives `dabs auth claude` against the FAKE
+// claude baked into the prebuilt base image (a real CLI named `claude` that
+// only "logs in" by writing a credential). It proves the live vault mount
+// captures that credential onto the host: the login writes inside the box, and
+// it lands in the host vault (~/.dabs/auth/claude) because the vault is
+// bind-mounted read-write. This is the driver's mount support under test —
+// bwrap in the runner. DABS_AUTH_IMAGE reuses the prebuilt image, so nothing
+// is built in-box.
+func TestAuthClaudeCapturesCredential(t *testing.T) {
+	clean(t)
+	t.Setenv("DABS_AUTH_IMAGE", sandboxName) // reuse the prebuilt base image
+
+	out, code := run("dabs auth claude")
+	wantExit(t, 0, code)
+	wantContains(t, out, "claude authenticated")
+
+	cred := filepath.Join(home, ".dabs", "auth", "claude", ".credentials.json")
+	data, err := os.ReadFile(cred)
+	if err != nil {
+		t.Fatalf("credential not captured to vault: %v", err)
+	}
+	wantContains(t, string(data), "fake-token")
+}
+
+// --- recipes -----------------------------------------------------------------
+
+// The e2e recipes: three made-up recipes that each place the code into /work a
+// different way (mount / copy / worktree) and mount the auth vault, then run the
+// FAKE `claude` (which writes a credential and exits). They use the prebuilt
+// base image (dabs-e2e) so nothing is built in-box. Written to the user's
+// ~/.dabs/recipes.yaml, so this also exercises user-registry override + merge.
+const e2eRecipes = `recipes:
+  claude-mounted:
+    image: dabs-e2e
+    command: [sh, -c, "echo box-was-here > /work/from-box.txt; claude"]
+    sources:
+      - mount: ~/.dabs/auth/claude
+        path: /root/.claude
+      - mount: .
+        path: /work
+  claude-isolated:
+    image: dabs-e2e
+    command: [sh, -c, "cat /work/seed.txt; echo box > /work/from-box.txt; claude"]
+    sources:
+      - mount: ~/.dabs/auth/claude
+        path: /root/.claude
+      - copy: .
+        path: /work
+  claude-new-worktree:
+    image: dabs-e2e
+    command: [sh, -c, "echo box-was-here > /work/from-box.txt; claude"]
+    sources:
+      - mount: ~/.dabs/auth/claude
+        path: /root/.claude
+      - worktree: .
+        path: /work
+  shellhang:
+    image: dabs-e2e
+    command: [sh]
+`
+
+// installRecipes writes the e2e recipes to ~/.dabs/recipes.yaml and ensures the
+// auth vault dir exists (recipes mount it, so the bind needs a real host dir).
+func installRecipes(t *testing.T) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(home, ".dabs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".dabs", "recipes.yaml"), []byte(e2eRecipes), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, ".dabs", "auth", "claude"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// gitRepo makes a committed git repo at dir with one file.
+func gitRepo(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("v1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range [][]string{
+		{"git", "init", "-q"},
+		{"git", "config", "user.email", "e2e@dabs.test"},
+		{"git", "config", "user.name", "e2e"},
+		{"git", "add", "-A"},
+		{"git", "commit", "-qm", "init"},
+	} {
+		cmd := exec.Command(c[0], c[1:]...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%v: %v\n%s", c, err, out)
+		}
+	}
+}
+
+func vaultHasToken(t *testing.T) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(home, ".dabs", "auth", "claude", ".credentials.json"))
+	if err != nil {
+		t.Fatalf("vault mount failed: credential not written back to host: %v", err)
+	}
+	wantContains(t, string(data), "fake-token")
+}
+
+// TestRecipesLists proves `dabs recipes` shows the bundled `claude` recipe and
+// the user's recipes together.
+func TestRecipesLists(t *testing.T) {
+	installRecipes(t)
+	out, code := run("dabs recipes")
+	wantExit(t, 0, code)
+	wantContains(t, out, "claude")              // bundled
+	wantContains(t, out, "claude-mounted")      // user
+	wantContains(t, out, "claude-isolated")     // user
+	wantContains(t, out, "claude-new-worktree") // user
+}
+
+// TestRecipeUnknownLists proves an unknown recipe fails clearly, listing what
+// IS known (the caller is usually an agent that must choose a real one).
+func TestRecipeUnknownLists(t *testing.T) {
+	installRecipes(t)
+	out, code := runIn(home, "dabs recipe nope")
+	if code == 0 {
+		t.Fatalf("want non-zero exit for unknown recipe; got 0\n%s", out)
+	}
+	wantContains(t, out, "no recipe \"nope\"")
+	wantContains(t, out, "claude")
+}
+
+// TestRecipeMounted proves a `mount:` source is LIVE: a file the box writes into
+// /work lands on the host, and the vault mount captures the fake login.
+func TestRecipeMounted(t *testing.T) {
+	clean(t)
+	installRecipes(t)
+	dir := filepath.Join(home, "mounted")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out, code := runIn(dir, "dabs recipe claude-mounted")
+	wantExit(t, 0, code)
+	wantContains(t, out, "fake-claude: login ok")
+
+	if _, err := os.Stat(filepath.Join(dir, "from-box.txt")); err != nil {
+		t.Fatalf("mount not live: box's write did not reach the host dir: %v", err)
+	}
+	vaultHasToken(t)
+}
+
+// TestRecipeIsolated proves a `copy:` source is a SNAPSHOT: the box sees the
+// copied-in file, but a file the box writes into /work does NOT reach the host.
+func TestRecipeIsolated(t *testing.T) {
+	clean(t)
+	installRecipes(t)
+	dir := filepath.Join(home, "isolated")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "seed.txt"), []byte("seeded-copy\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, code := runIn(dir, "dabs recipe claude-isolated")
+	wantExit(t, 0, code)
+	wantContains(t, out, "seeded-copy") // the copy delivered the host file into the box
+
+	if _, err := os.Stat(filepath.Join(dir, "from-box.txt")); err == nil {
+		t.Fatalf("copy not isolated: box's write leaked back to the host dir")
+	}
+	vaultHasToken(t)
+}
+
+// TestRecipeNewWorktree proves a `worktree:` source runs the box on a fresh
+// branch off HEAD, kept after exit: the box's write lands in the worktree (not
+// the original repo), and the worktree survives.
+func TestRecipeNewWorktree(t *testing.T) {
+	clean(t)
+	installRecipes(t)
+	repo := filepath.Join(home, "wtrepo")
+	gitRepo(t, repo)
+
+	out, code := runIn(repo, "dabs recipe claude-new-worktree")
+	wantExit(t, 0, code)
+	wantContains(t, out, "worktree kept")
+
+	// The box's write landed in a KEPT worktree, not the original repo.
+	if _, err := os.Stat(filepath.Join(repo, "from-box.txt")); err == nil {
+		t.Fatalf("worktree not isolated: box's write appeared in the original repo")
+	}
+	entries, err := os.ReadDir(filepath.Join(home, ".dabs", "worktrees"))
+	if err != nil || len(entries) == 0 {
+		t.Fatalf("expected a kept worktree under ~/.dabs/worktrees; err=%v entries=%v", err, entries)
+	}
+	wt := filepath.Join(home, ".dabs", "worktrees", entries[0].Name(), "from-box.txt")
+	if _, err := os.Stat(wt); err != nil {
+		t.Fatalf("box's write not found in the kept worktree: %v", err)
+	}
+	vaultHasToken(t)
+}
+
+// TestWorktreesInspectAndGuardedReap: a recipe leaves a worktree with the box's
+// uncommitted write; `dabs worktrees` lists it as having work, `rm` refuses to
+// discard it, and `rm --force` reaps it.
+func TestWorktreesInspectAndGuardedReap(t *testing.T) {
+	clean(t)
+	installRecipes(t)
+	os.RemoveAll(filepath.Join(home, ".dabs", "worktrees")) // isolate from other tests' kept worktrees
+	repo := filepath.Join(home, "wtreap")
+	gitRepo(t, repo)
+	if _, code := runIn(repo, "dabs recipe claude-new-worktree"); code != 0 {
+		t.Fatalf("recipe failed")
+	}
+	entries, err := os.ReadDir(filepath.Join(home, ".dabs", "worktrees"))
+	if err != nil || len(entries) == 0 {
+		t.Fatalf("no worktree created: %v", err)
+	}
+	name := entries[0].Name()
+
+	out, code := run("dabs worktrees")
+	wantExit(t, 0, code)
+	wantContains(t, out, "HAS WORK") // the box wrote from-box.txt (uncommitted)
+
+	out, code = run("dabs worktrees rm " + name)
+	if code == 0 {
+		t.Fatalf("rm removed a worktree with unreviewed work without --force\n%s", out)
+	}
+	wantContains(t, out, "unreviewed work")
+
+	out, code = run("dabs worktrees rm " + name + " --force")
+	wantExit(t, 0, code)
+	wantContains(t, out, "removed")
+	if e, _ := os.ReadDir(filepath.Join(home, ".dabs", "worktrees")); len(e) != 0 {
+		t.Fatalf("worktree not reaped after --force: %v", e)
+	}
+}
+
+// TestRecipeLocalDabsYamlDefault: a project's ./dabs.yaml adds recipes and a
+// default; `dabs recipe` with no name runs the default.
+func TestRecipeLocalDabsYamlDefault(t *testing.T) {
+	clean(t)
+	dir := filepath.Join(home, "proj")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	yaml := "default: probe\nrecipes:\n  probe:\n    image: " + sandboxName +
+		"\n    command: [sh, -c, \"echo LOCAL_DEFAULT_RAN\"]\n"
+	if err := os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, code := runIn(dir, "dabs recipes")
+	wantExit(t, 0, code)
+	wantContains(t, out, "probe")
+	wantContains(t, out, "(default)")
+
+	out, code = runIn(dir, "dabs recipe") // no name → default
+	wantExit(t, 0, code)
+	wantContains(t, out, "LOCAL_DEFAULT_RAN")
+}
+
+// --- cli documentation & robustness (dumb-user findings) ---------------------
+
+// TestHelpRendersAndPointsToFull: `dabs --help` is not an error — it prints
+// usage and points agents at the full guide, which `--help-full-for-agents`
+// prints.
+func TestHelpRendersAndPointsToFull(t *testing.T) {
+	out, code := run("dabs --help")
+	wantExit(t, 0, code)
+	wantContains(t, out, "usage: dabs")
+	wantContains(t, out, "--help-full-for-agents")
+	full, code := run("dabs --help-full-for-agents")
+	wantExit(t, 0, code)
+	wantContains(t, full, "dabs box") // the bundled AGENTS.md guide
+}
+
+// TestUpBareNameHintsRecipe: `dabs up <name>` (not a manifest) fails with a hint
+// that up takes a manifest and recipes are run with `dabs recipe`.
+func TestUpBareNameHintsRecipe(t *testing.T) {
+	out, code := run("dabs up not-a-manifest")
+	if code == 0 {
+		t.Fatalf("want non-zero exit; got 0\n%s", out)
+	}
+	wantContains(t, out, "manifest")
+	wantContains(t, out, "recipe")
+}
+
+// TestManifestEnvTypeErrorIsFriendly: a wrong-typed field says what it should be,
+// not the Go struct type.
+func TestManifestEnvTypeErrorIsFriendly(t *testing.T) {
+	d := filepath.Join(home, "badenv")
+	os.MkdirAll(d, 0o755)
+	os.WriteFile(filepath.Join(d, "dabs.json"), []byte(`{"name":"x","env":[1,2]}`), 0o644)
+	out, code := run("dabs build " + d)
+	if code == 0 {
+		t.Fatalf("want non-zero exit; got 0\n%s", out)
+	}
+	wantContains(t, out, "must be an object")
+	wantNotContains(t, out, "map[string]string")
+}
+
+// TestRecipesPrintShowsFormat: `dabs recipes --print` dumps the authoring YAML,
+// so the format is discoverable without reverse-engineering the binary.
+func TestRecipesPrintShowsFormat(t *testing.T) {
+	out, code := run("dabs recipes --print")
+	wantExit(t, 0, code)
+	wantContains(t, out, "recipes:")
+	wantContains(t, out, "sources:")
+}
+
+// TestRecipeInteractiveDoesNotHang: a recipe whose command is a bare interactive
+// shell must EXIT when run without a terminal, not block forever.
+func TestRecipeInteractiveDoesNotHang(t *testing.T) {
+	clean(t)
+	installRecipes(t)
+	out, timedOut := runTimeout(45*time.Second, "dabs recipe shellhang")
+	if timedOut {
+		t.Fatalf("`dabs recipe` with an interactive shell hung with no TTY:\n%s", out)
+	}
+}
+
 // --- servers -----------------------------------------------------------------
+
+// TestServersAddRejectsFlagName: a flag-shaped name is rejected, not silently
+// stored as a server literally named "--help".
+func TestServersAddRejectsFlagName(t *testing.T) {
+	out, code := run("dabs servers add --help")
+	if code == 0 {
+		t.Fatalf("want non-zero exit; got 0\n%s", out)
+	}
+	wantContains(t, out, "cannot start with")
+	ls, _ := run("dabs servers ls")
+	wantNotContains(t, ls, "--help")
+}
 
 func TestServersEmptyShowsLocalOnly(t *testing.T) {
 	out, _ := run("dabs servers ls")

@@ -1,8 +1,9 @@
 # AGENTS.md — running things in a dabs box
 
 You are (presumably) a capable agent with host access. dabs lets you run a
-command — or a whole sub-agent — inside a disposable box that has no view of
-your host. The box exposes exactly one way in: a shell tool, `dabash`.
+command — or a whole agent — inside a disposable box that has no view of your
+host. Reach in with `dabs run <instance> -- <cmd>`, or run a whole agent inside
+via a recipe (`dabs recipe claude`).
 
 ## The loop
 
@@ -19,26 +20,39 @@ your host. The box exposes exactly one way in: a shell tool, `dabash`.
    dabs up <dir>          # → myproj-a3f9c21d4e02 up
    ```
 
-3. **Use it directly**, or **hand it to a sub-agent.** `dabs mcp <instance>`
-   is an MCP stdio server exposing ONE tool, `dabash(command, cwd?)`. The
-   instance is bound at launch — the tool has no sandbox parameter, so the
-   sub-agent cannot reach any other box or your host. Launch it with no
-   builtin tools and no user config:
+3. **Use it directly**, or **run an agent inside it — with a recipe.** Recipes
+   do the plumbing. `dabs recipe claude` runs Claude Code in a fresh box,
+   already authenticated. That recipe ships out of the box — `dabs recipes`
+   lists it; here it is, to copy into `~/.dabs/recipes.yaml` for your own:
 
-   ```bash
-   claude --setting-sources "" --tools "" --strict-mcp-config \
-     --mcp-config '{"mcpServers":{"dabash":{"command":"dabs","args":["mcp","<instance>"]}}}' \
-     --allowedTools "mcp__dabash__dabash" \
-     -p "<task>"
+   ```yaml
+   recipes:
+     claude:                            # ships out of the box → dabs recipe claude
+       image: claude
+       command: [claude]
+       env: { CLAUDE_CONFIG_DIR: /root/.claude }
+       sources:
+         - mount: ~/.dabs/auth/claude   # your shared vault — dabs mounts it, never copies
+           path: /root/.claude
+         - worktree: .                  # a fresh git branch of the cwd
+           path: /work
    ```
 
-   Flag notes, learned the hard way: `--setting-sources ""` drops user
-   config but KEEPS credentials (`--bare` breaks auth). `--allowedTools` is
-   required in `-p` mode or the run stalls on a permission prompt. Pass the
-   FULL instance name to `dabs mcp` (not a prefix) — an exact name resolves
-   locally with no ssh probe, so the server starts instantly.
+   Recipes resolve **bundled → `~/.dabs/recipes.yaml` (global) → `./dabs.yaml`
+   (project)**, later winning. A project's `dabs.yaml` can add recipes and set a
+   `default:`; `dabs recipe` with no name runs that default (no default set → it
+   errors and lists the choices, so an agent must pick). `dabs.json` is
+   unchanged — the low-level single-box manifest for `dabs build`/`up`.
 
-4. **Reap when done:**
+4. **Reap the worktrees an agent left** (recipes keep them):
+
+   ```bash
+   dabs worktrees               # list them; HAS WORK vs clean
+   dabs worktrees diff <name>   # what the agent changed
+   dabs worktrees rm <name>     # or `prune`; refuses unreviewed work unless --force
+   ```
+
+5. **Reap boxes when done:**
 
    ```bash
    dabs down <instance>            # or: dabs down <name> --force  (all instances)
@@ -47,11 +61,10 @@ your host. The box exposes exactly one way in: a shell tool, `dabash`.
 
 ## Notes
 
-- Tell the sub-agent the shape of its world: "You have one tool, dabash,
-  which runs shell commands inside your machine. There is no other
-  filesystem or host."
-- One instance per sub-agent: instances are cheap (`dabs up` again) and
-  isolated; sharing a box couples runs.
+- Tell the in-box agent the shape of its world: a fresh machine, no host
+  access, whatever the Dockerfile installed. It only sees the box.
+- One instance per agent: instances are cheap (`dabs up` again) and isolated;
+  sharing a box couples runs.
 - Boxes are copies, not mounts — rebuild after editing source, and a box
   only contains what its Dockerfile installed.
 
@@ -59,7 +72,7 @@ your host. The box exposes exactly one way in: a shell tool, `dabash`.
 
 - Boxes are copies, not mounts: the image froze the program at the last
   `dabs build`. If you edited the program, rebuild before the next run —
-  otherwise the dumb agent tests stale code.
+  otherwise you run stale code.
 - Writes inside a box persist for that instance's lifetime; pristine again
   means a NEW `up`, not reusing the old instance.
 - The box only contains what the Dockerfile installed. Slim base images
@@ -72,6 +85,10 @@ your host. The box exposes exactly one way in: a shell tool, `dabash`.
   (inspection, setup, planting fixtures). Shell syntax needs `sh -c '…'`.
 - Everything dabs owns is namespaced: it only ever sees or removes its own
   boxes.
+- Keep the build context under your home directory. A context under
+  `/private/tmp` (agent scratchpad) was empirically found to fail `dabs build`
+  on macOS with `failed to compute cache key … not found` (2026-07-09); under
+  home it worked.
 
 ## Manifest quick reference (dabs.json)
 
@@ -103,9 +120,12 @@ system. Vendor tools lie: Apple's `container` is not Docker-flag-compatible;
 `exec -i` fails on non-TTY stdin; docker export drops resolv.conf. The Linux
 (bwrap) driver is exercised over ssh on a real host.
 
-**Dependencies.** dabs itself has ZERO third-party Go deps and no cgo, so it
+**Dependencies.** dabs has essentially no third-party Go deps and no cgo, so it
 is a static binary that cross-compiles to every target with a plain
-`GOOS=… GOARCH=… go build` (keep it that way). What it needs are external
+`GOOS=… GOARCH=… go build` (keep it that way). The one dependency is
+`sigs.k8s.io/yaml` (recipes are YAML for comments; it routes YAML through
+`encoding/json` so the `json:` struct tags serve both formats). Do not add more
+without a comparably strong reason. What it needs are external
 tools AT RUNTIME, per driver — Apple `container` (macOS); `bwrap` + `docker`
 (Linux); `ssh`/`scp` (servers). dabs never installs these: each driver's
 `New()` checks for its tools and returns an error with the install command.
@@ -138,7 +158,8 @@ core/mcpserve/         the dabash MCP server, pure over an injected exec.
 
 **Rules that keep it clean**
 
-- Zero third-party dependencies. `go.mod` has no require block; keep it so.
+- Minimal third-party dependencies: only `sigs.k8s.io/yaml`. Don't add more
+  without a strong reason.
 - `cli` and `core/actions` never import each other — they meet only in main.
   Drivers import only `core/sandbox`; nothing imports a driver except the
   build-tagged selection files.

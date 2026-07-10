@@ -1,6 +1,10 @@
 package cli
 
-import "github.com/jjmerino/dabs/core/params"
+import (
+	"strings"
+
+	"github.com/jjmerino/dabs/core/params"
+)
 
 // Command is one dabs subcommand.
 type Command struct {
@@ -13,7 +17,11 @@ type Command struct {
 // CLI's injected Actions; the logic lives in core/actions.
 var Commands = map[string]Command{
 	"build":     {"build the sandbox image from the manifest's Dockerfile", (*CLI).runBuild},
-	"up":        {"start a NEW pristine instance (named <name>-<n>)", (*CLI).runUp},
+	"auth":      {"log a harness into a persistent vault future boxes mount: auth claude", (*CLI).runAuth},
+	"recipe":    {"run a named recipe box: recipe <name> (e.g. recipe claude)", (*CLI).runRecipe},
+	"recipes":   {"list the known recipes and what each mounts", (*CLI).runRecipes},
+	"worktrees": {"inspect/reap recipe worktrees: worktrees [ls | diff <name> | rm <name> | prune] [--force]", (*CLI).runWorktrees},
+	"up":        {"start a NEW box from a manifest (dir or dabs.json); to run a recipe use `recipe`", (*CLI).runUp},
 	"run":       {"execute a command inside an instance: run <instance> -- <cmd…>", (*CLI).runRun},
 	"down":      {"stop + remove instances by name (--force downs all matches)", (*CLI).runDown},
 	"mcp":       {"serve the dabash MCP tool on stdio, curried to an instance", (*CLI).runMcp},
@@ -39,6 +47,59 @@ func (c *CLI) runUninstall(args []string) error {
 		return BadArgsError{Cmd: "uninstall", Reason: "usage: uninstall <pi|claude>"}
 	}
 	return c.actions.Uninstall(params.Uninstall{Harness: args[0]})
+}
+
+func (c *CLI) runAuth(args []string) error {
+	if len(args) != 1 {
+		return BadArgsError{Cmd: "auth", Reason: "usage: auth <provider> (e.g. auth claude)"}
+	}
+	return c.actions.Auth(params.Auth{Provider: args[0]})
+}
+
+func (c *CLI) runRecipe(args []string) error {
+	if len(args) > 1 {
+		return BadArgsError{Cmd: "recipe", Reason: "usage: recipe [<name>] (no name runs the dabs.yaml default; see: dabs recipes)"}
+	}
+	p := params.Recipe{}
+	if len(args) == 1 {
+		p.Name = args[0]
+	}
+	return c.actions.Recipe(p)
+}
+
+func (c *CLI) runWorktrees(args []string) error {
+	p := params.Worktrees{}
+	var pos []string
+	for _, a := range args {
+		if a == "--force" || a == "-f" {
+			p.Force = true
+			continue
+		}
+		pos = append(pos, a)
+	}
+	if len(pos) > 2 {
+		return BadArgsError{Cmd: "worktrees", Reason: "usage: worktrees [ls | diff <name> | rm <name> | prune] [--force]"}
+	}
+	if len(pos) > 0 {
+		p.Sub = pos[0]
+	}
+	if len(pos) > 1 {
+		p.Name = pos[1]
+	}
+	return c.actions.Worktrees(p)
+}
+
+func (c *CLI) runRecipes(args []string) error {
+	p := params.Recipes{}
+	for _, a := range args {
+		switch a {
+		case "--print":
+			p.Print = true
+		default:
+			return BadArgsError{Cmd: "recipes", Reason: "usage: recipes [--print]"}
+		}
+	}
+	return c.actions.Recipes(p)
 }
 
 func (c *CLI) runBuild(args []string) error {
@@ -103,6 +164,9 @@ func (c *CLI) runServers(args []string) error {
 	case "add":
 		if len(args) < 2 || len(args) > 3 {
 			return BadArgsError{Cmd: "servers", Reason: "usage: servers add <name> [host]"}
+		}
+		if strings.HasPrefix(args[1], "-") {
+			return BadArgsError{Cmd: "servers", Reason: "server name cannot start with '-' (got " + args[1] + ")"}
 		}
 		p := params.ServersAdd{Name: args[1]}
 		if len(args) == 3 {

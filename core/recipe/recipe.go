@@ -13,8 +13,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -121,34 +119,10 @@ func (reg Registry) Names() []string {
 	return names
 }
 
-// Load returns the bundled registry merged with ~/.dabs/recipes.yaml (user
-// entries override bundled ones by name). A missing user file is not an error.
-func Load(bundled []byte) (Registry, error) {
-	reg, err := parse(bundled)
-	if err != nil {
-		return Registry{}, fmt.Errorf("recipe: bundled registry: %w", err)
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return reg, nil
-	}
-	userPath := filepath.Join(home, ".dabs", "recipes.yaml")
-	data, err := os.ReadFile(userPath)
-	if os.IsNotExist(err) {
-		return reg, nil
-	}
-	if err != nil {
-		return reg, fmt.Errorf("recipe: %s: %w", userPath, err)
-	}
-	user, err := parse(data)
-	if err != nil {
-		return reg, fmt.Errorf("recipe: %s: %w", userPath, err)
-	}
-	maps.Copy(reg.Recipes, user.Recipes)
-	return reg, nil
-}
-
-func parse(data []byte) (Registry, error) {
+// Parse decodes a YAML recipes registry. IO (reading bundled bytes and the
+// user's ~/.dabs/recipes.yaml) is the caller's job — done through the data seam
+// — so this stays pure and testable.
+func Parse(data []byte) (Registry, error) {
 	var reg Registry
 	if err := yaml.Unmarshal(data, &reg); err != nil {
 		return Registry{}, err
@@ -157,4 +131,10 @@ func parse(data []byte) (Registry, error) {
 		reg.Recipes = map[string]Recipe{}
 	}
 	return reg, nil
+}
+
+// Merge overlays other onto reg, letting other's recipes win by name (this is
+// how a user's ~/.dabs/recipes.yaml overrides the bundled defaults).
+func (reg Registry) Merge(other Registry) {
+	maps.Copy(reg.Recipes, other.Recipes)
 }

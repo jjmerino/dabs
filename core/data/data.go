@@ -1,0 +1,38 @@
+// Package data is the seam between dabs's core logic and the host's stateful
+// world: the filesystem, environment, and the local git binary. It is to those
+// what sandbox.Driver is to containers — the one place I/O crosses out of core,
+// so core logic can be exercised against a fake.
+//
+// Operations are the exact set core/actions performs today (see the dep
+// analysis): 7 filesystem, 2 env, 3 git. Nothing here reaches the network or a
+// container orchestrator — those already live behind sandbox.Driver.
+package data
+
+import "io/fs"
+
+// Data is the injected host-effects layer. The real implementation is OS; tests
+// pass a fake that records calls and returns canned results.
+type Data interface {
+	// --- filesystem ---
+	HomeDir() (string, error)
+	ReadFile(path string) ([]byte, error)
+	WriteFile(path string, b []byte, perm fs.FileMode) error
+	Stat(path string) (fs.FileInfo, error)
+	MkdirAll(path string, perm fs.FileMode) error
+	MkdirTemp(dir, pattern string) (string, error)
+	RemoveAll(path string) error
+
+	// --- environment ---
+	Getenv(key string) string
+	ExpandEnv(s string) string
+
+	// --- git (the one external process core drives directly) ---
+	// GitToplevel returns the repo root containing dir, or an error if dir is
+	// not in a git repo.
+	GitToplevel(dir string) (string, error)
+	// GitHasCommits reports whether the repo at top has a born HEAD (≥1 commit).
+	GitHasCommits(top string) bool
+	// GitAddWorktree creates a new worktree of top at dest on a new branch off
+	// HEAD.
+	GitAddWorktree(top, branch, dest string) error
+}

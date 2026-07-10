@@ -6,6 +6,7 @@ import (
 
 	"github.com/jjmerino/dabs/cli"
 	"github.com/jjmerino/dabs/core/actions"
+	"github.com/jjmerino/dabs/core/data"
 )
 
 // main owns the process boundary: it installs the real actions, injects
@@ -18,7 +19,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "dabs: %v\n", err)
 		os.Exit(1)
 	}
-	a := actions.New(drivers, order, harnessFS, imagesFS)
+	a := actions.New(drivers, order, harnessFS, imagesFS, data.OS{})
 	c := cli.New(a)
 
 	err = c.Run(os.Args[1:])

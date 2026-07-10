@@ -3,11 +3,12 @@ package actions
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/jjmerino/dabs/core/params"
@@ -22,7 +23,7 @@ import (
 // silently discarded. Everything the box does is declared in the recipe — this
 // is the generic engine `dabs recipe claude` (and any user recipe) runs on.
 func (r Real) Recipe(p params.Recipe) error {
-	reg, err := recipe.Load(recipe.Bundled)
+	reg, err := r.loadRegistry()
 	if err != nil {
 		return err
 	}
@@ -38,8 +39,9 @@ func (r Real) Recipe(p params.Recipe) error {
 		return err
 	}
 
-	// Validate every source (and locate worktree repos) BEFORE any side effect,
-	// so a bad recipe or a non-git dir fails without building an image.
+	// Validate every source BEFORE any side effect, so a bad recipe, a non-git
+	// dir, a repo with no commits, or a missing source path all fail without
+	// building an image or touching the box.
 	kinds := make([]string, len(rec.Sources))
 	origins := make([]string, len(rec.Sources))
 	tops := make([]string, len(rec.Sources))
@@ -48,13 +50,30 @@ func (r Real) Recipe(p params.Recipe) error {
 		if err != nil {
 			return fmt.Errorf("recipe %q: %w", p.Name, err)
 		}
-		kinds[i], origins[i] = kind, expandPath(origin)
-		if kind == "worktree" {
-			top, err := gitToplevel(origins[i])
+		host, err := r.expandPath(origin)
+		if err != nil {
+			return fmt.Errorf("recipe %q: %w", p.Name, err)
+		}
+		kinds[i], origins[i] = kind, host
+		switch kind {
+		case "worktree":
+			top, err := r.data.GitToplevel(host)
 			if err != nil {
 				return fmt.Errorf("recipe %q: worktree %s: %w", p.Name, s.Path, err)
 			}
+			if !r.data.GitHasCommits(top) {
+				return fmt.Errorf("recipe %q: worktree %s: repo has no commits yet — make an initial commit first", p.Name, s.Path)
+			}
 			tops[i] = top
+		case "mount", "copy":
+			// The host path must exist — a mount/copy of a missing path is a
+			// mistake (e.g. `dabs recipe claude` before `dabs auth claude`),
+			// and gives a cryptic driver failure if passed through.
+			if _, err := r.data.Stat(host); errors.Is(err, fs.ErrNotExist) {
+				return fmt.Errorf("recipe %q: %s source %s does not exist", p.Name, kind, host)
+			} else if err != nil {
+				return fmt.Errorf("recipe %q: %s source %s: %w", p.Name, kind, host, err)
+			}
 		}
 	}
 
@@ -73,7 +92,7 @@ func (r Real) Recipe(p params.Recipe) error {
 		case "mount":
 			mounts = append(mounts, sandbox.Mount{Host: origins[i], Path: s.Path, RO: s.RO})
 		case "worktree":
-			wt, branch, err := addWorktree(tops[i])
+			wt, branch, err := r.addWorktree(tops[i])
 			if err != nil {
 				return err
 			}
@@ -121,7 +140,7 @@ func (r Real) Recipe(p params.Recipe) error {
 // Recipes lists the known recipes and, for each, its image and what it places
 // into the box — so a user (or agent) can see what a recipe does before running.
 func (r Real) Recipes(params.Recipes) error {
-	reg, err := recipe.Load(recipe.Bundled)
+	reg, err := r.loadRegistry()
 	if err != nil {
 		return err
 	}
@@ -147,6 +166,33 @@ func (r Real) Recipes(params.Recipes) error {
 }
 
 type copyOp struct{ src, dest string }
+
+// loadRegistry parses the bundled recipes and overlays the user's
+// ~/.dabs/recipes.yaml (missing file is fine). All IO goes through the data seam.
+func (r Real) loadRegistry() (recipe.Registry, error) {
+	reg, err := recipe.Parse(recipe.Bundled)
+	if err != nil {
+		return recipe.Registry{}, fmt.Errorf("recipe: bundled registry: %w", err)
+	}
+	home, err := r.data.HomeDir()
+	if err != nil {
+		return reg, nil
+	}
+	userPath := filepath.Join(home, ".dabs", "recipes.yaml")
+	b, err := r.data.ReadFile(userPath)
+	if errors.Is(err, fs.ErrNotExist) {
+		return reg, nil
+	}
+	if err != nil {
+		return reg, fmt.Errorf("recipe: %s: %w", userPath, err)
+	}
+	user, err := recipe.Parse(b)
+	if err != nil {
+		return reg, fmt.Errorf("recipe: %s: %w", userPath, err)
+	}
+	reg.Merge(user)
+	return reg, nil
+}
 
 // ensureImage makes the recipe's image available and returns the name to run.
 // A bare name reuses an already-built image, building it from the bundled recipe
@@ -196,49 +242,46 @@ func (r Real) hasBundledImage(name string) bool {
 	return err == nil
 }
 
-// expandPath resolves a leading ~ and any $VAR/${VAR} in a host path.
-func expandPath(p string) string {
-	p = os.ExpandEnv(p)
+// envRef matches $VAR and ${VAR} references in a path.
+var envRef = regexp.MustCompile(`\$\{?(\w+)\}?`)
+
+// expandPath resolves a leading ~ and any $VAR/${VAR} in a host path. An unset
+// variable is an error, not a silent truncation to a shorter (wrong) path.
+func (r Real) expandPath(p string) (string, error) {
+	for _, m := range envRef.FindAllStringSubmatch(p, -1) {
+		if r.data.Getenv(m[1]) == "" {
+			return "", fmt.Errorf("unset variable %s in source path %q", m[0], p)
+		}
+	}
+	p = r.data.ExpandEnv(p)
 	if p == "~" || strings.HasPrefix(p, "~/") {
-		if home, err := os.UserHomeDir(); err == nil {
+		if home, err := r.data.HomeDir(); err == nil {
 			p = filepath.Join(home, strings.TrimPrefix(p, "~"))
 		}
 	}
-	return p
-}
-
-// gitToplevel returns the absolute root of the git repo containing dir, or an
-// error if dir is not in a git repo.
-func gitToplevel(dir string) (string, error) {
-	cmd := exec.Command("git", "-C", dir, "rev-parse", "--show-toplevel")
-	out, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("not a git repository")
-	}
-	return strings.TrimSpace(string(out)), nil
+	return p, nil
 }
 
 // addWorktree creates a fresh git worktree of top under
 // ~/.dabs/worktrees/<repo>-<id> on a new branch dabs/<id> off HEAD, returning
 // the worktree path and branch. It requires at least one commit (a born HEAD).
-func addWorktree(top string) (path, branch string, err error) {
-	if exec.Command("git", "-C", top, "rev-parse", "--verify", "HEAD").Run() != nil {
+func (r Real) addWorktree(top string) (path, branch string, err error) {
+	if !r.data.GitHasCommits(top) {
 		return "", "", fmt.Errorf("recipe: repo has no commits yet — make an initial commit first")
 	}
-	home, err := os.UserHomeDir()
+	home, err := r.data.HomeDir()
 	if err != nil {
 		return "", "", fmt.Errorf("recipe: home: %w", err)
 	}
 	id := randHex(4)
 	base := filepath.Join(home, ".dabs", "worktrees")
-	if err := os.MkdirAll(base, 0o755); err != nil {
+	if err := r.data.MkdirAll(base, 0o755); err != nil {
 		return "", "", fmt.Errorf("recipe: worktrees dir: %w", err)
 	}
 	path = filepath.Join(base, filepath.Base(top)+"-"+id)
 	branch = "dabs/" + id
-	cmd := exec.Command("git", "-C", top, "worktree", "add", "-b", branch, path, "HEAD")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return "", "", fmt.Errorf("recipe: git worktree add: %v: %s", err, strings.TrimSpace(string(out)))
+	if err := r.data.GitAddWorktree(top, branch, path); err != nil {
+		return "", "", fmt.Errorf("recipe: %w", err)
 	}
 	return path, branch, nil
 }

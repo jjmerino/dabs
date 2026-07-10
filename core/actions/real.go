@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"strings"
 
+	"github.com/jjmerino/dabs/core/data"
 	"github.com/jjmerino/dabs/core/sandbox"
 )
 
@@ -16,13 +17,13 @@ type Real struct {
 	order   []string                  // stable iteration order for ls
 	harness fs.FS                     // bundled harness integrations (for install)
 	images  fs.FS                     // bundled build recipes (for auth, …)
+	data    data.Data                 // host effects (fs/env/git) — the testable seam
 }
 
 // New returns actions backed by the given drivers (listed in order), the
-// harness-integration filesystem used by install/uninstall, and the bundled
-// image recipes used by auth.
-func New(drivers map[string]sandbox.Driver, order []string, harness, images fs.FS) Real {
-	return Real{drivers: drivers, order: order, harness: harness, images: images}
+// harness-integration and image filesystems, and the host-effects layer.
+func New(drivers map[string]sandbox.Driver, order []string, harness, images fs.FS, d data.Data) Real {
+	return Real{drivers: drivers, order: order, harness: harness, images: images, data: d}
 }
 
 // driverFor resolves a manifest's target ("" = local) to its driver.

@@ -14,7 +14,8 @@ type Command struct {
 var Commands = map[string]Command{
 	"build":     {"build the sandbox image from the manifest's Dockerfile", (*CLI).runBuild},
 	"auth":      {"log a harness into a persistent vault future boxes mount: auth claude", (*CLI).runAuth},
-	"claude":    {"start Claude in a fresh box on a git worktree of this repo", (*CLI).runClaude},
+	"recipe":    {"run a named recipe box: recipe <name> (e.g. recipe claude)", (*CLI).runRecipe},
+	"recipes":   {"list the known recipes and what each mounts", (*CLI).runRecipes},
 	"up":        {"start a NEW pristine instance (named <name>-<n>)", (*CLI).runUp},
 	"run":       {"execute a command inside an instance: run <instance> -- <cmd…>", (*CLI).runRun},
 	"down":      {"stop + remove instances by name (--force downs all matches)", (*CLI).runDown},
@@ -50,17 +51,18 @@ func (c *CLI) runAuth(args []string) error {
 	return c.actions.Auth(params.Auth{Provider: args[0]})
 }
 
-func (c *CLI) runClaude(args []string) error {
-	p := params.Claude{}
-	for _, a := range args {
-		switch a {
-		case "--shell":
-			p.Shell = true
-		default:
-			return BadArgsError{Cmd: "claude", Reason: "usage: claude [--shell] (run inside a git repo)"}
-		}
+func (c *CLI) runRecipe(args []string) error {
+	if len(args) != 1 {
+		return BadArgsError{Cmd: "recipe", Reason: "usage: recipe <name> (see: dabs recipes)"}
 	}
-	return c.actions.Claude(p)
+	return c.actions.Recipe(params.Recipe{Name: args[0]})
+}
+
+func (c *CLI) runRecipes(args []string) error {
+	if len(args) != 0 {
+		return BadArgsError{Cmd: "recipes", Reason: "usage: recipes (no arguments)"}
+	}
+	return c.actions.Recipes(params.Recipes{})
 }
 
 func (c *CLI) runBuild(args []string) error {

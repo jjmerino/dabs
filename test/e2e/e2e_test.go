@@ -387,87 +387,179 @@ func TestAuthClaudeCapturesCredential(t *testing.T) {
 	wantContains(t, string(data), "fake-token")
 }
 
-// --- claude ------------------------------------------------------------------
+// --- recipes -----------------------------------------------------------------
 
-// TestClaudeRequiresGitRepo proves `dabs claude` refuses to run outside a git
-// repo — direct harness access is a git-repo-only feature.
-func TestClaudeRequiresGitRepo(t *testing.T) {
-	clean(t)
-	dir := filepath.Join(home, "notrepo")
+// The e2e recipes: three made-up recipes that each place the code into /work a
+// different way (mount / copy / worktree) and mount the auth vault, then run the
+// FAKE `claude` (which writes a credential and exits). They use the prebuilt
+// base image (dabs-e2e) so nothing is built in-box. Written to the user's
+// ~/.dabs/recipes.yaml, so this also exercises user-registry override + merge.
+const e2eRecipes = `recipes:
+  claude-mounted:
+    image: dabs-e2e
+    command: [sh, -c, "echo box-was-here > /work/from-box.txt; claude"]
+    sources:
+      - mount: ~/.dabs/auth/claude
+        path: /root/.claude
+      - mount: .
+        path: /work
+  claude-isolated:
+    image: dabs-e2e
+    command: [sh, -c, "cat /work/seed.txt; echo box > /work/from-box.txt; claude"]
+    sources:
+      - mount: ~/.dabs/auth/claude
+        path: /root/.claude
+      - copy: .
+        path: /work
+  claude-new-worktree:
+    image: dabs-e2e
+    command: [sh, -c, "echo box-was-here > /work/from-box.txt; claude"]
+    sources:
+      - mount: ~/.dabs/auth/claude
+        path: /root/.claude
+      - worktree: .
+        path: /work
+`
+
+// installRecipes writes the e2e recipes to ~/.dabs/recipes.yaml and ensures the
+// auth vault dir exists (recipes mount it, so the bind needs a real host dir).
+func installRecipes(t *testing.T) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(home, ".dabs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".dabs", "recipes.yaml"), []byte(e2eRecipes), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, ".dabs", "auth", "claude"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// gitRepo makes a committed git repo at dir with one file.
+func gitRepo(t *testing.T, dir string) {
+	t.Helper()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	out, code := runIn(dir, "dabs claude")
-	if code == 0 {
-		t.Fatalf("want non-zero exit outside a git repo; got 0\n%s", out)
-	}
-	wantContains(t, out, "only supported for git repos")
-}
-
-// TestClaudeEmptyRepoIsRejected proves `dabs claude` fails clearly on a repo
-// with no commits yet (unborn HEAD) — there is nothing to branch a worktree off.
-func TestClaudeEmptyRepoIsRejected(t *testing.T) {
-	clean(t)
-	repo := filepath.Join(home, "emptyrepo")
-	if err := os.MkdirAll(repo, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	cmd := exec.Command("git", "init", "-q")
-	cmd.Dir = repo
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git init: %v\n%s", err, out)
-	}
-	out, code := runIn(repo, "dabs claude")
-	if code == 0 {
-		t.Fatalf("want non-zero exit on a repo with no commits; got 0\n%s", out)
-	}
-	wantContains(t, out, "no commits yet")
-}
-
-// TestClaudeWorktreeAndBox drives `dabs claude` in a real git repo against the
-// FAKE claude in the prebuilt image. It proves the whole flow: a fresh worktree
-// off HEAD is created under the vault dir and mounted into the box (the fake
-// sees the repo's file at /work), the box runs, and the worktree is KEPT after
-// exit. DABS_CLAUDE_IMAGE reuses the prebuilt image, so nothing is built in-box.
-func TestClaudeWorktreeAndBox(t *testing.T) {
-	clean(t)
-	t.Setenv("DABS_CLAUDE_IMAGE", sandboxName) // reuse the prebuilt base image
-
-	repo := filepath.Join(home, "repo")
-	if err := os.MkdirAll(repo, 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "tracked.txt"), []byte("v1\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	for _, c := range [][]string{
 		{"git", "init", "-q"},
 		{"git", "config", "user.email", "e2e@dabs.test"},
 		{"git", "config", "user.name", "e2e"},
+		{"git", "add", "-A"},
+		{"git", "commit", "-qm", "init"},
 	} {
 		cmd := exec.Command(c[0], c[1:]...)
-		cmd.Dir = repo
+		cmd.Dir = dir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("%v: %v\n%s", c, err, out)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(repo, "marker.txt"), []byte("in-worktree\n"), 0o644); err != nil {
+}
+
+func vaultHasToken(t *testing.T) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(home, ".dabs", "auth", "claude", ".credentials.json"))
+	if err != nil {
+		t.Fatalf("vault mount failed: credential not written back to host: %v", err)
+	}
+	wantContains(t, string(data), "fake-token")
+}
+
+// TestRecipesLists proves `dabs recipes` shows the bundled `claude` recipe and
+// the user's recipes together.
+func TestRecipesLists(t *testing.T) {
+	installRecipes(t)
+	out, code := run("dabs recipes")
+	wantExit(t, 0, code)
+	wantContains(t, out, "claude")              // bundled
+	wantContains(t, out, "claude-mounted")      // user
+	wantContains(t, out, "claude-isolated")     // user
+	wantContains(t, out, "claude-new-worktree") // user
+}
+
+// TestRecipeUnknownLists proves an unknown recipe fails clearly, listing what
+// IS known (the caller is usually an agent that must choose a real one).
+func TestRecipeUnknownLists(t *testing.T) {
+	installRecipes(t)
+	out, code := runIn(home, "dabs recipe nope")
+	if code == 0 {
+		t.Fatalf("want non-zero exit for unknown recipe; got 0\n%s", out)
+	}
+	wantContains(t, out, "no recipe \"nope\"")
+	wantContains(t, out, "claude")
+}
+
+// TestRecipeMounted proves a `mount:` source is LIVE: a file the box writes into
+// /work lands on the host, and the vault mount captures the fake login.
+func TestRecipeMounted(t *testing.T) {
+	clean(t)
+	installRecipes(t)
+	dir := filepath.Join(home, "mounted")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, c := range [][]string{{"git", "add", "-A"}, {"git", "commit", "-qm", "init"}} {
-		cmd := exec.Command(c[0], c[1:]...)
-		cmd.Dir = repo
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("%v: %v\n%s", c, err, out)
-		}
-	}
-
-	out, code := runIn(repo, "dabs claude")
+	out, code := runIn(dir, "dabs recipe claude-mounted")
 	wantExit(t, 0, code)
-	wantContains(t, out, "worktree kept at")
+	wantContains(t, out, "fake-claude: login ok")
 
-	// A worktree was created under the vault worktrees dir and outlives the box.
+	if _, err := os.Stat(filepath.Join(dir, "from-box.txt")); err != nil {
+		t.Fatalf("mount not live: box's write did not reach the host dir: %v", err)
+	}
+	vaultHasToken(t)
+}
+
+// TestRecipeIsolated proves a `copy:` source is a SNAPSHOT: the box sees the
+// copied-in file, but a file the box writes into /work does NOT reach the host.
+func TestRecipeIsolated(t *testing.T) {
+	clean(t)
+	installRecipes(t)
+	dir := filepath.Join(home, "isolated")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "seed.txt"), []byte("seeded-copy\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, code := runIn(dir, "dabs recipe claude-isolated")
+	wantExit(t, 0, code)
+	wantContains(t, out, "seeded-copy") // the copy delivered the host file into the box
+
+	if _, err := os.Stat(filepath.Join(dir, "from-box.txt")); err == nil {
+		t.Fatalf("copy not isolated: box's write leaked back to the host dir")
+	}
+	vaultHasToken(t)
+}
+
+// TestRecipeNewWorktree proves a `worktree:` source runs the box on a fresh
+// branch off HEAD, kept after exit: the box's write lands in the worktree (not
+// the original repo), and the worktree survives.
+func TestRecipeNewWorktree(t *testing.T) {
+	clean(t)
+	installRecipes(t)
+	repo := filepath.Join(home, "wtrepo")
+	gitRepo(t, repo)
+
+	out, code := runIn(repo, "dabs recipe claude-new-worktree")
+	wantExit(t, 0, code)
+	wantContains(t, out, "worktree kept")
+
+	// The box's write landed in a KEPT worktree, not the original repo.
+	if _, err := os.Stat(filepath.Join(repo, "from-box.txt")); err == nil {
+		t.Fatalf("worktree not isolated: box's write appeared in the original repo")
+	}
 	entries, err := os.ReadDir(filepath.Join(home, ".dabs", "worktrees"))
 	if err != nil || len(entries) == 0 {
 		t.Fatalf("expected a kept worktree under ~/.dabs/worktrees; err=%v entries=%v", err, entries)
 	}
+	wt := filepath.Join(home, ".dabs", "worktrees", entries[0].Name(), "from-box.txt")
+	if _, err := os.Stat(wt); err != nil {
+		t.Fatalf("box's write not found in the kept worktree: %v", err)
+	}
+	vaultHasToken(t)
 }
 
 // --- servers -----------------------------------------------------------------

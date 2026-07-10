@@ -65,12 +65,14 @@ type Auth struct {
 	Provider string // "claude"
 }
 
-// Claude are the inputs to the claude action: start Claude Code in a fresh box
-// mounted on a git worktree of the current repo, with the shared auth/config
-// vault mounted in. The current directory is the repo.
-type Claude struct {
-	Shell bool // drop into an interactive shell instead of launching claude (for inspection)
+// Recipe are the inputs to running a named recipe (a fully declarative box:
+// image, sources, env, command).
+type Recipe struct {
+	Name string
 }
+
+// Recipes are the inputs to listing the known recipes.
+type Recipes struct{}
 
 // Install are the inputs to installing a harness integration. Empty Harness
 // prints instructions.
@@ -89,7 +91,8 @@ type Actions interface {
 	Build(Build) error
 	Up(Up) error
 	Auth(Auth) error
-	Claude(Claude) error
+	Recipe(Recipe) error
+	Recipes(Recipes) error
 	Run(Run) error
 	Down(Down) error
 	Ls(Ls) error

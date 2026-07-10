@@ -3,6 +3,18 @@
 # own there — user entries override these by name.
 recipes:
 
+  # dabs recipe shell — a shell in a clean box over your current directory. The
+  # generic out-of-the-box example: no auth, no git repo needed, just an image
+  # and a live-mounted /work. This is the recipe to copy when writing your own.
+  shell:
+    image: shell                          # built from the bundled image recipe (alpine)
+    command: [sh]
+    sources:
+      # Your current directory, mounted live — edits inside the box persist on
+      # the host. Swap `mount:` for `copy:` to hand the box a disposable snapshot.
+      - mount: .
+        path: /work
+
   # dabs recipe claude — a fresh, isolated Claude Code box on a git worktree of
   # the current repo, already logged in from `dabs auth claude`. This is the
   # whole definition: no mounts are hidden in dabs' code.

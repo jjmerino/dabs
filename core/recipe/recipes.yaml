@@ -30,6 +30,11 @@ recipes:
     sources:
       # The login/config vault from `dabs auth claude` — a LIVE mount, so a token
       # refresh inside the box writes straight back to the host and outlives it.
+      # The `claude` image BANS the agent's own tools (Read/Bash) from reading
+      # this dir — Claude Code still authenticates from it internally, but a
+      # curious or compromised agent cannot cat/read .credentials.json out. The
+      # ban is baked into the image (managed settings + a PreToolUse hook), so it
+      # applies to every recipe that mounts the vault into a `claude` box.
       - mount: ~/.dabs/auth/claude
         path: /root/.claude
       # The code — a fresh git branch off HEAD of this repo, mounted live so the

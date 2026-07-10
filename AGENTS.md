@@ -120,9 +120,12 @@ system. Vendor tools lie: Apple's `container` is not Docker-flag-compatible;
 `exec -i` fails on non-TTY stdin; docker export drops resolv.conf. The Linux
 (bwrap) driver is exercised over ssh on a real host.
 
-**Dependencies.** dabs itself has ZERO third-party Go deps and no cgo, so it
+**Dependencies.** dabs has essentially no third-party Go deps and no cgo, so it
 is a static binary that cross-compiles to every target with a plain
-`GOOS=… GOARCH=… go build` (keep it that way). What it needs are external
+`GOOS=… GOARCH=… go build` (keep it that way). The one dependency is
+`sigs.k8s.io/yaml` (recipes are YAML for comments; it routes YAML through
+`encoding/json` so the `json:` struct tags serve both formats). Do not add more
+without a comparably strong reason. What it needs are external
 tools AT RUNTIME, per driver — Apple `container` (macOS); `bwrap` + `docker`
 (Linux); `ssh`/`scp` (servers). dabs never installs these: each driver's
 `New()` checks for its tools and returns an error with the install command.
@@ -155,7 +158,8 @@ core/mcpserve/         the dabash MCP server, pure over an injected exec.
 
 **Rules that keep it clean**
 
-- Zero third-party dependencies. `go.mod` has no require block; keep it so.
+- Minimal third-party dependencies: only `sigs.k8s.io/yaml`. Don't add more
+  without a strong reason.
 - `cli` and `core/actions` never import each other — they meet only in main.
   Drivers import only `core/sandbox`; nothing imports a driver except the
   build-tagged selection files.

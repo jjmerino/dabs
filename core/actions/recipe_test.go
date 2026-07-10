@@ -103,6 +103,7 @@ func (f *fakeData) MkdirAll(p string, _ fs.FileMode) error {
 func (f *fakeData) MkdirTemp(string, string) (string, error) { return "/tmp/x", nil }
 func (f *fakeData) RemoveAll(string) error                   { return nil }
 func (f *fakeData) Getenv(k string) string                   { return f.env[k] }
+func (f *fakeData) LookupEnv(k string) (string, bool)        { v, ok := f.env[k]; return v, ok }
 func (f *fakeData) ExpandEnv(s string) string {
 	return os.Expand(s, func(k string) string { return f.env[k] })
 }
@@ -261,11 +262,16 @@ func TestRecipeCopyStagesThenCopies(t *testing.T) {
 			t.Errorf("copy source produced a writable mount at /work: %+v", m)
 		}
 	}
-	if len(drv.execs) != 1 {
-		t.Fatalf("want one copy Exec, got %v", drv.execs)
+	// Snapshot is materialized by argv Execs (mkdir + cp) — no shell string, so a
+	// quirky dest path can't break it.
+	if len(drv.execs) != 2 {
+		t.Fatalf("want mkdir+cp Execs, got %v", drv.execs)
 	}
-	if s := strings.Join(drv.execs[0], " "); !strings.Contains(s, "/work") || !strings.Contains(s, "cp ") {
-		t.Errorf("copy exec = %q, want a cp into /work", s)
+	if drv.execs[0][0] != "mkdir" || drv.execs[1][0] != "cp" {
+		t.Errorf("copy execs = %v, want [mkdir…] then [cp…]", drv.execs)
+	}
+	if last := drv.execs[1]; last[len(last)-1] != "/work" {
+		t.Errorf("cp dest = %v, want /work", last)
 	}
 }
 

@@ -21,12 +21,17 @@ func (OS) MkdirAll(path string, m fs.FileMode) error         { return os.MkdirAl
 func (OS) MkdirTemp(dir, pattern string) (string, error)     { return os.MkdirTemp(dir, pattern) }
 func (OS) RemoveAll(path string) error                       { return os.RemoveAll(path) }
 func (OS) Getenv(key string) string                          { return os.Getenv(key) }
+func (OS) LookupEnv(key string) (string, bool)               { return os.LookupEnv(key) }
 func (OS) ExpandEnv(s string) string                         { return os.ExpandEnv(s) }
 
 func (OS) GitToplevel(dir string) (string, error) {
-	out, err := exec.Command("git", "-C", dir, "rev-parse", "--show-toplevel").Output()
+	out, err := exec.Command("git", "-C", dir, "rev-parse", "--show-toplevel").CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("not a git repository")
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			msg = "not a git repository"
+		}
+		return "", fmt.Errorf("%s", msg)
 	}
 	return strings.TrimSpace(string(out)), nil
 }
@@ -58,20 +63,29 @@ func (OS) ReadDir(dir string) ([]string, error) {
 	return names, nil
 }
 
-// baseBranch returns the branch checked out in the worktree's main repo — the
-// point new work is measured against.
-func baseBranch(worktree string) string {
+// baseRef returns the ref of the MAIN worktree (the point new work is measured
+// against): its branch name, or — when the main repo is in detached HEAD — its
+// HEAD sha. It parses the porcelain blocks in order; the FIRST block is always
+// the main worktree, so we never mistake a linked worktree's branch for the base.
+func baseRef(worktree string) string {
 	out, err := exec.Command("git", "-C", worktree, "worktree", "list", "--porcelain").Output()
 	if err != nil {
 		return ""
 	}
-	// First "branch refs/heads/<x>" line belongs to the main worktree.
+	// The first block (up to the first blank line) is the main worktree.
+	head := ""
 	for _, line := range strings.Split(string(out), "\n") {
+		if line == "" { // end of the main worktree's block
+			break
+		}
 		if b, ok := strings.CutPrefix(line, "branch refs/heads/"); ok {
-			return b
+			return b // main is on a branch
+		}
+		if h, ok := strings.CutPrefix(line, "HEAD "); ok {
+			head = strings.TrimSpace(h) // remember the sha in case main is detached
 		}
 	}
-	return ""
+	return head // detached main → measure against its commit
 }
 
 func (OS) GitState(worktree string) (string, bool, int, error) {
@@ -85,21 +99,29 @@ func (OS) GitState(worktree string) (string, bool, int, error) {
 	}
 	dirty := len(strings.TrimSpace(string(status))) > 0
 	ahead := 0
-	if base := baseBranch(worktree); base != "" {
-		if out, err := exec.Command("git", "-C", worktree, "rev-list", "--count", base+"..HEAD").Output(); err == nil {
-			fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &ahead)
+	if base := baseRef(worktree); base != "" {
+		out, err := exec.Command("git", "-C", worktree, "rev-list", "--count", base+"..HEAD").Output()
+		if err != nil {
+			return "", false, 0, fmt.Errorf("git rev-list %s..HEAD: %v", base, err)
 		}
+		fmt.Sscanf(strings.TrimSpace(string(out)), "%d", &ahead)
 	}
 	return strings.TrimSpace(string(branch)), dirty, ahead, nil
 }
 
 func (OS) GitDiff(worktree string) (string, error) {
 	var b strings.Builder
-	if base := baseBranch(worktree); base != "" {
-		out, _ := exec.Command("git", "-C", worktree, "diff", base+"...HEAD").Output()
+	if base := baseRef(worktree); base != "" {
+		out, err := exec.Command("git", "-C", worktree, "diff", base+"...HEAD").CombinedOutput()
+		if err != nil {
+			return "", fmt.Errorf("git diff %s...HEAD: %v: %s", base, err, strings.TrimSpace(string(out)))
+		}
 		b.Write(out)
 	}
-	out, _ := exec.Command("git", "-C", worktree, "diff", "HEAD").Output() // uncommitted
+	out, err := exec.Command("git", "-C", worktree, "diff", "HEAD").CombinedOutput() // uncommitted
+	if err != nil {
+		return "", fmt.Errorf("git diff HEAD: %v: %s", err, strings.TrimSpace(string(out)))
+	}
 	b.Write(out)
 	return b.String(), nil
 }

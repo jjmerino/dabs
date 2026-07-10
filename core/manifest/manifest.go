@@ -64,6 +64,9 @@ func Load(pathOrDir string) (Manifest, error) {
 	if err := json.Unmarshal(raw, &m); err != nil {
 		var te *json.UnmarshalTypeError
 		if errors.As(err, &te) {
+			if te.Field == "" { // a top-level type mismatch has no field name
+				return m, fmt.Errorf("manifest %s: must be %s (got %s)", path, friendlyType(te.Type), te.Value)
+			}
 			return m, fmt.Errorf("manifest %s: field %q must be %s (got %s)", path, te.Field, friendlyType(te.Type), te.Value)
 		}
 		return m, fmt.Errorf("manifest %s: invalid JSON: %w", path, err)

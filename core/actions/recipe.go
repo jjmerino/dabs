@@ -126,8 +126,11 @@ func (r Real) Recipe(p params.Recipe) error {
 	defer drv.Down(instance)
 
 	for _, c := range copies {
-		script := fmt.Sprintf("mkdir -p '%s' && cp -a '%s/.' '%s/'", c.dest, c.src, c.dest)
-		if out, err := drv.Exec(instance, []string{"sh", "-c", script}); err != nil {
+		// argv, not a shell string — a dest with a quote/space can't break it.
+		if out, err := drv.Exec(instance, []string{"mkdir", "-p", c.dest}); err != nil {
+			return fmt.Errorf("recipe %q: mkdir %s: %w: %s", name, c.dest, err, out)
+		}
+		if out, err := drv.Exec(instance, []string{"cp", "-a", c.src + "/.", c.dest}); err != nil {
 			return fmt.Errorf("recipe %q: copy into %s: %w: %s", name, c.dest, err, out)
 		}
 	}
@@ -275,7 +278,7 @@ var envRef = regexp.MustCompile(`\$\{?(\w+)\}?`)
 // variable is an error, not a silent truncation to a shorter (wrong) path.
 func (r Real) expandPath(p string) (string, error) {
 	for _, m := range envRef.FindAllStringSubmatch(p, -1) {
-		if r.data.Getenv(m[1]) == "" {
+		if _, ok := r.data.LookupEnv(m[1]); !ok {
 			return "", fmt.Errorf("unset variable %s in source path %q", m[0], p)
 		}
 	}

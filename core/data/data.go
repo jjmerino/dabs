@@ -1,11 +1,12 @@
 // Package data is the seam between dabs's core logic and the host's stateful
 // world: the filesystem, environment, and the local git binary. It is to those
-// what sandbox.Driver is to containers — the one place I/O crosses out of core,
-// so core logic can be exercised against a fake.
+// what sandbox.Driver is to containers — where fs/env/git I/O crosses out of
+// core, so that logic can be exercised against a fake.
 //
-// Operations are the exact set core/actions performs today (see the dep
-// analysis): 7 filesystem, 2 env, 3 git. Nothing here reaches the network or a
-// container orchestrator — those already live behind sandbox.Driver.
+// The recipe, auth, and worktree actions route their I/O through this seam;
+// install.go still calls os directly (it predates the seam and isn't yet
+// migrated). Nothing here reaches the network or a container orchestrator —
+// those already live behind sandbox.Driver.
 package data
 
 import "io/fs"
@@ -24,6 +25,9 @@ type Data interface {
 
 	// --- environment ---
 	Getenv(key string) string
+	// LookupEnv reports a variable's value and whether it is SET (distinct from
+	// set-but-empty), so a path expansion can tell "$UNSET" from "$EMPTY".
+	LookupEnv(key string) (string, bool)
 	ExpandEnv(s string) string
 
 	// --- git (the one external process core drives directly) ---

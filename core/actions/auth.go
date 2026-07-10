@@ -39,11 +39,11 @@ func (r Real) Auth(p params.Auth) error {
 		return err
 	}
 
-	vault, err := vaultDir(p.Provider)
+	vault, err := r.vaultDir(p.Provider)
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(vault, 0o700); err != nil {
+	if err := r.data.MkdirAll(vault, 0o700); err != nil {
 		return fmt.Errorf("auth: vault %s: %w", vault, err)
 	}
 
@@ -52,7 +52,7 @@ func (r Real) Auth(p params.Auth) error {
 	// instead — how a no-docker environment (the e2e runner, staged prebuilt
 	// images) supplies a box whose `claude` is a fake that only handles login.
 	name := "auth-" + p.Provider
-	if img := os.Getenv("DABS_AUTH_IMAGE"); img != "" {
+	if img := r.data.Getenv("DABS_AUTH_IMAGE"); img != "" {
 		name = img
 	} else if err := r.buildImageIfMissing(drv, p.Provider, name); err != nil {
 		return err
@@ -81,7 +81,7 @@ func (r Real) Auth(p params.Auth) error {
 		return fmt.Errorf("auth: login: %w", err)
 	}
 
-	if credAccessToken(credPath) == "" {
+	if r.credAccessToken(credPath) == "" {
 		return fmt.Errorf("auth: login did not produce a credential (not completed?)")
 	}
 	fmt.Fprintf(os.Stdout, "claude authenticated → %s\n", vault)
@@ -89,9 +89,11 @@ func (r Real) Auth(p params.Auth) error {
 }
 
 // credAccessToken reads claudeAiOauth.accessToken from a Claude credential
-// file, returning "" if the file is missing, unreadable, or unparseable.
-func credAccessToken(path string) string {
-	data, err := os.ReadFile(path)
+// file, returning "" if the file is missing, unreadable, or unparseable. It only
+// reads to test presence; the token value is never returned to a caller that
+// prints it.
+func (r Real) credAccessToken(path string) string {
+	data, err := r.data.ReadFile(path)
 	if err != nil {
 		return ""
 	}
@@ -108,8 +110,8 @@ func credAccessToken(path string) string {
 
 // vaultDir is the host directory that holds a provider's credential, mounted
 // live into future sandboxes.
-func vaultDir(provider string) (string, error) {
-	home, err := os.UserHomeDir()
+func (r Real) vaultDir(provider string) (string, error) {
+	home, err := r.data.HomeDir()
 	if err != nil {
 		return "", fmt.Errorf("auth: home: %w", err)
 	}
@@ -131,7 +133,7 @@ func (r Real) buildImageIfMissing(drv sandbox.Driver, provider, imageName string
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(ctxDir)
+	defer r.data.RemoveAll(ctxDir)
 	return drv.Build(sandbox.BuildSpec{
 		Name:       imageName,
 		Dockerfile: filepath.Join(ctxDir, "Dockerfile"),
@@ -143,7 +145,7 @@ func (r Real) buildImageIfMissing(drv sandbox.Driver, provider, imageName string
 // directory the driver can build from.
 func (r Real) stageImage(provider string) (string, error) {
 	sub := "images/" + provider
-	dir, err := os.MkdirTemp("", "dabs-auth-"+provider+"-")
+	dir, err := r.data.MkdirTemp("", "dabs-auth-"+provider+"-")
 	if err != nil {
 		return "", fmt.Errorf("auth: stage: %w", err)
 	}
@@ -154,16 +156,16 @@ func (r Real) stageImage(provider string) (string, error) {
 		rel, _ := filepath.Rel(sub, p)
 		dst := filepath.Join(dir, rel)
 		if d.IsDir() {
-			return os.MkdirAll(dst, 0o755)
+			return r.data.MkdirAll(dst, 0o755)
 		}
 		data, err := fs.ReadFile(r.images, p)
 		if err != nil {
 			return err
 		}
-		return os.WriteFile(dst, data, 0o644)
+		return r.data.WriteFile(dst, data, 0o644)
 	})
 	if err != nil {
-		os.RemoveAll(dir)
+		r.data.RemoveAll(dir)
 		return "", fmt.Errorf("auth: stage %s: %w", sub, err)
 	}
 	return dir, nil

@@ -1,13 +1,13 @@
 ---
 name: dabs
-description: Run a command or a sub-agent inside a disposable dabs sandbox — a fresh machine reached through one shell tool (dabash), with no access to the host. Use when the user says "run it in a dabs box", "in a sandbox", "hand this to a sub-agent in a box", or wants a command executed off the host in a throwaway environment.
+description: Run a command or an agent inside a disposable dabs sandbox — a fresh machine with no access to the host. Use when the user says "run it in a dabs box", "in a sandbox", or wants a command or agent executed off the host in a throwaway environment.
 ---
 
-# dabs — a disposable sandbox reached through one tool
+# dabs — a disposable sandbox
 
-dabs (dumb agent boxes) builds a box from a Dockerfile and hands out access
-to it through a single tool, `dabash(command, cwd?)`. The box has no view of
-your host; each `up` is a fresh instance.
+dabs (dumb agent boxes) builds a box from a Dockerfile and lets you run
+commands — or a whole agent — inside it. The box has no view of your host;
+each `up` is a fresh instance.
 
 ## Directly
 
@@ -18,24 +18,30 @@ dabs run <instance> -- <cmd…>         # execute inside; shell syntax needs sh 
 dabs down <instance>                  # remove it (--force for all of a name)
 ```
 
-## Hand it to a sub-agent
+## Run an agent inside the box — with a recipe
 
-`dabs mcp <full-instance>` is an MCP stdio server exposing only
-`dabash`, curried to that box — the tool has no sandbox parameter, so the
-sub-agent can reach nothing else:
+Recipes do the plumbing. `dabs recipe claude` runs Claude Code in a fresh box,
+already authenticated. That recipe ships out of the box (`dabs recipes` lists
+it); copy it into `~/.dabs/recipes.yaml` for your own:
 
-```bash
-claude --setting-sources "" --tools "" --strict-mcp-config \
-  --mcp-config '{"mcpServers":{"dabash":{"command":"dabs","args":["mcp","<full-instance>"]}}}' \
-  --allowedTools "mcp__dabash__dabash" \
-  -p "<task>"
+```yaml
+recipes:
+  claude:                            # ships out of the box → dabs recipe claude
+    image: claude
+    command: [claude]
+    env: { CLAUDE_CONFIG_DIR: /root/.claude }
+    sources:
+      - mount: ~/.dabs/auth/claude   # your shared vault — dabs mounts it, never copies
+        path: /root/.claude
+      - worktree: .                  # a fresh git branch of the cwd
+        path: /work
 ```
 
 ## Notes
 
-- Pass the FULL instance name to `dabs mcp` (not a prefix) — an exact name
-  resolves locally with no ssh probe, so the server starts instantly.
-- `--setting-sources ""` keeps credentials but drops host config; `--bare`
-  breaks auth. `--allowedTools` is required in `-p` mode or it stalls.
 - Boxes are copies, not mounts: rebuild after editing source. A box only
   contains what its Dockerfile installed.
+- Keep the build context under your home directory. A context under
+  `/private/tmp` (agent scratchpad) was empirically found to fail `dabs build`
+  on macOS with `failed to compute cache key … not found` (2026-07-09); under
+  home it worked.

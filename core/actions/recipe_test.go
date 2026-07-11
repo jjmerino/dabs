@@ -39,6 +39,7 @@ type fakeDriver struct {
 	runErr error
 	downs  []string
 	nInst  int
+	infos  []sandbox.Info // what Ls reports (for name resolution in Down)
 }
 
 func (d *fakeDriver) Build(s sandbox.BuildSpec) error { d.builds = append(d.builds, s); return nil }
@@ -59,7 +60,7 @@ func (d *fakeDriver) Exec(_ string, cmd []string) (string, error) {
 	return "", nil
 }
 func (d *fakeDriver) Down(inst string) error      { d.downs = append(d.downs, inst); return nil }
-func (d *fakeDriver) Ls() ([]sandbox.Info, error) { return nil, nil }
+func (d *fakeDriver) Ls() ([]sandbox.Info, error) { return d.infos, nil }
 func (d *fakeDriver) Kind() string                { return "fake" }
 
 // --- fake data: canned fs/env/git, records mutations -------------------------
@@ -94,6 +95,13 @@ func (f *fakeData) ReadFile(p string) ([]byte, error) {
 	return nil, fs.ErrNotExist
 }
 func (f *fakeData) WriteFile(string, []byte, fs.FileMode) error { return nil }
+func (f *fakeData) AppendFile(p string, b []byte, _ fs.FileMode) error {
+	if f.files == nil {
+		f.files = map[string][]byte{}
+	}
+	f.files[p] = append(f.files[p], b...)
+	return nil
+}
 func (f *fakeData) Stat(p string) (fs.FileInfo, error) {
 	if f.exists[p] {
 		if f.isDir[p] {

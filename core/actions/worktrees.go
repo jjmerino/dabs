@@ -28,22 +28,31 @@ func (r Real) Worktrees(p params.Worktrees) error {
 		if err != nil {
 			return err
 		}
+		names = worktreeNames(names) // the log file lives here too; it is not a worktree
 		if len(names) == 0 {
 			fmt.Fprintln(os.Stdout, tui.Muted("no worktrees"))
 			return nil
 		}
+		// Liveness is log-derived: a worktree has a live box if its instance has
+		// an `up` in log.jsonl with no later `down` (see liveByWorktree).
+		live := r.liveByWorktree()
 		rows := make([][]string, 0, len(names))
 		for _, n := range names {
-			branch, dirty, ahead, err := r.data.GitState(filepath.Join(base, n))
+			path := filepath.Join(base, n)
+			branch, dirty, ahead, err := r.data.GitState(path)
 			if err != nil {
-				rows = append(rows, []string{tui.Accent(n), tui.Warn("unreadable: %v", err), "", ""})
+				rows = append(rows, []string{tui.Accent(n), path, "", tui.Warn("unreadable: %v", err)})
 				continue
 			}
 			hasWork := dirty || ahead > 0
-			detail := tui.Muted("uncommitted=%v, ahead=%d", dirty, ahead)
-			rows = append(rows, []string{tui.Accent(n), branch, tui.WorkState(hasWork), detail})
+			box := "no box"
+			if inst, ok := live[n]; ok {
+				box = fmt.Sprintf("box %s live", inst)
+			}
+			detail := tui.Muted("branch %s · uncommitted=%v ahead=%d · %s", branch, dirty, ahead, box)
+			rows = append(rows, []string{tui.Accent(n), path, tui.WorkState(hasWork), detail})
 		}
-		fmt.Fprintln(os.Stdout, tui.Rows([]string{"WORKTREE", "BRANCH", "STATE", "DETAIL"}, rows))
+		fmt.Fprintln(os.Stdout, tui.Rows([]string{"NAME", "WORKTREE", "STATE", "DETAIL"}, rows))
 		return nil
 
 	case "diff":
@@ -68,6 +77,7 @@ func (r Real) Worktrees(p params.Worktrees) error {
 		if err != nil {
 			return err
 		}
+		names = worktreeNames(names) // never reap the log file as if it were a worktree
 		var kept []string
 		for _, n := range names {
 			if err := r.reapWorktree(filepath.Join(base, n), p.Force); err != nil {
@@ -83,6 +93,20 @@ func (r Real) Worktrees(p params.Worktrees) error {
 	default:
 		return fmt.Errorf("worktrees: unknown subcommand %q (ls | diff <name> | rm <name> | prune)", p.Sub)
 	}
+}
+
+// worktreeNames drops the box-lifecycle journal (and any other non-directory
+// bookkeeping) from a listing of ~/.dabs/worktrees, so only actual worktrees are
+// treated as worktrees. The log lives in the same dir but is not one.
+func worktreeNames(names []string) []string {
+	out := names[:0:0]
+	for _, n := range names {
+		if n == wtLogFile {
+			continue
+		}
+		out = append(out, n)
+	}
+	return out
 }
 
 // reapWorktree removes one worktree, refusing to discard unreviewed work unless

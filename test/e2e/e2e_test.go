@@ -607,15 +607,47 @@ func TestRecipeNewWorktree(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(repo, "from-box.txt")); err == nil {
 		t.Fatalf("worktree not isolated: box's write appeared in the original repo")
 	}
-	entries, err := os.ReadDir(filepath.Join(home, ".dabs", "worktrees"))
-	if err != nil || len(entries) == 0 {
-		t.Fatalf("expected a kept worktree under ~/.dabs/worktrees; err=%v entries=%v", err, entries)
+	wts := worktreeDirs(t)
+	if len(wts) == 0 {
+		t.Fatalf("expected a kept worktree under ~/.dabs/worktrees; got %v", wts)
 	}
-	wt := filepath.Join(home, ".dabs", "worktrees", entries[0].Name(), "from-box.txt")
+	wt := filepath.Join(home, ".dabs", "worktrees", wts[0], "from-box.txt")
 	if _, err := os.Stat(wt); err != nil {
 		t.Fatalf("box's write not found in the kept worktree: %v", err)
 	}
 	vaultHasToken(t)
+}
+
+// TestNonKeepWorktreeRecipeJournalBalanced (regression, finding #1): a NON-KEEP
+// `worktree:` recipe (claude-new-worktree) tears its box down automatically when
+// the command exits — the journal must record BOTH the `up` and a matching
+// `down`, so the (now dead) box never reads as live. The worktree survives (kept)
+// but `dabs worktrees` shows it with no box.
+func TestNonKeepWorktreeRecipeJournalBalanced(t *testing.T) {
+	clean(t)
+	installRecipes(t)
+	os.RemoveAll(filepath.Join(home, ".dabs", "worktrees")) // isolate the journal too
+	repo := filepath.Join(home, "wtbalance")
+	gitRepo(t, repo)
+
+	if _, code := runIn(repo, "dabs recipe claude-new-worktree"); code != 0 {
+		t.Fatalf("recipe failed")
+	}
+	logPath := filepath.Join(home, ".dabs", "worktrees", "log.jsonl")
+	log := readFile(t, logPath)
+	t.Logf("log.jsonl after non-keep recipe:\n%s", log)
+	if up, down := strings.Count(log, `"event":"up"`), strings.Count(log, `"event":"down"`); up != 1 || down != 1 {
+		t.Fatalf("journal not balanced: up=%d down=%d\n%s", up, down, log)
+	}
+
+	// The kept worktree reads as having no live box (the box was torn down).
+	out, code := run("dabs worktrees")
+	wantExit(t, 0, code)
+	t.Logf("dabs worktrees after non-keep teardown:\n%s", out)
+	wantContains(t, out, "no box")
+	if strings.Contains(out, " live") {
+		t.Fatalf("a torn-down box still reads as live:\n%s", out)
+	}
 }
 
 // TestWorktreesInspectAndGuardedReap: a recipe leaves a worktree with the box's
@@ -630,11 +662,11 @@ func TestWorktreesInspectAndGuardedReap(t *testing.T) {
 	if _, code := runIn(repo, "dabs recipe claude-new-worktree"); code != 0 {
 		t.Fatalf("recipe failed")
 	}
-	entries, err := os.ReadDir(filepath.Join(home, ".dabs", "worktrees"))
-	if err != nil || len(entries) == 0 {
-		t.Fatalf("no worktree created: %v", err)
+	wts := worktreeDirs(t)
+	if len(wts) == 0 {
+		t.Fatalf("no worktree created: %v", wts)
 	}
-	name := entries[0].Name()
+	name := wts[0]
 
 	out, code := run("dabs worktrees")
 	wantExit(t, 0, code)
@@ -649,7 +681,7 @@ func TestWorktreesInspectAndGuardedReap(t *testing.T) {
 	out, code = run("dabs worktrees rm " + name + " --force")
 	wantExit(t, 0, code)
 	wantContains(t, out, "removed")
-	if e, _ := os.ReadDir(filepath.Join(home, ".dabs", "worktrees")); len(e) != 0 {
+	if e := worktreeDirs(t); len(e) != 0 {
 		t.Fatalf("worktree not reaped after --force: %v", e)
 	}
 }
@@ -682,11 +714,11 @@ func TestCastAttachesWorktreeAndGivesGit(t *testing.T) {
 	if _, code := runIn(repo, "dabs recipe claude-new-worktree"); code != 0 {
 		t.Fatalf("seed worktree via recipe failed")
 	}
-	entries, err := os.ReadDir(filepath.Join(home, ".dabs", "worktrees"))
-	if err != nil || len(entries) != 1 {
-		t.Fatalf("want exactly one seeded worktree, got %v (err %v)", entries, err)
+	wts := worktreeDirs(t)
+	if len(wts) != 1 {
+		t.Fatalf("want exactly one seeded worktree, got %v", wts)
 	}
-	name := entries[0].Name()
+	name := wts[0]
 	wt := filepath.Join(home, ".dabs", "worktrees", name)
 
 	// Cast a git-doing recipe onto that existing worktree.
@@ -695,7 +727,7 @@ func TestCastAttachesWorktreeAndGivesGit(t *testing.T) {
 	wantContains(t, out, "mounting it instead") // attached, did not fork
 
 	// It must NOT have created a second worktree.
-	if e, _ := os.ReadDir(filepath.Join(home, ".dabs", "worktrees")); len(e) != 1 {
+	if e := worktreeDirs(t); len(e) != 1 {
 		t.Fatalf("cast forked a new worktree; want still one, got %v", e)
 	}
 
@@ -722,6 +754,121 @@ func TestCastAttachesWorktreeAndGivesGit(t *testing.T) {
 	if subj := gitOut(t, wt, "log", "-1", "--format=%s"); subj != "from cast box" {
 		t.Fatalf("worktree HEAD subject = %q, want 'from cast box'", subj)
 	}
+}
+
+// instanceFrom pulls the base-box instance name out of `dabs up` output (the
+// field prefixed with the sandbox name, printed on the "<instance> up" line).
+func instanceFrom(t *testing.T, out string) string {
+	t.Helper()
+	for _, f := range strings.Fields(out) {
+		if strings.HasPrefix(f, sandboxName+"-") {
+			return f
+		}
+	}
+	t.Fatalf("no %s-* instance in output:\n%s", sandboxName, out)
+	return ""
+}
+
+// TestWorktreeBoxLifecycleLog drives the append-only journal end to end: bring
+// up a worktree-backed box (`dabs up` on a `worktree:` recipe), confirm
+// log.jsonl gains an `up` and `dabs worktrees` shows the box live under the
+// worktree's absolute path, then `dabs down` and confirm a `down` entry and that
+// the worktree reads as having no box. The log is the sole instance→worktree
+// record; nothing else knows the box was worktree-backed.
+func TestWorktreeBoxLifecycleLog(t *testing.T) {
+	clean(t)
+	installRecipes(t)
+	wtDir := filepath.Join(home, ".dabs", "worktrees")
+	os.RemoveAll(wtDir) // isolate from other tests' worktrees AND their log
+	repo := filepath.Join(home, "wtlogrepo")
+	gitRepo(t, repo)
+
+	// Bring up a worktree-backed box detached (up runs no command, keeps the box).
+	out, code := runIn(repo, "dabs up claude-new-worktree")
+	wantExit(t, 0, code)
+	wantContains(t, out, "worktree kept")
+	inst := instanceFrom(t, out)
+	t.Cleanup(func() { run("dabs down " + inst + " --force") })
+
+	wts := worktreeDirs(t)
+	if len(wts) != 1 {
+		t.Fatalf("want exactly one worktree, got %v", wts)
+	}
+	wtName := wts[0]
+	wtPath := filepath.Join(wtDir, wtName)
+	logPath := filepath.Join(wtDir, "log.jsonl")
+
+	// The `up` entry links the box to the worktree by name and absolute path.
+	logAfterUp := readFile(t, logPath)
+	t.Logf("log.jsonl after up:\n%s", logAfterUp)
+	if n := strings.Count(logAfterUp, `"event":"up"`); n != 1 {
+		t.Fatalf("want one up entry, log is:\n%s", logAfterUp)
+	}
+	for _, want := range []string{`"event":"up"`, `"instance":"` + inst + `"`, `"worktree":"` + wtName + `"`, `"path":"` + wtPath + `"`} {
+		wantContains(t, logAfterUp, want)
+	}
+	if strings.Contains(logAfterUp, `"event":"down"`) {
+		t.Fatalf("no down expected yet, log is:\n%s", logAfterUp)
+	}
+
+	// `dabs worktrees` shows NAME | WORKTREE(abs path) | STATE | DETAIL with the
+	// box reported live from the log.
+	out, code = run("dabs worktrees")
+	wantExit(t, 0, code)
+	t.Logf("dabs worktrees (box up):\n%s", out)
+	for _, want := range []string{"NAME", "WORKTREE", "STATE", "DETAIL", wtPath, "box " + inst + " live"} {
+		wantContains(t, out, want)
+	}
+
+	// Bring the box down — the journal gains a matching `down`.
+	out, code = run("dabs down " + inst)
+	wantExit(t, 0, code)
+	logAfterDown := readFile(t, logPath)
+	t.Logf("log.jsonl after down:\n%s", logAfterDown)
+	if n := strings.Count(logAfterDown, `"event":"down"`); n != 1 {
+		t.Fatalf("want one down entry after down, log is:\n%s", logAfterDown)
+	}
+	wantContains(t, logAfterDown, `"event":"down"`)
+
+	// With the box down, the worktree reads as having no live box.
+	out, code = run("dabs worktrees")
+	wantExit(t, 0, code)
+	t.Logf("dabs worktrees (box down):\n%s", out)
+	wantContains(t, out, "no box")
+	if strings.Contains(out, "box "+inst+" live") {
+		t.Fatalf("worktree still shows a live box after down:\n%s", out)
+	}
+}
+
+// worktreeDirs lists the worktree names under ~/.dabs/worktrees, excluding the
+// box-lifecycle journal (log.jsonl) that now lives in the same directory.
+func worktreeDirs(t *testing.T) []string {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(home, ".dabs", "worktrees"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		t.Fatalf("read worktrees dir: %v", err)
+	}
+	var out []string
+	for _, e := range entries {
+		if e.Name() == "log.jsonl" {
+			continue
+		}
+		out = append(out, e.Name())
+	}
+	return out
+}
+
+// readFile returns a file's contents (fatal on error), for asserting on the log.
+func readFile(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(b)
 }
 
 // TestRecipeLocalDabsYamlDefault: a project's ./dabs.yaml adds recipes and a

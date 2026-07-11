@@ -78,6 +78,11 @@ func TestGuardScriptDeniesVaultOnly(t *testing.T) {
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("no sh available")
 	}
+	// The guard parses tool_input.command with node (always present in the
+	// claude image). The test needs it too to exercise the real script.
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("no node available")
+	}
 	script, err := imagesFS.ReadFile("images/claude/guard-claude-vault.sh")
 	if err != nil {
 		t.Fatalf("guard script not embedded: %v", err)
@@ -101,12 +106,22 @@ func TestGuardScriptDeniesVaultOnly(t *testing.T) {
 		{"work read allowed", "cat /work/main.go | head -1", 0},
 		{"ls work allowed", "ls -la /work", 0},
 		{"git status allowed", "git -C /work status", 0},
+		{"echo allowed", "echo hello", 0},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			// A REALISTIC payload: Claude Code always sends transcript_path and
+			// cwd, and transcript_path lives under /root/.claude (the config
+			// dir). A guard that scans the whole payload matches these on EVERY
+			// call and blocks all Bash — this field is what makes the "allowed"
+			// cases fail unless the guard inspects only tool_input.command.
 			payload, _ := json.Marshal(map[string]any{
-				"tool_name":  "Bash",
-				"tool_input": map[string]string{"command": c.command},
+				"session_id":      "s1",
+				"transcript_path": "/root/.claude/projects/-work/s1.jsonl",
+				"cwd":             "/work",
+				"hook_event_name": "PreToolUse",
+				"tool_name":       "Bash",
+				"tool_input":      map[string]string{"command": c.command},
 			})
 			cmd := exec.Command("sh", path)
 			cmd.Stdin = strings.NewReader(string(payload))
@@ -114,6 +129,52 @@ func TestGuardScriptDeniesVaultOnly(t *testing.T) {
 			got := cmd.ProcessState.ExitCode()
 			if got != c.wantExit {
 				t.Fatalf("command %q: want exit %d, got %d (output: %s)", c.command, c.wantExit, got, out)
+			}
+		})
+	}
+}
+
+// TestGuardFailsClosedOnUnparseablePayload locks in the security-critical
+// fail-closed branch (the new code the fix added): if the payload can't be
+// parsed into a command, the guard must DENY (exit 2), never fall open. A valid
+// payload with no runnable command string has nothing to vet → allowed (0).
+// Without this, a future refactor of the node extraction could silently make
+// the guard fail OPEN with every other test still green.
+func TestGuardFailsClosedOnUnparseablePayload(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("no sh available")
+	}
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("no node available")
+	}
+	script, err := imagesFS.ReadFile("images/claude/guard-claude-vault.sh")
+	if err != nil {
+		t.Fatalf("guard script not embedded: %v", err)
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "guard.sh")
+	if err := os.WriteFile(path, script, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name     string
+		stdin    string
+		wantExit int
+	}{
+		{"malformed json", "{not json", 2}, // parse throws → fail closed
+		{"empty stdin", "", 2},             // no payload → fail closed
+		{"truncated json", `{"tool_input":{"command":`, 2},
+		{"no command field", `{"tool_name":"Bash","tool_input":{}}`, 0}, // nothing to run → allow
+		{"non-string command", `{"tool_input":{"command":["x"]}}`, 0},   // odd shape, no shell string → allow
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cmd := exec.Command("sh", path)
+			cmd.Stdin = strings.NewReader(c.stdin)
+			out, _ := cmd.CombinedOutput()
+			if got := cmd.ProcessState.ExitCode(); got != c.wantExit {
+				t.Fatalf("stdin %q: want exit %d, got %d (output: %s)", c.stdin, c.wantExit, got, out)
 			}
 		})
 	}

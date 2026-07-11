@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/jjmerino/dabs/core/params"
+	"github.com/jjmerino/dabs/core/tui"
 )
 
 // Worktrees inspects and reaps the git worktrees dabs recipes create under
@@ -28,21 +29,21 @@ func (r Real) Worktrees(p params.Worktrees) error {
 			return err
 		}
 		if len(names) == 0 {
-			fmt.Fprintln(os.Stdout, "no worktrees")
+			fmt.Fprintln(os.Stdout, tui.Muted("no worktrees"))
 			return nil
 		}
+		rows := make([][]string, 0, len(names))
 		for _, n := range names {
 			branch, dirty, ahead, err := r.data.GitState(filepath.Join(base, n))
 			if err != nil {
-				fmt.Fprintf(os.Stdout, "%-26s (unreadable: %v)\n", n, err)
+				rows = append(rows, []string{tui.Accent(n), tui.Warn("unreadable: %v", err), "", ""})
 				continue
 			}
-			state := "clean"
-			if dirty || ahead > 0 {
-				state = "HAS WORK"
-			}
-			fmt.Fprintf(os.Stdout, "%-26s %-22s %s (uncommitted=%v, ahead=%d)\n", n, branch, state, dirty, ahead)
+			hasWork := dirty || ahead > 0
+			detail := tui.Muted("uncommitted=%v, ahead=%d", dirty, ahead)
+			rows = append(rows, []string{tui.Accent(n), branch, tui.WorkState(hasWork), detail})
 		}
+		fmt.Fprintln(os.Stdout, tui.Rows([]string{"WORKTREE", "BRANCH", "STATE", "DETAIL"}, rows))
 		return nil
 
 	case "diff":
@@ -74,7 +75,8 @@ func (r Real) Worktrees(p params.Worktrees) error {
 			}
 		}
 		if len(kept) > 0 {
-			fmt.Fprintf(os.Stdout, "kept %d worktree(s) with unreviewed work — review with `dabs worktrees diff <name>`, then `prune --force` to discard: %s\n", len(kept), strings.Join(kept, ", "))
+			fmt.Fprintln(os.Stdout, tui.Warn("kept %d worktree(s) with unreviewed work: %s", len(kept), strings.Join(kept, ", ")))
+			fmt.Fprintln(os.Stdout, tui.Muted("review with `dabs worktrees diff <name>`, then `prune --force` to discard"))
 		}
 		return nil
 
@@ -97,6 +99,6 @@ func (r Real) reapWorktree(path string, force bool) error {
 	if err := r.data.GitRemoveWorktree(path); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stdout, "removed %s\n", filepath.Base(path))
+	fmt.Fprintln(os.Stdout, tui.Success("removed %s", tui.Accent(filepath.Base(path))))
 	return nil
 }

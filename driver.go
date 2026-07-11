@@ -9,6 +9,7 @@ import (
 	"github.com/jjmerino/dabs/core/sandbox"
 	dockerdrv "github.com/jjmerino/dabs/core/sandbox/docker"
 	"github.com/jjmerino/dabs/core/sandbox/server"
+	"github.com/jjmerino/dabs/core/tui"
 )
 
 // buildDrivers assembles the sandbox fleet: the platform's local driver
@@ -30,7 +31,7 @@ func buildDrivers() (map[string]sandbox.Driver, []string, error) {
 	} else if len(cfg.Servers) == 0 {
 		return nil, nil, err
 	} else {
-		fmt.Fprintf(os.Stderr, "dabs: warning: local driver unavailable: %v\n", err)
+		fmt.Fprintln(os.Stderr, tui.Warn("dabs: local driver unavailable: %v", err))
 	}
 
 	// docker driver: selectable via dabs.json "driver":"docker". Registered

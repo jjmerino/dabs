@@ -14,6 +14,7 @@ import (
 	"github.com/jjmerino/dabs/core/params"
 	"github.com/jjmerino/dabs/core/recipe"
 	"github.com/jjmerino/dabs/core/sandbox"
+	"github.com/jjmerino/dabs/core/tui"
 )
 
 // Recipe runs the named recipe (no name → the dabs.yaml `default:`). A trailing
@@ -182,13 +183,13 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 	}
 
 	for _, k := range kept {
-		fmt.Fprintf(os.Stdout, "worktree %s → box\n", k)
+		fmt.Fprintf(os.Stdout, "%s worktree %s %s box\n", tui.Dot(), k, tui.Arrow())
 	}
 	if err := drv.Run(instance, command); err != nil {
 		return fmt.Errorf("recipe %q: %w", name, err)
 	}
 	for _, k := range kept {
-		fmt.Fprintf(os.Stdout, "\nworktree kept: %s\n", k)
+		fmt.Fprintln(os.Stdout, "\n"+tui.Success("worktree kept: %s", k))
 	}
 	return nil
 }
@@ -208,7 +209,7 @@ func (r Real) Recipes(p params.Recipes) error {
 	}
 	names := reg.Names()
 	if len(names) == 0 {
-		fmt.Fprintln(os.Stdout, "no recipes")
+		fmt.Fprintln(os.Stdout, tui.Muted("no recipes"))
 		return nil
 	}
 	for _, n := range names {
@@ -217,14 +218,15 @@ func (r Real) Recipes(p params.Recipes) error {
 		if img == "" {
 			img = "build:" + rec.Image.Dockerfile
 		}
-		mark := ""
+		head := tui.Heading(n)
 		if n == reg.Default {
-			mark = " (default)"
+			head += " " + tui.Badge("default")
 		}
-		fmt.Fprintf(os.Stdout, "%-14s image=%s cmd=%s%s\n", n, img, strings.Join(rec.Command, " "), mark)
+		fmt.Fprintln(os.Stdout, head)
+		fmt.Fprintln(os.Stdout, tui.Indent(tui.Muted("image=%s  cmd=%s", img, strings.Join(rec.Command, " ")), 2))
 		for _, s := range rec.Sources {
 			if kind, origin, err := s.Kind(); err == nil {
-				fmt.Fprintf(os.Stdout, "  %-8s %s → %s\n", kind, origin, s.Path)
+				fmt.Fprintf(os.Stdout, "  %s %-8s %s %s %s\n", tui.Dot(), kind, origin, tui.Arrow(), s.Path)
 			}
 		}
 	}
@@ -426,7 +428,7 @@ func (r Real) castSources(recipeName string, in []recipe.Source, worktree string
 		switch kind {
 		case "worktree", "mount":
 			if kind == "worktree" {
-				fmt.Fprintf(os.Stdout, "cast: recipe wants a fresh worktree; casting onto %s — mounting it instead.\n", wt)
+				fmt.Fprintln(os.Stdout, tui.Muted("cast: recipe wants a fresh worktree; casting onto %s — mounting it instead.", wt))
 			}
 			out = append(out, recipe.Source{Mount: wt, Path: s.Path, RO: s.RO})
 			if !gitMounted { // the shared object store, once, so git resolves in-box

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jjmerino/dabs/core/sandbox"
+	"github.com/jjmerino/dabs/core/tui"
 )
 
 // warnf is where resolution warnings go: stderr, NEVER stdout. Resolution
@@ -89,7 +90,7 @@ func (r Real) matches(instance string) ([]match, error) {
 		go func(key string, drv sandbox.Driver) {
 			infos, err := lsTimeout(drv, remoteTimeout)
 			if err != nil {
-				fmt.Fprintf(warnf, "dabs: warning: server %q unreachable, skipping: %v\n", key, err)
+				fmt.Fprintln(warnf, tui.Warn("dabs: server %q unreachable, skipping: %v", key, err))
 				ch <- reply{key, nil}
 				return
 			}

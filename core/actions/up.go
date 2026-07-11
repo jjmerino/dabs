@@ -7,6 +7,7 @@ import (
 	"github.com/jjmerino/dabs/core/manifest"
 	"github.com/jjmerino/dabs/core/params"
 	"github.com/jjmerino/dabs/core/sandbox"
+	"github.com/jjmerino/dabs/core/tui"
 )
 
 // Up resolves the manifest and starts a NEW pristine instance of its
@@ -31,9 +32,9 @@ func (r Real) Up(p params.Up) error {
 		return err
 	}
 	if m.Target != "" {
-		fmt.Fprintf(os.Stdout, "%s up on %s\n", instance, m.Target)
+		fmt.Fprintln(os.Stdout, tui.Success("%s up on %s", tui.Accent(instance), m.Target))
 		return nil
 	}
-	fmt.Fprintf(os.Stdout, "%s up\n", instance)
+	fmt.Fprintln(os.Stdout, tui.Success("%s up", tui.Accent(instance)))
 	return nil
 }

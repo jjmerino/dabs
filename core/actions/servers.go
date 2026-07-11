@@ -7,6 +7,7 @@ import (
 
 	"github.com/jjmerino/dabs/core/config"
 	"github.com/jjmerino/dabs/core/params"
+	"github.com/jjmerino/dabs/core/tui"
 )
 
 // ServersList prints the fleet: the local machine (when a local driver is
@@ -17,8 +18,9 @@ func (r Real) ServersList(params.ServersList) error {
 	if err != nil {
 		return err
 	}
+	var rows [][]string
 	if drv, ok := r.drivers["local"]; ok {
-		fmt.Fprintf(os.Stdout, "local\t%s this machine\n", drv.Kind())
+		rows = append(rows, []string{tui.Accent("local"), drv.Kind(), tui.Muted("this machine")})
 	}
 	names := make([]string, 0, len(cfg.Servers))
 	for name := range cfg.Servers {
@@ -27,8 +29,9 @@ func (r Real) ServersList(params.ServersList) error {
 	sort.Strings(names)
 	for _, name := range names {
 		s := cfg.Servers[name]
-		fmt.Fprintf(os.Stdout, "%s\t%s %s\n", name, s.Transport(), s.Host)
+		rows = append(rows, []string{tui.Accent(name), s.Transport(), s.Host})
 	}
+	fmt.Fprintln(os.Stdout, tui.Rows([]string{"NAME", "VIA", "DESTINATION"}, rows))
 	return nil
 }
 
@@ -50,7 +53,7 @@ func (r Real) ServersAdd(p params.ServersAdd) error {
 	if err := config.Save(cfg); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stdout, "server %s added (host %s)\n", p.Name, host)
+	fmt.Fprintln(os.Stdout, tui.Success("server %s added %s", tui.Accent(p.Name), tui.Muted("(host %s)", host)))
 	return nil
 }
 
@@ -62,13 +65,13 @@ func (r Real) ServersRemove(p params.ServersRemove) error {
 		return err
 	}
 	if _, ok := cfg.Servers[p.Name]; !ok {
-		fmt.Fprintf(os.Stdout, "no server %s\n", p.Name)
+		fmt.Fprintln(os.Stdout, tui.Muted("no server %s", p.Name))
 		return nil
 	}
 	delete(cfg.Servers, p.Name)
 	if err := config.Save(cfg); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stdout, "server %s removed\n", p.Name)
+	fmt.Fprintln(os.Stdout, tui.Success("server %s removed", tui.Accent(p.Name)))
 	return nil
 }

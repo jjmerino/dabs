@@ -204,6 +204,34 @@ func wantContains(t *testing.T, out, want string) {
 	}
 }
 
+// hasRecipeLine reports whether `dabs recipes` output lists a recipe named
+// exactly name on its own row (first whitespace field) — not a substring buried
+// in another recipe's image= or cmd= (e.g. "sh" inside "shell" or "cmd=sh -c").
+func hasRecipeLine(out, name string) bool {
+	for _, line := range strings.Split(out, "\n") {
+		if f := strings.Fields(line); len(f) > 0 && f[0] == name {
+			return true
+		}
+	}
+	return false
+}
+
+// knownListsRecipe reports whether an error's "(known: a, b, c)" list names the
+// recipe as a distinct entry, not just a substring.
+func knownListsRecipe(out, name string) bool {
+	_, after, ok := strings.Cut(out, "known: ")
+	if !ok {
+		return false
+	}
+	list, _, _ := strings.Cut(after, ")")
+	for _, n := range strings.Split(list, ",") {
+		if strings.TrimSpace(n) == name {
+			return true
+		}
+	}
+	return false
+}
+
 func wantNotContains(t *testing.T, out, bad string) {
 	t.Helper()
 	if strings.Contains(out, bad) {
@@ -274,12 +302,12 @@ func TestLsShowsInstanceAndDriver(t *testing.T) {
 	wantContains(t, out, i)
 }
 
-// --- run ---------------------------------------------------------------------
+// --- exec / run --------------------------------------------------------------
 
 func TestRunEnvAndWorkdir(t *testing.T) {
 	clean(t)
 	i := up(t)
-	out, _ := run("dabs run " + i +
+	out, _ := run("dabs exec " + i +
 		" -- sh -c 'echo E2E=$E2E cwd=$(pwd); cat /work/marker.txt'")
 	wantContains(t, out, "E2E=yes")
 	wantContains(t, out, "cwd=/work")
@@ -290,7 +318,7 @@ func TestRunPrefixResolves(t *testing.T) {
 	clean(t)
 	i := up(t)
 	prefix := i[:len(i)-6] // drop 6 hex chars; unique with a single instance
-	out, _ := run("dabs run " + prefix + " -- echo prefix-ok")
+	out, _ := run("dabs exec " + prefix + " -- echo prefix-ok")
 	wantContains(t, out, "prefix-ok")
 }
 
@@ -298,7 +326,7 @@ func TestRunAmbiguous(t *testing.T) {
 	clean(t)
 	up(t)
 	up(t)
-	out, _ := run("dabs run " + sandboxName + " -- echo x")
+	out, _ := run("dabs exec " + sandboxName + " -- echo x")
 	wantContains(t, out, "ambiguous")
 }
 
@@ -310,17 +338,27 @@ func TestRunMissing(t *testing.T) {
 func TestRunIsolationBetweenInstances(t *testing.T) {
 	clean(t)
 	a, b := up(t), up(t)
-	run("dabs run " + a + " -- touch /work/only-in-a")
-	out, _ := run("dabs run " + b + " -- ls /work")
+	run("dabs exec " + a + " -- touch /work/only-in-a")
+	out, _ := run("dabs exec " + b + " -- ls /work")
 	wantNotContains(t, out, "only-in-a")
 }
 
 func TestRunPersistenceWithinInstance(t *testing.T) {
 	clean(t)
 	i := up(t)
-	run("dabs run " + i + " -- touch /work/persisted")
-	out, _ := run("dabs run " + i + " -- ls /work")
+	run("dabs exec " + i + " -- touch /work/persisted")
+	out, _ := run("dabs exec " + i + " -- ls /work")
 	wantContains(t, out, "persisted")
+}
+
+// TestRunShellWraps proves `dabs run` is the friendly level above exec: it runs
+// a shell command LINE (via sh -c), so a pipe works without the caller writing
+// sh -c or a `--` separator — the command reaches the box as one string.
+func TestRunShellWraps(t *testing.T) {
+	clean(t)
+	i := up(t)
+	out, _ := run("dabs run " + i + " 'echo hi | tr a-z A-Z'")
+	wantContains(t, out, "HI")
 }
 
 // --- down --------------------------------------------------------------------
@@ -494,14 +532,15 @@ func vaultHasToken(t *testing.T) {
 	wantContains(t, string(data), "fake-token")
 }
 
-// TestRecipesLists proves `dabs recipes` shows the bundled `claude` recipe and
+// TestRecipesLists proves `dabs recipes` shows the bundled `sh` recipe and
 // the user's recipes together.
 func TestRecipesLists(t *testing.T) {
 	installRecipes(t)
 	out, code := run("dabs recipes")
 	wantExit(t, 0, code)
-	wantContains(t, out, "claude")              // bundled
-	wantContains(t, out, "fresh-claude")        // bundled (logged-out throwaway)
+	if !hasRecipeLine(out, "sh") { // bundled (the only shipped recipe)
+		t.Fatalf("sh recipe not listed on its own row:\n%s", out)
+	}
 	wantContains(t, out, "claude-mounted")      // user
 	wantContains(t, out, "claude-isolated")     // user
 	wantContains(t, out, "claude-new-worktree") // user
@@ -516,7 +555,9 @@ func TestRecipeUnknownLists(t *testing.T) {
 		t.Fatalf("want non-zero exit for unknown recipe; got 0\n%s", out)
 	}
 	wantContains(t, out, "no recipe \"nope\"")
-	wantContains(t, out, "claude")
+	if !knownListsRecipe(out, "sh") { // the bundled recipe is always among the known ones
+		t.Fatalf("sh not named as a distinct entry in the known list:\n%s", out)
+	}
 }
 
 // TestRecipeMounted proves a `mount:` source is LIVE: a file the box writes into
@@ -843,6 +884,6 @@ func TestInstallPi(t *testing.T) {
 func TestDabsNamePresentInBox(t *testing.T) {
 	clean(t)
 	i := up(t)
-	out, _ := run("dabs run " + i + " -- sh -c 'echo DABS_NAME=$DABS_NAME'")
+	out, _ := run("dabs exec " + i + " -- sh -c 'echo DABS_NAME=$DABS_NAME'")
 	wantContains(t, out, "DABS_NAME="+i)
 }

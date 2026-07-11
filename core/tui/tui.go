@@ -4,10 +4,32 @@
 package tui
 
 import (
+	"bufio"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 )
+
+// Confirm prints prompt, then asks "Proceed? [y/N] " on stderr and reads one
+// line from stdin, returning true only for an explicit yes. Prompt/answer go to
+// stderr and stdin so a captured stdout (the command's own output) stays clean.
+// This is the deliberately-simple placeholder for a richer TUI later; anything
+// that runs a caller-supplied command routes through it for a look-before-run.
+func Confirm(prompt string) bool {
+	fmt.Fprintln(os.Stderr, prompt)
+	fmt.Fprint(os.Stderr, "Proceed? [y/N] ")
+	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	if err != nil {
+		return false // no answer (EOF / not a terminal) is a no — default-deny
+	}
+	switch strings.TrimSpace(strings.ToLower(line)) {
+	case "y", "yes":
+		return true
+	default:
+		return false
+	}
+}
 
 // Spinner animates "<frame> loading <label>…" on stderr until the returned
 // stop func is called. It is a no-op when stderr is not a terminal

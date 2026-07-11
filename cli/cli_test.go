@@ -10,20 +10,25 @@ import (
 // fakeActions records every delegation so tests can assert the cli parsed
 // argv into the right action call with the right params.
 type fakeActions struct {
-	build []params.Build
-	up    []params.Up
-	run   []params.Run
-	down  []params.Down
-	ls    []params.Ls
-	err   error // returned from every action
+	build  []params.Build
+	up     []params.Up
+	exec   []params.Exec
+	run    []params.Run
+	down   []params.Down
+	ls     []params.Ls
+	recipe []params.Recipe
+	do     []params.Do
+	err    error // returned from every action
 }
 
 func (f *fakeActions) Build(p params.Build) error               { f.build = append(f.build, p); return f.err }
 func (f *fakeActions) Up(p params.Up) error                     { f.up = append(f.up, p); return f.err }
 func (f *fakeActions) Auth(params.Auth) error                   { return f.err }
-func (f *fakeActions) Recipe(params.Recipe) error               { return f.err }
+func (f *fakeActions) Recipe(p params.Recipe) error             { f.recipe = append(f.recipe, p); return f.err }
+func (f *fakeActions) Do(p params.Do) error                     { f.do = append(f.do, p); return f.err }
 func (f *fakeActions) Recipes(params.Recipes) error             { return f.err }
 func (f *fakeActions) Worktrees(params.Worktrees) error         { return f.err }
+func (f *fakeActions) Exec(p params.Exec) error                 { f.exec = append(f.exec, p); return f.err }
 func (f *fakeActions) Run(p params.Run) error                   { f.run = append(f.run, p); return f.err }
 func (f *fakeActions) Down(p params.Down) error                 { f.down = append(f.down, p); return f.err }
 func (f *fakeActions) Ls(p params.Ls) error                     { f.ls = append(f.ls, p); return f.err }
@@ -59,12 +64,22 @@ func TestRunDelegatesToActions(t *testing.T) {
 			},
 		},
 		{
-			name: "run with command tail",
-			args: []string{"run", "demo-0", "--", "echo", "--flag", "hi"},
+			name: "exec with exact argv after --",
+			args: []string{"exec", "demo-0", "--", "echo", "--flag", "hi"},
+			want: func(t *testing.T, f *fakeActions) {
+				if len(f.exec) != 1 || f.exec[0].Instance != "demo-0" ||
+					len(f.exec[0].Cmd) != 3 || f.exec[0].Cmd[1] != "--flag" {
+					t.Errorf("got %+v, want one Exec{Instance:demo-0 Cmd:[echo --flag hi]}", f.exec)
+				}
+			},
+		},
+		{
+			name: "run takes a shell command line after the instance",
+			args: []string{"run", "demo-0", "ls", "-la"},
 			want: func(t *testing.T, f *fakeActions) {
 				if len(f.run) != 1 || f.run[0].Instance != "demo-0" ||
-					len(f.run[0].Cmd) != 3 || f.run[0].Cmd[1] != "--flag" {
-					t.Errorf("got %+v, want one Run{Instance:demo-0 Cmd:[echo --flag hi]}", f.run)
+					len(f.run[0].Cmd) != 2 || f.run[0].Cmd[0] != "ls" || f.run[0].Cmd[1] != "-la" {
+					t.Errorf("got %+v, want one Run{Instance:demo-0 Cmd:[ls -la]}", f.run)
 				}
 			},
 		},
@@ -83,6 +98,25 @@ func TestRunDelegatesToActions(t *testing.T) {
 			want: func(t *testing.T, f *fakeActions) {
 				if len(f.ls) != 1 {
 					t.Errorf("got %+v, want one Ls call", f.ls)
+				}
+			},
+		},
+		{
+			name: "recipe name with appended command",
+			args: []string{"recipe", "claude", "--model", "x"},
+			want: func(t *testing.T, f *fakeActions) {
+				if len(f.recipe) != 1 || f.recipe[0].Name != "claude" ||
+					len(f.recipe[0].Cmd) != 2 || f.recipe[0].Cmd[0] != "--model" {
+					t.Errorf("got %+v, want Recipe{Name:claude Cmd:[--model x]}", f.recipe)
+				}
+			},
+		},
+		{
+			name: "do passes all args as the command",
+			args: []string{"do", "-c", "echo hi"},
+			want: func(t *testing.T, f *fakeActions) {
+				if len(f.do) != 1 || len(f.do[0].Cmd) != 2 || f.do[0].Cmd[0] != "-c" || f.do[0].Cmd[1] != "echo hi" {
+					t.Errorf("got %+v, want Do{Cmd:[-c echo hi]}", f.do)
 				}
 			},
 		},
@@ -115,7 +149,7 @@ func TestRunErrorsReachNoAction(t *testing.T) {
 			if err != tt.wantErr {
 				t.Errorf("Run(%v) = %v, want %v", tt.args, err, tt.wantErr)
 			}
-			if len(f.build)+len(f.up)+len(f.run)+len(f.down)+len(f.ls) != 0 {
+			if len(f.build)+len(f.up)+len(f.exec)+len(f.run)+len(f.down)+len(f.ls) != 0 {
 				t.Errorf("action was called despite error %v", err)
 			}
 		})

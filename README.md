@@ -60,7 +60,8 @@ Then:
 dabs build ./myproj              # build the box's image
 dabs up ./myproj                 # → myproj-a3f9c21d4e02 up   (a NEW pristine box)
 dabs ls                          # name  status  driver
-dabs run myproj-a3f -- ./mycli --help    # exec inside (instance prefixes ok, git-style)
+dabs run myproj-a3f 'ls | wc -l'         # run a shell line inside (instance prefixes ok, git-style)
+dabs exec myproj-a3f -- ./mycli --help   # exec an exact command inside (no shell)
 dabs down myproj-a3f             # remove it
 ```
 

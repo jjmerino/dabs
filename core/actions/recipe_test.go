@@ -610,3 +610,167 @@ func TestCastMissingWorktreeErrors(t *testing.T) {
 		t.Errorf("box brought up despite missing worktree: %v", drv.ups)
 	}
 }
+
+// --- tests: appended command + confirmation + `dabs do` -----------------------
+
+const appendRecipe = `recipes:
+  m:
+    image: img
+    command: [run, it]
+    sources:
+      - mount: /d
+        path: /work
+`
+
+// yes/no confirm stubs for the look-before-run gate.
+func yes(string) bool { return true }
+func no(string) bool  { return false }
+
+// CONTRACT: a trailing command from `dabs recipe <name> <cmd…>` is APPENDED to
+// the recipe's own command, and (once approved) that full argv is what runs.
+func TestRecipeAppendsCommand(t *testing.T) {
+	fd := baseData()
+	fd.exists["/d"] = true
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	asked := ""
+	confirm := func(prompt string) bool { asked = prompt; return true }
+	err := newReal(appendRecipe, fd, drv).WithConfirm(confirm).
+		Recipe(params.Recipe{Name: "m", Cmd: []string{"--flag", "x"}})
+	if err != nil {
+		t.Fatalf("Recipe: %v", err)
+	}
+	if len(drv.runs) != 1 || strings.Join(drv.runs[0], " ") != "run it --flag x" {
+		t.Errorf("run cmd = %v, want [run it --flag x]", drv.runs)
+	}
+	// The confirmation must have shown the recipe and the exact command.
+	if !strings.Contains(asked, `recipe "m"`) || !strings.Contains(asked, "run it --flag x") {
+		t.Errorf("confirmation prompt missing recipe/command: %q", asked)
+	}
+}
+
+// CONTRACT: denying the confirmation aborts BEFORE any box is built or run.
+func TestRecipeCommandDenyAborts(t *testing.T) {
+	fd := baseData()
+	fd.exists["/d"] = true
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	err := newReal(appendRecipe, fd, drv).WithConfirm(no).
+		Recipe(params.Recipe{Name: "m", Cmd: []string{"rm", "-rf", "/"}})
+	if err == nil || !strings.Contains(err.Error(), "aborted") {
+		t.Fatalf("want aborted error, got %v", err)
+	}
+	if len(drv.ups) != 0 || len(drv.runs) != 0 {
+		t.Errorf("box touched despite a denied confirmation: ups=%v runs=%v", drv.ups, drv.runs)
+	}
+}
+
+// CONTRACT: running a recipe with NO appended command never prompts.
+func TestRecipeNoCommandNoConfirm(t *testing.T) {
+	fd := baseData()
+	fd.exists["/d"] = true
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	confirm := func(string) bool { t.Fatalf("must not prompt when no command is appended"); return false }
+	if err := newReal(appendRecipe, fd, drv).WithConfirm(confirm).Recipe(params.Recipe{Name: "m"}); err != nil {
+		t.Fatalf("Recipe: %v", err)
+	}
+	if len(drv.runs) != 1 || strings.Join(drv.runs[0], " ") != "run it" {
+		t.Errorf("run cmd = %v, want [run it]", drv.runs)
+	}
+}
+
+// CONTRACT: `dabs do` runs the dabs.yaml default recipe with the command
+// appended.
+func TestDoUsesDefaultRecipe(t *testing.T) {
+	fd := baseData()
+	fd.files = map[string][]byte{"dabs.yaml": []byte(`default: dev
+recipes:
+  dev:
+    image: img
+    command: [devcmd]
+    sources:
+      - mount: /d
+        path: /work
+`)}
+	fd.exists["/d"] = true
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	if err := newReal("", fd, drv).WithConfirm(yes).Do(params.Do{Cmd: []string{"ls", "-a"}}); err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	if len(drv.runs) != 1 || strings.Join(drv.runs[0], " ") != "devcmd ls -a" {
+		t.Errorf("run cmd = %v, want [devcmd ls -a]", drv.runs)
+	}
+}
+
+// CONTRACT: with no default set, `dabs do` falls back to the `sh` recipe.
+func TestDoFallsBackToShell(t *testing.T) {
+	// A user recipes.yaml overrides the bundled `sh` with a simple, mountable
+	// box (no cwd/git needed), and sets NO default — exercising the fallback.
+	y := `recipes:
+  sh:
+    image: img
+    command: [sh]
+    sources:
+      - mount: /d
+        path: /work
+`
+	fd := baseData()
+	fd.exists["/d"] = true
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	if err := newReal(y, fd, drv).WithConfirm(yes).Do(params.Do{Cmd: []string{"-c", "echo hi"}}); err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	if len(drv.runs) != 1 || strings.Join(drv.runs[0], " ") != "sh -c echo hi" {
+		t.Errorf("run cmd = %v, want [sh -c echo hi]", drv.runs)
+	}
+}
+
+// CONTRACT: the confirm summary shows INVALID sources too — a look-before-run
+// that hides a malformed source isn't a trustworthy picture.
+func TestConfirmSummaryShowsInvalidSource(t *testing.T) {
+	y := `recipes:
+  m:
+    image: img
+    command: [run]
+    sources:
+      - path: /work
+` // names none of mount/worktree/copy → Kind() errors
+	fd := baseData()
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	asked := ""
+	confirm := func(prompt string) bool { asked = prompt; return true }
+	// Appending a command triggers confirm; validation then rejects the source.
+	err := newReal(y, fd, drv).WithConfirm(confirm).Recipe(params.Recipe{Name: "m", Cmd: []string{"x"}})
+	if err == nil {
+		t.Fatalf("want a validation error for the invalid source")
+	}
+	if !strings.Contains(asked, "invalid source") {
+		t.Fatalf("confirm summary hid the invalid source: %q", asked)
+	}
+}
+
+// CONTRACT: `dabs do` ALWAYS confirms first — even with NO appended command it
+// must not launch a box unprompted, and a denial aborts before anything builds.
+func TestDoConfirmsEvenWithoutCommand(t *testing.T) {
+	y := `recipes:
+  sh:
+    image: img
+    command: [sh]
+    sources:
+      - mount: /d
+        path: /work
+`
+	fd := baseData()
+	fd.exists["/d"] = true
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	asked := ""
+	confirm := func(prompt string) bool { asked = prompt; return false }
+	err := newReal(y, fd, drv).WithConfirm(confirm).Do(params.Do{}) // no command
+	if err == nil || !strings.Contains(err.Error(), "aborted") {
+		t.Fatalf("`dabs do` must confirm and honor a denial; got err %v", err)
+	}
+	if asked == "" {
+		t.Fatalf("`dabs do` launched without confirming (no prompt shown)")
+	}
+	if len(drv.ups) != 0 || len(drv.runs) != 0 {
+		t.Errorf("box touched despite a denied `dabs do`: ups=%v runs=%v", drv.ups, drv.runs)
+	}
+}

@@ -1,66 +1,20 @@
 # The recipes dabs ships with. `dabs recipe <name>` runs one; `dabs recipes`
 # lists them. Copy an entry into ~/.dabs/recipes.yaml to tweak it, or add your
 # own there — user entries override these by name.
+#
+# dabs ships ONE recipe: `sh`, the generic clean-box example below. Anything
+# project- or tool-specific (e.g. a Claude Code box that mounts your auth vault)
+# lives in a ~/.dabs/recipes.yaml or a project's ./dabs.yaml — not here.
 recipes:
 
-  # dabs recipe shell — a shell in a clean box over your current directory. The
+  # dabs recipe sh — a shell in a clean box over your current directory. The
   # generic out-of-the-box example: no auth, no git repo needed, just an image
   # and a live-mounted /work. This is the recipe to copy when writing your own.
-  shell:
+  sh:
     image: shell                          # built from the bundled image recipe (alpine)
     command: [sh]
     sources:
       # Your current directory, mounted live — edits inside the box persist on
       # the host. Swap `mount:` for `copy:` to hand the box a disposable snapshot.
       - mount: .
-        path: /work
-
-  # dabs recipe claude — a fresh Claude Code box over the current repo, already
-  # logged in from `dabs auth claude`. This is the whole definition: no mounts
-  # are hidden in dabs' code.
-  claude:
-    image: claude                         # reuse ~/.dabs/images/claude
-                                          #   (built from the bundled image recipe on first use)
-    command: [claude]                     # what to run once the box is up
-    env:
-      # Keep ALL Claude state in the mounted dir below, so login AND config land
-      # in the vault. Without this, config goes to ~/.claude.json — a HOME-level
-      # file outside the mount — and is lost with the box, forcing re-onboarding.
-      CLAUDE_CONFIG_DIR: /root/.claude
-    sources:
-      # The login/config vault from `dabs auth claude` — a LIVE mount, so a token
-      # refresh inside the box writes straight back to the host and outlives it.
-      # The `claude` image BANS the agent's own tools (Read/Bash) from reading
-      # this dir — Claude Code still authenticates from it internally, but a
-      # curious or compromised agent cannot cat/read .credentials.json out. The
-      # ban is baked into the image (managed settings + a PreToolUse hook), so it
-      # applies to every recipe that mounts the vault into a `claude` box.
-      - mount: ~/.dabs/auth/claude
-        path: /root/.claude
-      # The code — your current directory, mounted live so the agent's edits
-      # persist on the host and you review them with normal git. Swap `mount:`
-      # for `copy:` to hand the box a throwaway snapshot instead.
-      - mount: .
-        path: /work
-
-  # dabs recipe fresh-claude — a DETACHED, logged-OUT Claude Code box. Unlike
-  # `claude` above, it mounts NOTHING from the ~/.dabs/auth/claude vault: the box
-  # boots with an empty /root/.claude, so `claude` reports "Not logged in" and
-  # forces a fresh `/login`. That login — and everything else the box writes —
-  # is box-local and dies with the box; it NEVER touches your real vault or leaks
-  # your session history/config to (or from) the host.
-  #
-  # Agents: use when you want an isolated agent with throwaway/fresh auth — e.g.
-  # reviewing UNTRUSTED code, where you must not expose your real Claude session.
-  fresh-claude:
-    image: claude                         # same bundled image as `claude` (has Claude Code)
-    command: [claude]                     # drops straight into the box → the /login flow
-    env:
-      # Pin ALL Claude state to a box-local dir. Nothing is mounted here, so the
-      # dir starts empty (logged out) and is destroyed with the box — no vault.
-      CLAUDE_CONFIG_DIR: /root/.claude
-    sources:
-      # ONLY the code — a fresh git branch off HEAD, mounted live. Deliberately
-      # NO ~/.dabs/auth/claude mount: that is what keeps this box logged out.
-      - worktree: .
         path: /work

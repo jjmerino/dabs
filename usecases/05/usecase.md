@@ -29,7 +29,7 @@ dabs claude -m "This csv2json script chokes on quoted commas. Fix it and add tes
 
 # I can run the box's clean toolchain against the live files without leaving my seat:
 #   (from another terminal)
-dabs run <that-box> -- python -m pytest -q      # green, against the mounted files
+dabs run <that-box> 'python -m pytest -q'       # green, against the mounted files
 
 # I tweak a line in my editor; the agent sees it next turn. When I'm done I just
 # exit the agent. My files are already updated in place — nothing to extract,

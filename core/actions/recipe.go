@@ -16,12 +16,9 @@ import (
 	"github.com/jjmerino/dabs/core/sandbox"
 )
 
-// Recipe runs the named recipe: it ensures the image exists, prepares the
-// recipe's sources (live mounts, fresh git worktrees, and up-time copies),
-// brings up a box with them, runs the recipe's command interactively, and tears
-// the box down on exit. Worktrees are KEPT (paths printed) so no in-box work is
-// silently discarded. Everything the box does is declared in the recipe — this
-// is the generic engine `dabs recipe claude` (and any user recipe) runs on.
+// Recipe runs the named recipe (no name → the dabs.yaml `default:`). A trailing
+// command from `dabs recipe <name> <cmd…>` is appended to the recipe's own
+// command and gated behind a look-before-run confirmation.
 func (r Real) Recipe(p params.Recipe) error {
 	reg, err := r.loadRegistry()
 	if err != nil {
@@ -34,12 +31,48 @@ func (r Real) Recipe(p params.Recipe) error {
 		}
 		name = reg.Default
 	}
+	return r.runRecipe(reg, name, p.Worktree, p.Cmd, false)
+}
+
+// Do runs `dabs do <cmd…>`: a throwaway box over the DEFAULT recipe — the
+// dabs.yaml `default:` if set, else the bundled generic `sh` box — with the
+// command appended. It is the quick "just run this in a sandbox" alias, and it
+// ALWAYS confirms first (look-before-run), even with no appended command.
+func (r Real) Do(p params.Do) error {
+	reg, err := r.loadRegistry()
+	if err != nil {
+		return err
+	}
+	name := reg.Default
+	if name == "" {
+		name = "sh" // no project default → the bundled generic shell box
+	}
+	return r.runRecipe(reg, name, "", p.Cmd, true)
+}
+
+// runRecipe is the shared engine behind `dabs recipe`, `dabs cast`, and
+// `dabs do`: it ensures the image exists, prepares the recipe's sources (live
+// mounts, fresh git worktrees, and up-time copies), brings up a box with them,
+// runs the recipe's command interactively, and tears the box down on exit.
+// Worktrees are KEPT (paths printed) so no in-box work is silently discarded.
+// Everything the box does is declared in the recipe. `extra` is appended to the
+// recipe's command; when it is non-empty the caller must first approve the
+// recipe and the exact command (nothing is built or run until they do).
+func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []string, alwaysConfirm bool) error {
 	rec, err := reg.Get(name)
 	if err != nil {
 		return err
 	}
-	if len(rec.Command) == 0 {
+	command := append(append([]string{}, rec.Command...), extra...)
+	if len(command) == 0 {
 		return fmt.Errorf("recipe %q: no command to run", name)
+	}
+	// Look before running: `dabs do` ALWAYS confirms — it exists to run an
+	// arbitrary command in a box, so it must never launch unprompted, even with
+	// no appended command. `dabs recipe`/`cast` confirm only when a caller
+	// appends a command. Nothing is built or run until approved.
+	if (alwaysConfirm || len(extra) > 0) && !r.confirm(confirmRecipe(name, rec, command)) {
+		return fmt.Errorf("recipe %q: aborted", name)
 	}
 
 	// `dabs cast <recipe> <worktree>` binds an existing worktree to the recipe's
@@ -47,8 +80,8 @@ func (r Real) Recipe(p params.Recipe) error {
 	// forks a new branch) and a `copy:` source snapshots it. Done before the
 	// engine runs, so validate/build see plain sources.
 	sources := rec.Sources
-	if p.Worktree != "" {
-		sources, err = r.castSources(name, rec.Sources, p.Worktree)
+	if worktree != "" {
+		sources, err = r.castSources(name, rec.Sources, worktree)
 		if err != nil {
 			return err
 		}
@@ -151,7 +184,7 @@ func (r Real) Recipe(p params.Recipe) error {
 	for _, k := range kept {
 		fmt.Fprintf(os.Stdout, "worktree %s → box\n", k)
 	}
-	if err := drv.Run(instance, rec.Command); err != nil {
+	if err := drv.Run(instance, command); err != nil {
 		return fmt.Errorf("recipe %q: %w", name, err)
 	}
 	for _, k := range kept {
@@ -196,6 +229,30 @@ func (r Real) Recipes(p params.Recipes) error {
 		}
 	}
 	return nil
+}
+
+// confirmRecipe renders the look-before-run summary shown when a caller appends
+// a command to a recipe: the recipe's box (image + what it mounts/copies) and
+// the exact argv that will run in it. Deliberately plain — richer TUI later.
+func confirmRecipe(name string, rec recipe.Recipe, command []string) string {
+	img := rec.Image.Name
+	if img == "" {
+		img = "build:" + rec.Image.Dockerfile
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "recipe %q\n  image=%s\n", name, img)
+	for _, s := range rec.Sources {
+		kind, origin, err := s.Kind()
+		if err != nil {
+			// Show invalid sources too — the summary is the whole picture the
+			// user approves; hiding a malformed source defeats look-before-run.
+			fmt.Fprintf(&b, "  invalid source: %v\n", err)
+			continue
+		}
+		fmt.Fprintf(&b, "  %-8s %s → %s\n", kind, origin, s.Path)
+	}
+	fmt.Fprintf(&b, "command: %s", strings.Join(command, " "))
+	return b.String()
 }
 
 type copyOp struct{ src, dest string }

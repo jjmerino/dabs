@@ -18,12 +18,14 @@ type Command struct {
 var Commands = map[string]Command{
 	"build":     {"build the sandbox image from the manifest's Dockerfile", (*CLI).runBuild},
 	"auth":      {"log a harness into a persistent vault future boxes mount: auth claude", (*CLI).runAuth},
-	"recipe":    {"run a named recipe box: recipe <name> (e.g. recipe claude)", (*CLI).runRecipe},
+	"recipe":    {"run a named recipe box: recipe <name> [cmd…] (no name → dabs.yaml default)", (*CLI).runRecipe},
+	"do":        {"run a command in a throwaway box via the default recipe (else sh): do <cmd…>", (*CLI).runDo},
 	"cast":      {"run a recipe onto an existing worktree: cast <recipe> <worktree>", (*CLI).runCast},
 	"recipes":   {"list the known recipes and what each mounts", (*CLI).runRecipes},
 	"worktrees": {"inspect/reap recipe worktrees: worktrees [ls | diff <name> | rm <name> | prune] [--force]", (*CLI).runWorktrees},
 	"up":        {"start a NEW box from a manifest (dir or dabs.json); to run a recipe use `recipe`", (*CLI).runUp},
-	"run":       {"execute a command inside an instance: run <instance> -- <cmd…>", (*CLI).runRun},
+	"exec":      {"exec an exact command inside an instance (no shell): exec <instance> -- <cmd…>", (*CLI).runExec},
+	"run":       {"run a shell command inside an instance (args joined into one `sh -c` line — use `exec` for exact argv): run <instance> <shell…>", (*CLI).runRun},
 	"down":      {"stop + remove instances by name (--force downs all matches)", (*CLI).runDown},
 	"mcp":       {"serve the dabash MCP tool on stdio, curried to an instance", (*CLI).runMcp},
 	"ls":        {"list sandboxes", (*CLI).runLs},
@@ -58,14 +60,23 @@ func (c *CLI) runAuth(args []string) error {
 }
 
 func (c *CLI) runRecipe(args []string) error {
-	if len(args) > 1 {
-		return BadArgsError{Cmd: "recipe", Reason: "usage: recipe [<name>] (no name runs the dabs.yaml default; see: dabs recipes)"}
-	}
+	// recipe [<name>] [cmd…]: the first arg is the recipe (no name → the
+	// dabs.yaml default); any remaining args are a command appended to the
+	// recipe's own command (which triggers a confirmation before running).
 	p := params.Recipe{}
-	if len(args) == 1 {
+	if len(args) >= 1 {
 		p.Name = args[0]
 	}
+	if len(args) > 1 {
+		p.Cmd = args[1:]
+	}
 	return c.actions.Recipe(p)
+}
+
+func (c *CLI) runDo(args []string) error {
+	// do <cmd…>: everything is the command (flags included), appended to the
+	// default recipe's command — no name, no `--` needed.
+	return c.actions.Do(params.Do{Cmd: args})
 }
 
 func (c *CLI) runCast(args []string) error {
@@ -124,6 +135,14 @@ func (c *CLI) runUp(args []string) error {
 		return err
 	}
 	return c.actions.Up(p)
+}
+
+func (c *CLI) runExec(args []string) error {
+	p, err := parseExec(args)
+	if err != nil {
+		return err
+	}
+	return c.actions.Exec(p)
 }
 
 func (c *CLI) runRun(args []string) error {

@@ -61,9 +61,29 @@ func parseUp(args []string) (params.Up, error) {
 	return p, nil
 }
 
-// parseRun parses `dabs run <instance> -- <cmd…>` arguments (instance as
+// parseExec parses `dabs exec <instance> -- <cmd…>` arguments (instance as
 // reported by ls, e.g. demo-0). The `--` is required: it makes explicit where
-// dabs's arguments end and the sandboxed command begins.
+// dabs's arguments end and the exact argv run in the box begins.
+func parseExec(args []string) (params.Exec, error) {
+	var p params.Exec
+	fs := newFlagSet("exec")
+	if err := fs.Parse(args); err != nil {
+		return p, BadArgsError{Cmd: "exec", Reason: err.Error()}
+	}
+	rest := fs.Args()
+	if len(rest) < 3 || rest[1] != "--" {
+		return p, BadArgsError{Cmd: "exec", Reason: "usage: exec <instance> -- <cmd…> (see dabs ls)"}
+	}
+	p.Instance = rest[0]
+	p.Cmd = rest[2:]
+	return p, nil
+}
+
+// parseRun parses `dabs run <instance> <shell command…>` arguments — the
+// friendly form that runs a shell command line in the box (see the run action,
+// which wraps it in `sh -c`). No `--` is required; a leading one is tolerated so
+// `run <instance> -- <cmd>` works too. Everything after the instance is the
+// command, flags included (flag parsing stops at the instance positional).
 func parseRun(args []string) (params.Run, error) {
 	var p params.Run
 	fs := newFlagSet("run")
@@ -71,11 +91,14 @@ func parseRun(args []string) (params.Run, error) {
 		return p, BadArgsError{Cmd: "run", Reason: err.Error()}
 	}
 	rest := fs.Args()
-	if len(rest) < 3 || rest[1] != "--" {
-		return p, BadArgsError{Cmd: "run", Reason: "usage: run <instance> -- <cmd…> (see dabs ls)"}
+	if len(rest) >= 2 && rest[1] == "--" {
+		rest = append(rest[:1:1], rest[2:]...) // drop an optional -- separator
+	}
+	if len(rest) < 2 {
+		return p, BadArgsError{Cmd: "run", Reason: "usage: run <instance> <shell command…> — args are joined into one `sh -c` line; use `exec` for exact argv (see dabs ls)"}
 	}
 	p.Instance = rest[0]
-	p.Cmd = rest[2:]
+	p.Cmd = rest[1:]
 	return p, nil
 }
 

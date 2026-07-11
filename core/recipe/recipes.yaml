@@ -11,6 +11,7 @@ recipes:
   # generic out-of-the-box example: no auth, no git repo needed, just an image
   # and a live-mounted /work. This is the recipe to copy when writing your own.
   sh:
+    description: shell in a clean box over your current directory
     image: shell                          # built from the bundled image recipe (alpine)
     command: [sh]
     sources:

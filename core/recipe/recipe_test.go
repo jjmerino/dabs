@@ -34,6 +34,25 @@ func TestBundledRegistryIsValid(t *testing.T) {
 	}
 }
 
+// description: is an optional one-line human summary that round-trips through parse.
+func TestDescriptionParses(t *testing.T) {
+	reg, err := recipe.Parse([]byte("recipes:\n  r:\n    description: a clean shell box\n    image: alpine\n    command: [sh]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reg.Recipes["r"].Description; got != "a clean shell box" {
+		t.Errorf("Description = %q, want %q", got, "a clean shell box")
+	}
+	// omitempty: a recipe without one parses to the empty string, not an error.
+	reg2, err := recipe.Parse([]byte("recipes:\n  r:\n    image: alpine\n    command: [sh]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reg2.Recipes["r"].Description; got != "" {
+		t.Errorf("missing Description = %q, want empty", got)
+	}
+}
+
 // image: accepts either a bare name or an inline build recipe.
 func TestImageRefUnion(t *testing.T) {
 	asName, err := recipe.Parse([]byte("recipes:\n  r:\n    image: alpine\n    command: [sh]\n"))

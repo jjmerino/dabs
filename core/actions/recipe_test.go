@@ -7,6 +7,7 @@ package actions_test
 
 import (
 	"errors"
+	"io"
 	"io/fs"
 	"os"
 	"strings"
@@ -949,4 +950,70 @@ func TestRecipeKeepLeavesBoxAlive(t *testing.T) {
 	if len(drv.downs) != 0 {
 		t.Fatalf("keep:true still deleted the box: downs=%v", drv.downs)
 	}
+}
+
+// `dabs recipes` prints each recipe's description on the SAME line as its name,
+// and puts image= and cmd= on their own separate indented lines below.
+func TestRecipesListsDescriptionOnNameLine(t *testing.T) {
+	y := `recipes:
+  m:
+    description: a friendly clean box
+    image: img
+    command: [sh, -c, run]
+    sources:
+      - mount: /d
+        path: /work
+`
+	fd := baseData()
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	out := captureStdout(t, func() {
+		if err := newReal(y, fd, drv).Recipes(params.Recipes{}); err != nil {
+			t.Fatalf("Recipes: %v", err)
+		}
+	})
+
+	// The description must land on the same line as the name "m".
+	var nameLine string
+	for _, ln := range strings.Split(out, "\n") {
+		if strings.Contains(ln, "m") && strings.Contains(ln, "a friendly clean box") {
+			nameLine = ln
+		}
+	}
+	if nameLine == "" {
+		t.Fatalf("description not on the recipe name line; output:\n%s", out)
+	}
+	// image= and cmd= must be on their own separate lines.
+	imgLine, cmdLine := false, false
+	for _, ln := range strings.Split(out, "\n") {
+		if strings.Contains(ln, "image=img") && !strings.Contains(ln, "cmd=") {
+			imgLine = true
+		}
+		if strings.Contains(ln, "cmd=sh -c run") && !strings.Contains(ln, "image=") {
+			cmdLine = true
+		}
+	}
+	if !imgLine || !cmdLine {
+		t.Fatalf("image= and cmd= not on their own lines (image=%v cmd=%v); output:\n%s", imgLine, cmdLine, out)
+	}
+}
+
+// captureStdout runs fn with os.Stdout redirected to a pipe and returns what it wrote.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	old := os.Stdout
+	rp, wp, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = wp
+	done := make(chan string, 1)
+	go func() {
+		var b strings.Builder
+		io.Copy(&b, rp)
+		done <- b.String()
+	}()
+	fn()
+	wp.Close()
+	os.Stdout = old
+	return <-done
 }

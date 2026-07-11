@@ -46,20 +46,38 @@ func TestRunDelegatesToActions(t *testing.T) {
 		want func(t *testing.T, f *fakeActions)
 	}{
 		{
-			name: "build",
+			name: "build with a recipe name",
 			args: []string{"build", "m"},
 			want: func(t *testing.T, f *fakeActions) {
-				if len(f.build) != 1 || f.build[0] != (params.Build{ManifestPath: "m"}) {
-					t.Errorf("got %+v, want one Build{ManifestPath:m}", f.build)
+				if len(f.build) != 1 || f.build[0] != (params.Build{Name: "m"}) {
+					t.Errorf("got %+v, want one Build{Name:m}", f.build)
 				}
 			},
 		},
 		{
-			name: "up",
+			name: "build with no arg → the default recipe",
+			args: []string{"build"},
+			want: func(t *testing.T, f *fakeActions) {
+				if len(f.build) != 1 || f.build[0] != (params.Build{}) {
+					t.Errorf("got %+v, want one Build{} (default recipe)", f.build)
+				}
+			},
+		},
+		{
+			name: "up with a recipe name",
 			args: []string{"up", "m"},
 			want: func(t *testing.T, f *fakeActions) {
-				if len(f.up) != 1 || f.up[0] != (params.Up{ManifestPath: "m"}) {
-					t.Errorf("got %+v, want one Up{ManifestPath:m}", f.up)
+				if len(f.up) != 1 || f.up[0] != (params.Up{Name: "m"}) {
+					t.Errorf("got %+v, want one Up{Name:m}", f.up)
+				}
+			},
+		},
+		{
+			name: "up with no arg → the default recipe",
+			args: []string{"up"},
+			want: func(t *testing.T, f *fakeActions) {
+				if len(f.up) != 1 || f.up[0] != (params.Up{}) {
+					t.Errorf("got %+v, want one Up{} (default recipe)", f.up)
 				}
 			},
 		},
@@ -140,7 +158,7 @@ func TestRunErrorsReachNoAction(t *testing.T) {
 	}{
 		{"no command", nil, NoCommandError{}},
 		{"unknown command", []string{"bogus"}, UnknownCommandError{Name: "bogus"}},
-		{"bad args", []string{"up", "a", "b"}, BadArgsError{Cmd: "up", Reason: "expected exactly one <manifest|dir> argument"}},
+		{"bad args", []string{"up", "a", "b"}, BadArgsError{Cmd: "up", Reason: "expected an optional recipe name or dabs.yaml path"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

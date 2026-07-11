@@ -120,7 +120,7 @@ func (d *Driver) Build(spec sandbox.BuildSpec) error {
 		return fmt.Errorf("ssh: tar context: %w", err)
 	}
 
-	if err := d.writeManifest(spec.Name, nil, ""); err != nil {
+	if err := d.writeRecipe(spec.Name, nil, ""); err != nil {
 		return err
 	}
 
@@ -137,32 +137,36 @@ func (d *Driver) Build(spec sandbox.BuildSpec) error {
 	return nil
 }
 
-// writeManifest (re)writes the staged dabs.json. Build writes it without
-// runtime fields; Up rewrites it with the spec's workdir/env.
-func (d *Driver) writeManifest(name string, env map[string]string, workdir string) error {
-	m := map[string]any{"name": name, "dockerfile": "Dockerfile.dabs", "context": "context"}
+// writeRecipe (re)writes the staged dabs.yaml recipe. Build writes it without
+// runtime fields; Up rewrites it with the spec's workdir/env. It is emitted as
+// JSON — valid YAML, which the remote dabs parses as a recipe — with the
+// staging layout's Dockerfile.dabs + context/ as the recipe's inline image (the
+// remote resolves those relative to the staged dabs.yaml's directory).
+func (d *Driver) writeRecipe(name string, env map[string]string, workdir string) error {
+	rec := map[string]any{"image": map[string]any{"dockerfile": "Dockerfile.dabs", "context": "context"}}
 	if workdir != "" {
-		m["workdir"] = workdir
+		rec["workdir"] = workdir
 	}
 	if len(env) > 0 {
-		m["env"] = env
+		rec["env"] = env
 	}
-	raw, err := json.Marshal(m)
+	reg := map[string]any{"default": name, "recipes": map[string]any{name: rec}}
+	raw, err := json.Marshal(reg)
 	if err != nil {
 		return fmt.Errorf("ssh: %w", err)
 	}
-	w := d.remote(nil, "sh", "-c", "mkdir -p "+d.stagingDir(name)+" && cat > "+d.stagingDir(name)+"/dabs.json")
+	w := d.remote(nil, "sh", "-c", "mkdir -p "+d.stagingDir(name)+" && cat > "+d.stagingDir(name)+"/dabs.yaml")
 	w.Stdin = bytes.NewReader(raw)
 	if out, err := w.CombinedOutput(); err != nil {
-		return fmt.Errorf("ssh: write manifest on %s: %v: %s", d.host, err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("ssh: write recipe on %s: %v: %s", d.host, err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
 
-// Up rewrites the staged manifest with the spec's runtime fields and runs
+// Up rewrites the staged recipe with the spec's runtime fields and runs
 // `dabs up` remotely, returning the instance name the remote printed.
 func (d *Driver) Up(spec sandbox.Spec) (string, error) {
-	if err := d.writeManifest(spec.Name, spec.Env, spec.Workdir); err != nil {
+	if err := d.writeRecipe(spec.Name, spec.Env, spec.Workdir); err != nil {
 		return "", err
 	}
 	dabs, err := d.dabsPath()
@@ -262,7 +266,7 @@ func runQuiet(c *exec.Cmd) error {
 
 // HasImage does not cheaply probe the remote, so it reports false and lets the
 // caller rebuild (safe and idempotent). Remote sandboxes are addressed by
-// manifest target, never by the local-only build-skipping callers.
+// recipe target, never by the local-only build-skipping callers.
 func (d *Driver) HasImage(string) (bool, error) { return false, nil }
 
 // Kind identifies this driver by its transport.

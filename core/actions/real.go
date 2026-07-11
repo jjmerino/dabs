@@ -35,7 +35,7 @@ func (r Real) WithConfirm(fn func(string) bool) Real {
 	return r
 }
 
-// driverFor resolves a manifest's target ("" = local) to its driver.
+// driverFor resolves a recipe's target ("" = local) to its driver.
 func (r Real) driverFor(target string) (sandbox.Driver, error) {
 	key := target
 	if key == "" {

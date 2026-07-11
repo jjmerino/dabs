@@ -8,17 +8,20 @@ host. Reach in with `dabs run <instance> <shell…>` (or `dabs exec <instance> -
 
 ## The loop
 
-1. **Build the box image** (once per Dockerfile change):
+1. **Build the box image** (once per Dockerfile change) — `build` resolves a
+   RECIPE (no name → the registry `default:`, a name → that recipe, a path → a
+   `dabs.yaml` to load) and builds its image:
 
    ```bash
-   dabs build <dir-with-dabs.json>
+   dabs build [recipe|path]
    ```
 
-2. **Boot a fresh instance** — every `up` is a NEW pristine box; capture the
-   instance name it prints:
+2. **Boot a fresh instance** — every `up` is a NEW pristine DETACHED box (same
+   recipe resolution as `build`); it brings the box up but does NOT run the
+   recipe's command. Capture the instance name it prints:
 
    ```bash
-   dabs up <dir>          # → myproj-a3f9c21d4e02 up
+   dabs up [recipe|path]     # → myproj-a3f9c21d4e02 up
    ```
 
 3. **Use it directly**, or **run an agent inside it — with a recipe.** Recipes
@@ -59,9 +62,10 @@ host. Reach in with `dabs run <instance> <shell…>` (or `dabs exec <instance> -
    Recipes resolve **bundled (`sh`) → `~/.dabs/recipes.yaml` (global) →
    `./dabs.yaml` (project)**, later winning. A project's `dabs.yaml` can add
    recipes and set a `default:`; `dabs recipe` with no name runs that default (no
-   default set → it errors and lists the choices, so an agent must pick).
-   `dabs.json` is unchanged — the low-level single-box manifest for `dabs
-   build`/`up`.
+   default set → it errors and lists the choices, so an agent must pick). The
+   same registry backs `dabs build`/`up`: a recipe now expresses everything the
+   old `dabs.json` manifest did (image, env, workdir, target), so there is no
+   separate manifest — `build`/`up` resolve a recipe just like `recipe`/`do`.
 
    **Run a one-off command in a box — `dabs do <cmd…>`.** `dabs do` is the quick
    "just run this in a sandbox": it uses the project `default:` recipe (or the
@@ -139,17 +143,26 @@ e.g. review) at work another agent already started, without cutting a new branch
   on macOS with `failed to compute cache key … not found` (2026-07-09); under
   home it worked.
 
-## Manifest quick reference (dabs.json)
+## Recipe quick reference (dabs.yaml)
 
-```json
-{ "name": "myproj", "workdir": "/work", "env": {"KEY": "value"},
-  "dockerfile": "Dockerfile", "context": "." }
+```yaml
+default: myproj                    # what build/up/recipe run with no name
+recipes:
+  myproj:
+    image: { dockerfile: Dockerfile, context: . }   # or a bare image name
+    workdir: /work
+    env: { KEY: value }
+    target: <server>               # route to a registered server; omit for local
+    sources:
+      - mount: .                   # what lands in the box (mount/copy/worktree)
+        path: /work
 ```
 
-`name` is required; the rest default sensibly. Paths resolve relative to
-the manifest's directory. `dabs build`/`up` accept the manifest file or a
-directory containing `dabs.json`. `"target": "<server>"` routes the sandbox
-to a registered server (see `dabs servers`); omit for local.
+`dabs build [recipe|path]` builds a recipe's image; `dabs up [recipe|path]`
+boots a detached box from it (no command). Both take no arg (the registry
+`default:`), a recipe name, or a path to a `dabs.yaml` (or a dir holding one).
+There is no separate manifest: a recipe carries everything `dabs.json` used to
+(image, env, workdir, target).
 
 ## Working on the codebase
 
@@ -187,7 +200,7 @@ out a branch, `dabs recipe dabswt`, switch back to main, and the box keeps
 testing that branch. Trade-off: without cast there is no parent `.git` mount, so
 git is blind in-box; use cast when a test needs in-box git.
 
-This covers CLI behaviour, recipe/manifest resolution, cast/worktree/keep/down
+This covers CLI behaviour, recipe resolution, cast/worktree/keep/down
 logic, git in-box, and error paths — the fast inner loop for changing dabs.
 It does NOT boot a fresh nested box: dabs builds images by shelling out to
 `docker`, which is not in the `dabswt` box, so `dabs do`/`up` inside fail at
@@ -207,8 +220,8 @@ core/params/           leaf contract: params structs + Actions interface.
                        Litmus: if it can't become a .proto (logic, deps,
                        funcs), it doesn't belong here.
 core/config/           ~/.dabs/config.json (servers/fleet) load + save.
-core/manifest/         dabs.json load + defaults.
-core/actions/          ALL policy: manifest loading, instance-name
+core/recipe/           dabs.yaml recipe registry: parse + merge + defaults.
+core/actions/          ALL policy: recipe resolution, instance-name
                        resolution across the fleet, --force/--dry, routing
                        by target, user-facing messages.
 core/sandbox/          mechanical driver contract — exact names in, state

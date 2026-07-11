@@ -96,42 +96,9 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 	// Validate every source BEFORE any side effect, so a bad recipe, a non-git
 	// dir, a repo with no commits, or a missing source path all fail without
 	// building an image or touching the box.
-	kinds := make([]string, len(sources))
-	origins := make([]string, len(sources))
-	tops := make([]string, len(sources))
-	for i, s := range sources {
-		kind, origin, err := s.Kind()
-		if err != nil {
-			return fmt.Errorf("recipe %q: %w", name, err)
-		}
-		host, err := r.expandPath(origin)
-		if err != nil {
-			return fmt.Errorf("recipe %q: %w", name, err)
-		}
-		kinds[i], origins[i] = kind, host
-		switch kind {
-		case "worktree":
-			top, err := r.data.GitToplevel(host)
-			if err != nil {
-				return fmt.Errorf("recipe %q: worktree %s: %w", name, s.Path, err)
-			}
-			if !r.data.GitHasCommits(top) {
-				return fmt.Errorf("recipe %q: worktree %s: repo has no commits yet — make an initial commit first", name, s.Path)
-			}
-			tops[i] = top
-		case "mount", "copy":
-			// The host path must exist — a mount/copy of a missing path is a
-			// mistake (e.g. `dabs recipe claude` before `dabs auth claude`),
-			// and gives a cryptic driver failure if passed through.
-			if _, err := r.data.Stat(host); errors.Is(err, fs.ErrNotExist) {
-				return fmt.Errorf("recipe %q: %s source %s does not exist", name, kind, host)
-			} else if err != nil {
-				return fmt.Errorf("recipe %q: %s source %s: %w", name, kind, host, err)
-			}
-		case "perbox":
-			// A per-box dir has no shared host origin to validate — it is
-			// allocated fresh and empty at prep time.
-		}
+	resolved, err := r.validateSources(name, sources)
+	if err != nil {
+		return err
 	}
 
 	image, err := r.ensureImage(drv, name, rec.Image)
@@ -139,50 +106,7 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 		return err
 	}
 
-	// Turn declared sources into driver mounts + deferred copies (creating
-	// worktrees now that the image is ready).
-	var mounts []sandbox.Mount
-	var perbox []sandbox.Mount
-	var copies []copyOp
-	var kept []string
-	for i, s := range sources {
-		switch kinds[i] {
-		case "mount":
-			mounts = append(mounts, sandbox.Mount{Host: origins[i], Path: s.Path, RO: s.RO})
-		case "worktree":
-			wt, branch, err := r.addWorktree(tops[i])
-			if err != nil {
-				return err
-			}
-			mounts = append(mounts, sandbox.Mount{Host: wt, Path: s.Path})
-			kept = append(kept, fmt.Sprintf("%s (branch %s)", wt, branch))
-		case "copy":
-			// Mount the origin read-only at a staging path, then snapshot it into
-			// the box-owned destination after up — the box gets its own copy and
-			// the host is never written.
-			staging := fmt.Sprintf("/.dabs/copy/%d", i)
-			mounts = append(mounts, sandbox.Mount{Host: origins[i], Path: staging, RO: true})
-			copies = append(copies, copyOp{src: staging, dest: s.Path})
-		case "perbox":
-			// A fresh, empty, box-private host dir (under ~/.dabs/boxes/<id>/<label>)
-			// mounted live at s.Path. Held aside and appended LAST so it lands on
-			// top of any earlier mount it nests over (e.g. Claude's projects/ over
-			// the shared vault).
-			host, err := r.perboxDir(origins[i])
-			if err != nil {
-				return err
-			}
-			perbox = append(perbox, sandbox.Mount{Host: host, Path: s.Path})
-		}
-	}
-	// Perbox mounts overlay earlier mounts, so they must be applied after them.
-	mounts = append(mounts, perbox...)
-
-	workdir := rec.Workdir
-	if workdir == "" {
-		workdir = "/work"
-	}
-	instance, err := drv.Up(sandbox.Spec{Name: image, Workdir: workdir, Env: rec.Env, Mounts: mounts})
+	instance, kept, err := r.buildBox(drv, name, rec, image, sources, resolved)
 	if err != nil {
 		return err
 	}
@@ -191,16 +115,6 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 	// the user's to delete with `dabs down`.
 	if !rec.Keep {
 		defer drv.Down(instance)
-	}
-
-	for _, c := range copies {
-		// argv, not a shell string — a dest with a quote/space can't break it.
-		if out, err := drv.Exec(instance, []string{"mkdir", "-p", c.dest}); err != nil {
-			return fmt.Errorf("recipe %q: mkdir %s: %w: %s", name, c.dest, err, out)
-		}
-		if out, err := drv.Exec(instance, []string{"cp", "-a", c.src + "/.", c.dest}); err != nil {
-			return fmt.Errorf("recipe %q: copy into %s: %w: %s", name, c.dest, err, out)
-		}
 	}
 
 	for _, k := range kept {
@@ -216,6 +130,250 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 		fmt.Fprintf(os.Stdout, "\nbox kept: %s (dabs down %s to delete it)\n", instance, instance)
 	}
 	return nil
+}
+
+// resolvedSource is a source after validation: its strategy (mount/worktree/
+// copy), its expanded host origin, and (for worktrees) the repo toplevel (empty
+// otherwise) — the exact inputs buildBox needs to realize the source. Bundling
+// the three keeps them the same length and order as the sources by construction.
+type resolvedSource struct{ kind, origin, top string }
+
+// validateSources checks every source of a recipe up front — a bad source spec,
+// a non-git worktree dir, a repo with no commits, or a missing mount/copy path
+// all fail HERE, before any image build or box touch. It returns one
+// resolvedSource per source, in source order. Shared by runRecipe and Up so both
+// validate identically.
+func (r Real) validateSources(recipeName string, sources []recipe.Source) ([]resolvedSource, error) {
+	resolved := make([]resolvedSource, len(sources))
+	for i, s := range sources {
+		kind, origin, err := s.Kind()
+		if err != nil {
+			return nil, fmt.Errorf("recipe %q: %w", recipeName, err)
+		}
+		host, err := r.expandPath(origin)
+		if err != nil {
+			return nil, fmt.Errorf("recipe %q: %w", recipeName, err)
+		}
+		resolved[i] = resolvedSource{kind: kind, origin: host}
+		switch kind {
+		case "worktree":
+			top, err := r.data.GitToplevel(host)
+			if err != nil {
+				return nil, fmt.Errorf("recipe %q: worktree %s: %w", recipeName, s.Path, err)
+			}
+			if !r.data.GitHasCommits(top) {
+				return nil, fmt.Errorf("recipe %q: worktree %s: repo has no commits yet — make an initial commit first", recipeName, s.Path)
+			}
+			resolved[i].top = top
+		case "mount", "copy":
+			// The host path must exist — a mount/copy of a missing path is a
+			// mistake (e.g. `dabs recipe claude` before `dabs auth claude`),
+			// and gives a cryptic driver failure if passed through.
+			if _, err := r.data.Stat(host); errors.Is(err, fs.ErrNotExist) {
+				return nil, fmt.Errorf("recipe %q: %s source %s does not exist", recipeName, kind, host)
+			} else if err != nil {
+				return nil, fmt.Errorf("recipe %q: %s source %s: %w", recipeName, kind, host, err)
+			}
+		case "perbox":
+			// A per-box dir has no shared host origin to validate — it is
+			// allocated fresh and empty at prep time (buildBox).
+		}
+	}
+	return resolved, nil
+}
+
+// buildBox realizes a recipe's already-validated sources into a fresh DETACHED
+// box: it cuts any worktrees, turns sources into driver mounts, brings the box
+// up (image, workdir, env, target-driver), and runs the deferred in-box copies.
+// It returns the instance and the worktrees it cut (kept, for the caller to
+// report). No command is run and, on success, the box is left up — the caller
+// owns its lifecycle (runRecipe runs the command then tears it down unless the
+// recipe says keep; Up leaves it up). On any failure after the box is up it
+// tears the half-built box down. Shared by runRecipe and Up so both mount
+// sources identically.
+func (r Real) buildBox(drv sandbox.Driver, recipeName string, rec recipe.Recipe, image string, sources []recipe.Source, resolved []resolvedSource) (instance string, kept []string, err error) {
+	// Turn declared sources into driver mounts + deferred copies (creating
+	// worktrees now that the image is ready).
+	var mounts []sandbox.Mount
+	var perbox []sandbox.Mount
+	var copies []copyOp
+	for i, s := range sources {
+		rs := resolved[i]
+		switch rs.kind {
+		case "mount":
+			mounts = append(mounts, sandbox.Mount{Host: rs.origin, Path: s.Path, RO: s.RO})
+		case "worktree":
+			wt, branch, err := r.addWorktree(rs.top)
+			if err != nil {
+				return "", nil, err
+			}
+			mounts = append(mounts, sandbox.Mount{Host: wt, Path: s.Path})
+			kept = append(kept, fmt.Sprintf("%s (branch %s)", wt, branch))
+		case "copy":
+			// Mount the origin read-only at a staging path, then snapshot it into
+			// the box-owned destination after up — the box gets its own copy and
+			// the host is never written.
+			staging := fmt.Sprintf("/.dabs/copy/%d", i)
+			mounts = append(mounts, sandbox.Mount{Host: rs.origin, Path: staging, RO: true})
+			copies = append(copies, copyOp{src: staging, dest: s.Path})
+		case "perbox":
+			// A fresh, empty, box-private host dir (under ~/.dabs/boxes/<id>/<label>)
+			// mounted live at s.Path. Held aside and appended LAST so it lands on
+			// top of any earlier mount it nests over (e.g. Claude's projects/ over
+			// the shared vault).
+			host, err := r.perboxDir(rs.origin)
+			if err != nil {
+				return "", nil, err
+			}
+			perbox = append(perbox, sandbox.Mount{Host: host, Path: s.Path})
+		}
+	}
+	// Perbox mounts overlay earlier mounts, so they must be applied after them.
+	mounts = append(mounts, perbox...)
+
+	workdir := rec.Workdir
+	if workdir == "" {
+		workdir = "/work"
+	}
+	instance, err = drv.Up(sandbox.Spec{Name: image, Workdir: workdir, Env: rec.Env, Mounts: mounts})
+	if err != nil {
+		return "", nil, err
+	}
+
+	for _, c := range copies {
+		// argv, not a shell string — a dest with a quote/space can't break it.
+		if out, err := drv.Exec(instance, []string{"mkdir", "-p", c.dest}); err != nil {
+			drv.Down(instance) // don't leave a half-built box behind
+			return "", nil, fmt.Errorf("recipe %q: mkdir %s: %w: %s", recipeName, c.dest, err, out)
+		}
+		if out, err := drv.Exec(instance, []string{"cp", "-a", c.src + "/.", c.dest}); err != nil {
+			drv.Down(instance)
+			return "", nil, fmt.Errorf("recipe %q: copy into %s: %w: %s", recipeName, c.dest, err, out)
+		}
+	}
+	return instance, kept, nil
+}
+
+// resolveRecipe picks the recipe that `dabs build`/`dabs up` act on and returns
+// the effective registry plus the chosen recipe name:
+//   - ""     → the registry `default:` (bundled → ~/.dabs → ./dabs.yaml).
+//   - a path → a dabs.yaml file (or a dir containing one) loaded as an overlay;
+//     its `default:` (or its sole recipe) is used.
+//   - a name → that recipe in the registry.
+//
+// A name that is neither a path nor a known recipe errors with the list of what
+// IS known — the caller (often an agent) that guessed wrong sees the options.
+func (r Real) resolveRecipe(arg string) (recipe.Registry, string, error) {
+	reg, err := r.loadRegistry()
+	if err != nil {
+		return reg, "", err
+	}
+	if arg == "" {
+		if reg.Default == "" {
+			return reg, "", fmt.Errorf("no recipe given and no default set — choose one: %s (or set `default:` in dabs.yaml)", strings.Join(reg.Names(), ", "))
+		}
+		return reg, reg.Default, nil
+	}
+	// An arg naming an existing file or directory is a dabs.yaml to load and
+	// take the default (or sole recipe) from.
+	if fi, statErr := r.data.Stat(arg); statErr == nil {
+		path := arg
+		if fi != nil && fi.IsDir() {
+			path = filepath.Join(arg, "dabs.yaml")
+		}
+		b, err := r.data.ReadFile(path)
+		if err != nil {
+			return reg, "", fmt.Errorf("recipe: %s: %w", path, err)
+		}
+		parsed, err := recipe.Parse(b)
+		if err != nil {
+			return reg, "", fmt.Errorf("recipe: %s: %w", path, err)
+		}
+		// A recipe loaded from an explicit path resolves its inline build paths
+		// relative to the DABS.YAML's directory (as the old manifest did),
+		// not the cwd — so `dabs build path/to/dir` works from anywhere.
+		rebaseImagePaths(&parsed, filepath.Dir(path))
+		reg.Merge(parsed)
+		name := parsed.Default
+		if name == "" {
+			switch len(parsed.Recipes) {
+			case 0:
+				return reg, "", fmt.Errorf("recipe: %s defines no recipes", path)
+			case 1:
+				for n := range parsed.Recipes {
+					name = n
+				}
+			default:
+				return reg, "", fmt.Errorf("recipe: %s has no `default:` and %d recipes — name one: %s", path, len(parsed.Recipes), strings.Join(parsed.Names(), ", "))
+			}
+		}
+		return reg, name, nil
+	}
+	// Otherwise a bare recipe name.
+	if _, ok := reg.Recipes[arg]; !ok {
+		return reg, "", fmt.Errorf("no recipe %q (known: %s) — build/up take a recipe name, a dabs.yaml path, or nothing (the default)", arg, strings.Join(reg.Names(), ", "))
+	}
+	return reg, arg, nil
+}
+
+// rebaseImagePaths anchors each recipe's inline {dockerfile,context} to dir when
+// they are relative, so a dabs.yaml loaded by path builds against its OWN
+// directory regardless of the cwd. Bare-name images and absolute paths are left
+// alone. An empty context defaults to the dockerfile's directory, matching the
+// recipe engine, but resolved up front here so ensureImage sees absolute paths.
+func rebaseImagePaths(reg *recipe.Registry, dir string) {
+	for n, rec := range reg.Recipes {
+		if rec.Image.Dockerfile == "" {
+			continue
+		}
+		ctx := rec.Image.Context
+		if ctx == "" {
+			ctx = filepath.Dir(rec.Image.Dockerfile)
+		}
+		if !filepath.IsAbs(rec.Image.Dockerfile) {
+			rec.Image.Dockerfile = filepath.Join(dir, rec.Image.Dockerfile)
+		}
+		if !filepath.IsAbs(ctx) {
+			ctx = filepath.Join(dir, ctx)
+		}
+		rec.Image.Context = ctx
+		reg.Recipes[n] = rec
+	}
+}
+
+// resolveBuiltImage returns the image name to BOOT for a recipe WITHOUT building
+// the recipe's own Dockerfile: `dabs up` boots an image a prior `dabs build`
+// produced and must not (re)build — it may run where no builder exists (a staged
+// prebuilt image, a machine with no docker).
+//
+// A recipe with a fleet `target` (a server, docker) manages its own image
+// lifecycle through the driver, and its HasImage cannot cheaply probe (the
+// server driver's HasImage returns false BY DESIGN — see core/sandbox/server).
+// Gating those on HasImage would wrongly reject remote `up`, so a targeted
+// recipe passes its image name straight to the driver's Up (which builds/boots
+// it remotely, as `dabs build` staged it). Only the LOCAL path gates: a bare
+// name resolves the normal way (reuse if built, build from a bundled recipe if
+// missing); an inline-{dockerfile} image that is not built yet errors, pointing
+// at `dabs build`.
+func (r Real) resolveBuiltImage(drv sandbox.Driver, recipeName string, img recipe.ImageRef, target string) (string, error) {
+	if target != "" {
+		// Remote/fleet target: don't probe locally — the driver owns build+boot.
+		if img.Dockerfile != "" {
+			return recipeName, nil
+		}
+		return img.Name, nil
+	}
+	if img.Dockerfile != "" {
+		built, err := drv.HasImage(recipeName)
+		if err != nil {
+			return "", err
+		}
+		if !built {
+			return "", fmt.Errorf("recipe %q: image not built — run `dabs build %s` first", recipeName, recipeName)
+		}
+		return recipeName, nil
+	}
+	return r.ensureImage(drv, recipeName, img)
 }
 
 // Recipes lists the known recipes and, for each, its image and what it places

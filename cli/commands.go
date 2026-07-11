@@ -27,29 +27,8 @@ var Commands = map[string]Command{
 	"exec":      {"exec an exact command inside an instance (no shell): exec <instance> -- <cmd…>", (*CLI).runExec},
 	"run":       {"run a shell command inside an instance (args joined into one `sh -c` line — use `exec` for exact argv): run <instance> <shell…>", (*CLI).runRun},
 	"down":      {"stop + remove instances by name (--force downs all matches)", (*CLI).runDown},
-	"mcp":       {"serve the dabash MCP tool on stdio, curried to an instance", (*CLI).runMcp},
 	"ls":        {"list sandboxes", (*CLI).runLs},
 	"servers":   {"manage registered servers: servers [ls] | add <name> [host] | rm <name>", (*CLI).runServers},
-	"install":   {"install the dabash integration for a harness: install [pi|claude]", (*CLI).runInstall},
-	"uninstall": {"remove a harness integration: uninstall <pi|claude>", (*CLI).runUninstall},
-}
-
-func (c *CLI) runInstall(args []string) error {
-	h := ""
-	if len(args) > 1 {
-		return BadArgsError{Cmd: "install", Reason: "usage: install [pi|claude]"}
-	}
-	if len(args) == 1 {
-		h = args[0]
-	}
-	return c.actions.Install(params.Install{Harness: h})
-}
-
-func (c *CLI) runUninstall(args []string) error {
-	if len(args) != 1 {
-		return BadArgsError{Cmd: "uninstall", Reason: "usage: uninstall <pi|claude>"}
-	}
-	return c.actions.Uninstall(params.Uninstall{Harness: args[0]})
 }
 
 func (c *CLI) runAuth(args []string) error {
@@ -159,14 +138,6 @@ func (c *CLI) runDown(args []string) error {
 		return err
 	}
 	return c.actions.Down(p)
-}
-
-func (c *CLI) runMcp(args []string) error {
-	p, err := parseMcp(args)
-	if err != nil {
-		return err
-	}
-	return c.actions.Mcp(p)
 }
 
 func (c *CLI) runLs(args []string) error {

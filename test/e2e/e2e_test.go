@@ -401,21 +401,6 @@ func TestDownMissingIsNotError(t *testing.T) {
 	wantContains(t, out, "nothing matches")
 }
 
-// --- mcp ---------------------------------------------------------------------
-
-func TestMcpToolsListAndCall(t *testing.T) {
-	clean(t)
-	i := up(t)
-	req := strings.Join([]string{
-		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`,
-		`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`,
-		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"dabash","arguments":{"command":"cat /work/marker.txt"}}}`,
-	}, "\n") + "\n"
-	out := runStdin(req, "dabs mcp "+i)
-	wantContains(t, out, `"name":"dabash"`)
-	wantContains(t, out, "hello-from-image")
-}
-
 // --- auth --------------------------------------------------------------------
 
 // TestAuthClaudeCapturesCredential drives `dabs auth claude` against the FAKE
@@ -869,32 +854,6 @@ func TestServersRemove(t *testing.T) {
 	run("dabs servers rm s2")
 	out, _ := run("dabs servers ls")
 	wantNotContains(t, out, "s2")
-}
-
-// --- install / uninstall -----------------------------------------------------
-
-func TestInstallBarePrintsInstructions(t *testing.T) {
-	out, _ := run("dabs install")
-	wantContains(t, out, "dabs install <harness>")
-}
-
-func TestInstallAndUninstallClaude(t *testing.T) {
-	runStdin("y\n", "dabs install claude")
-	if _, err := os.Stat(filepath.Join(home, ".claude/skills/dabs/SKILL.md")); err != nil {
-		t.Fatalf("claude skill not installed: %v", err)
-	}
-	runStdin("y\n", "dabs uninstall claude")
-	if _, err := os.Stat(filepath.Join(home, ".claude/skills/dabs")); !os.IsNotExist(err) {
-		t.Fatalf("claude skill not removed")
-	}
-}
-
-func TestInstallPi(t *testing.T) {
-	runStdin("y\n", "dabs install pi")
-	t.Cleanup(func() { runStdin("y\n", "dabs uninstall pi") })
-	if _, err := os.Stat(filepath.Join(home, ".pi/extensions/dabash/index.ts")); err != nil {
-		t.Fatalf("pi extension not installed: %v", err)
-	}
 }
 
 // --- env marker --------------------------------------------------------------

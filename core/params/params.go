@@ -48,12 +48,6 @@ type Down struct {
 // Ls are the inputs to the ls action.
 type Ls struct{}
 
-// Mcp are the inputs to the mcp action: serve the dabash MCP tool over
-// stdio, curried to one instance — the tool takes no sandbox parameter.
-type Mcp struct {
-	Instance string // instance name, as reported by ls (e.g. demo-0)
-}
-
 // ServersList are the inputs to listing registered servers.
 type ServersList struct{}
 
@@ -111,17 +105,6 @@ type Worktrees struct {
 	Force bool   // approve discarding a worktree that holds unreviewed work
 }
 
-// Install are the inputs to installing a harness integration. Empty Harness
-// prints instructions.
-type Install struct {
-	Harness string // "pi" | "claude" | ""
-}
-
-// Uninstall are the inputs to removing a harness integration.
-type Uninstall struct {
-	Harness string // "pi" | "claude"
-}
-
 // Actions is the contract every action provider satisfies: the real
 // implementations in core/actions, fakes in tests, RPC clients later.
 type Actions interface {
@@ -136,10 +119,7 @@ type Actions interface {
 	Run(Run) error
 	Down(Down) error
 	Ls(Ls) error
-	Mcp(Mcp) error
 	ServersList(ServersList) error
 	ServersAdd(ServersAdd) error
 	ServersRemove(ServersRemove) error
-	Install(Install) error
-	Uninstall(Uninstall) error
 }

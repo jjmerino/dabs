@@ -157,7 +157,7 @@ func (d Driver) Up(spec sandbox.Spec) (string, error) {
 	}
 	env := mergeEnv(im.Env, spec.Env)
 	// DABS_NAME marks the box: anything running inside can detect it is
-	// sandboxed (the dabash guard keys on this).
+	// sandboxed.
 	env = append(env, "DABS_NAME="+instance)
 	meta := instanceMeta{Workdir: spec.Workdir, Env: env, Mounts: spec.Mounts}
 	if err := writeJSON(filepath.Join(dir, "meta.json"), meta); err != nil {

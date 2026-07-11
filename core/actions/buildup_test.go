@@ -218,7 +218,7 @@ recipes:
 	remote := &fakeDriver{} // like the server driver: HasImage → false always
 	r := actions.New(
 		map[string]sandbox.Driver{"local": local, "remote": remote},
-		[]string{"local", "remote"}, fstest.MapFS{}, fstest.MapFS{}, fd,
+		[]string{"local", "remote"}, fstest.MapFS{}, fd,
 	)
 	if err := r.Up(params.Up{}); err != nil {
 		t.Fatalf("Up: %v", err)
@@ -245,7 +245,7 @@ recipes:
 	remote := &fakeDriver{} // HasImage → false, as the server driver reports
 	r := actions.New(
 		map[string]sandbox.Driver{"local": local, "remote": remote},
-		[]string{"local", "remote"}, fstest.MapFS{}, fstest.MapFS{}, fd,
+		[]string{"local", "remote"}, fstest.MapFS{}, fd,
 	)
 	if err := r.Up(params.Up{}); err != nil {
 		t.Fatalf("Up: %v", err)

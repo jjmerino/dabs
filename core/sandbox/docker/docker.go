@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/jjmerino/dabs/core/sandbox"
+	"github.com/mattn/go-isatty"
 )
 
 const prefix = "dabs-"
@@ -87,11 +88,24 @@ func (Driver) exists(instance string) bool {
 	return exec.Command("docker", "inspect", containerName(instance)).Run() == nil
 }
 
+// execFlags picks the `docker exec` flags for an interactive Run: always -i,
+// plus -t when stdin is a real terminal so an interactive shell attaches.
+func execFlags(tty bool) []string {
+	if tty {
+		return []string{"exec", "-i", "-t"}
+	}
+	return []string{"exec", "-i"}
+}
+
 func (d Driver) Run(instance string, cmd []string) error {
 	if !d.exists(instance) {
 		return fmt.Errorf("docker: no instance %q (see dabs ls)", instance)
 	}
-	args := []string{"exec", "-i"}
+	// -i keeps stdin attached (piped input, agents, scripts all rely on it).
+	// Add -t only when the caller's stdin is a real terminal: `docker exec -t`
+	// refuses a non-TTY stdin, so allocating a pseudo-TTY unconditionally would
+	// break every non-interactive run. With a TTY, -t gives a real shell.
+	args := execFlags(isatty.IsTerminal(os.Stdin.Fd()))
 	args = append(args, containerName(instance))
 	args = append(args, cmd...)
 	c := exec.Command("docker", args...)

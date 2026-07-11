@@ -19,6 +19,7 @@ var Commands = map[string]Command{
 	"build":     {"build the sandbox image from the manifest's Dockerfile", (*CLI).runBuild},
 	"auth":      {"log a harness into a persistent vault future boxes mount: auth claude", (*CLI).runAuth},
 	"recipe":    {"run a named recipe box: recipe <name> (e.g. recipe claude)", (*CLI).runRecipe},
+	"cast":      {"run a recipe onto an existing worktree: cast <recipe> <worktree>", (*CLI).runCast},
 	"recipes":   {"list the known recipes and what each mounts", (*CLI).runRecipes},
 	"worktrees": {"inspect/reap recipe worktrees: worktrees [ls | diff <name> | rm <name> | prune] [--force]", (*CLI).runWorktrees},
 	"up":        {"start a NEW box from a manifest (dir or dabs.json); to run a recipe use `recipe`", (*CLI).runUp},
@@ -65,6 +66,13 @@ func (c *CLI) runRecipe(args []string) error {
 		p.Name = args[0]
 	}
 	return c.actions.Recipe(p)
+}
+
+func (c *CLI) runCast(args []string) error {
+	if len(args) != 2 {
+		return BadArgsError{Cmd: "cast", Reason: "usage: cast <recipe> <worktree> (worktree name from: dabs worktrees ls)"}
+	}
+	return c.actions.Recipe(params.Recipe{Name: args[0], Worktree: args[1]})
 }
 
 func (c *CLI) runWorktrees(args []string) error {

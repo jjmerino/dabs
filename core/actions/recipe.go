@@ -41,6 +41,19 @@ func (r Real) Recipe(p params.Recipe) error {
 	if len(rec.Command) == 0 {
 		return fmt.Errorf("recipe %q: no command to run", name)
 	}
+
+	// `dabs cast <recipe> <worktree>` binds an existing worktree to the recipe's
+	// `.` source: a `worktree:`/`mount:` source attaches the worktree live (never
+	// forks a new branch) and a `copy:` source snapshots it. Done before the
+	// engine runs, so validate/build see plain sources.
+	sources := rec.Sources
+	if p.Worktree != "" {
+		sources, err = r.castSources(name, rec.Sources, p.Worktree)
+		if err != nil {
+			return err
+		}
+	}
+
 	drv, err := r.driverFor("") // recipes are a local concern
 	if err != nil {
 		return err
@@ -49,10 +62,10 @@ func (r Real) Recipe(p params.Recipe) error {
 	// Validate every source BEFORE any side effect, so a bad recipe, a non-git
 	// dir, a repo with no commits, or a missing source path all fail without
 	// building an image or touching the box.
-	kinds := make([]string, len(rec.Sources))
-	origins := make([]string, len(rec.Sources))
-	tops := make([]string, len(rec.Sources))
-	for i, s := range rec.Sources {
+	kinds := make([]string, len(sources))
+	origins := make([]string, len(sources))
+	tops := make([]string, len(sources))
+	for i, s := range sources {
 		kind, origin, err := s.Kind()
 		if err != nil {
 			return fmt.Errorf("recipe %q: %w", name, err)
@@ -94,7 +107,7 @@ func (r Real) Recipe(p params.Recipe) error {
 	var mounts []sandbox.Mount
 	var copies []copyOp
 	var kept []string
-	for i, s := range rec.Sources {
+	for i, s := range sources {
 		switch kinds[i] {
 		case "mount":
 			mounts = append(mounts, sandbox.Mount{Host: origins[i], Path: s.Path, RO: s.RO})
@@ -313,6 +326,64 @@ func (r Real) addWorktree(top string) (path, branch string, err error) {
 		return "", "", fmt.Errorf("recipe: %w", err)
 	}
 	return path, branch, nil
+}
+
+// castSources rewrites a recipe's sources to bind an existing dabs worktree
+// (by name, under ~/.dabs/worktrees/<name>) to the recipe's `.` origin:
+//   - worktree: . / mount: .  → mount the worktree live, PLUS mount its parent
+//     .git at its own absolute path so the worktree's `.git` pointer resolves
+//     and git works inside the box. `worktree:` prints a note that it attached
+//     rather than forking a new branch.
+//   - copy: .                 → snapshot the worktree (git stays blind in-box:
+//     the object store isn't copied — that's inherent to a copy).
+//
+// Sources that don't name `.` (the auth vault, etc.) pass through untouched.
+func (r Real) castSources(recipeName string, in []recipe.Source, worktree string) ([]recipe.Source, error) {
+	home, err := r.data.HomeDir()
+	if err != nil {
+		return nil, err
+	}
+	wt := filepath.Join(home, ".dabs", "worktrees", worktree)
+	if _, err := r.data.Stat(wt); errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("cast: no worktree %q at %s (see: dabs worktrees ls)", worktree, wt)
+	} else if err != nil {
+		return nil, fmt.Errorf("cast: worktree %s: %w", wt, err)
+	}
+	gitDir, err := r.data.GitCommonDir(wt)
+	if err != nil {
+		return nil, fmt.Errorf("cast: %s is not a git worktree: %w", wt, err)
+	}
+
+	out := make([]recipe.Source, 0, len(in)+1)
+	var gitMounted, bound bool
+	for _, s := range in {
+		kind, origin, err := s.Kind()
+		if err != nil {
+			return nil, fmt.Errorf("recipe %q: %w", recipeName, err)
+		}
+		if origin != "." {
+			out = append(out, s)
+			continue
+		}
+		bound = true
+		switch kind {
+		case "worktree", "mount":
+			if kind == "worktree" {
+				fmt.Fprintf(os.Stdout, "cast: recipe wants a fresh worktree; casting onto %s — mounting it instead.\n", wt)
+			}
+			out = append(out, recipe.Source{Mount: wt, Path: s.Path, RO: s.RO})
+			if !gitMounted { // the shared object store, once, so git resolves in-box
+				out = append(out, recipe.Source{Mount: gitDir, Path: gitDir})
+				gitMounted = true
+			}
+		case "copy":
+			out = append(out, recipe.Source{Copy: wt, Path: s.Path})
+		}
+	}
+	if !bound {
+		return nil, fmt.Errorf("cast: recipe %q has no `.` source to bind the worktree to", recipeName)
+	}
+	return out, nil
 }
 
 // randHex returns 2n hex chars of cryptographic randomness for naming.

@@ -13,11 +13,13 @@ recipes:
   # box exits to review and reap with `dabs worktrees`. The vault stays a plain
   # mount so token refreshes persist.
   #
-  # NOTE: git is BLIND inside the box. A worktree's `.git` is only a pointer into
-  # the parent repo's object store, which isn't mounted — so `git log/diff/commit`
-  # fail in-box. The agent EDITS files here; you commit and review on the host
-  # (`dabs worktrees diff`). Making git work in-box means also mounting the parent
-  # `.git` — the job of a future `cast`, not this static recipe.
+  # NOTE: git is BLIND inside this box. A worktree's `.git` is only a pointer into
+  # the parent repo's object store, which this static recipe doesn't mount — so
+  # `git log/diff/commit` fail in-box. The agent EDITS files here; you commit and
+  # review on the host (`dabs worktrees diff`). To get working git in-box, run a
+  # recipe onto an EXISTING worktree with `dabs cast <recipe> <worktree>`: it also
+  # mounts the parent `.git`, so the agent can commit and the commits reconcile
+  # straight into the shared store.
   claudewt:
     image: claude
     command: [claude]

@@ -69,6 +69,11 @@ type Auth struct {
 // image, sources, env, command).
 type Recipe struct {
 	Name string
+	// Worktree, when set (via `dabs cast`), binds an EXISTING dabs worktree to
+	// the recipe's `.` source instead of the cwd: `worktree: .`/`mount: .` mount
+	// that worktree live (plus its parent .git so git works in-box) rather than
+	// cutting a fresh branch, and `copy: .` snapshots it.
+	Worktree string
 }
 
 // Recipes are the inputs to listing the known recipes.

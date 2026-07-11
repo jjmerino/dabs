@@ -50,4 +50,8 @@ type Data interface {
 	GitDiff(worktree string) (string, error)
 	// GitRemoveWorktree removes the worktree and deletes its branch.
 	GitRemoveWorktree(worktree string) error
+	// GitCommonDir returns the absolute path of the shared object store (the
+	// parent repo's .git) backing a linked worktree — what `cast` must also
+	// mount so git resolves inside the box.
+	GitCommonDir(worktree string) (string, error)
 }

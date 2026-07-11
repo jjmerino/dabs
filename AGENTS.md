@@ -68,6 +68,14 @@ via a recipe (`dabs recipe claude`).
    dabs down <name> --dry          # preview what a name matches
    ```
 
+**Re-attaching to an existing worktree — `dabs cast <recipe> <worktree>`.** A
+recipe's `worktree:`/`mount:`/`copy:` `.` source normally means "the cwd". `cast`
+binds it to an EXISTING worktree instead (by name from `dabs worktrees ls`):
+`worktree:`/`mount:` mount that worktree live — and also mount its parent `.git`,
+so **git works inside the box** and the agent's commits reconcile straight into
+the shared store (no push). Use it to point a fresh agent (or a different recipe,
+e.g. review) at work another agent already started, without cutting a new branch.
+
 ## Notes
 
 - Tell the in-box agent the shape of its world: a fresh machine, no host

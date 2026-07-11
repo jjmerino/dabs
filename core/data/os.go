@@ -40,6 +40,22 @@ func (OS) GitHasCommits(top string) bool {
 	return exec.Command("git", "-C", top, "rev-parse", "--verify", "HEAD").Run() == nil
 }
 
+func (OS) GitCommonDir(worktree string) (string, error) {
+	out, err := exec.Command("git", "-C", worktree, "rev-parse", "--git-common-dir").CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			msg = "not a git worktree"
+		}
+		return "", fmt.Errorf("%s", msg)
+	}
+	p := strings.TrimSpace(string(out))
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(worktree, p)
+	}
+	return filepath.Clean(p), nil
+}
+
 func (OS) GitAddWorktree(top, branch, dest string) error {
 	cmd := exec.Command("git", "-C", top, "worktree", "add", "-b", branch, dest, "HEAD")
 	if out, err := cmd.CombinedOutput(); err != nil {

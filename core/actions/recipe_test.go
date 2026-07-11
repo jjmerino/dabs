@@ -74,6 +74,7 @@ type fakeData struct {
 	dirs      map[string][]string // ReadDir results
 	states    map[string]wtState  // GitState by worktree path
 	removed   []string            // recorded GitRemoveWorktree
+	commondir map[string]string   // GitCommonDir: worktree path -> parent .git (present => a worktree)
 }
 
 type wtState struct {
@@ -130,6 +131,12 @@ func (f *fakeData) GitDiff(wt string) (string, error) { return "diff of " + wt, 
 func (f *fakeData) GitRemoveWorktree(wt string) error {
 	f.removed = append(f.removed, wt)
 	return nil
+}
+func (f *fakeData) GitCommonDir(wt string) (string, error) {
+	if g, ok := f.commondir[wt]; ok {
+		return g, nil
+	}
+	return "", errors.New("not a git worktree")
 }
 
 // --- harness ------------------------------------------------------------------
@@ -509,5 +516,97 @@ func TestRecipeDownEvenWhenRunFails(t *testing.T) {
 	}
 	if len(drv.downs) != 1 {
 		t.Errorf("box not torn down after a failed run: downs=%v", drv.downs)
+	}
+}
+
+// --- tests: cast (bind a recipe onto an existing worktree) --------------------
+
+// CONTRACT: `dabs cast <recipe> <worktree>` on a `worktree: .` recipe ATTACHES
+// the existing worktree (mounts it live, never forks a new branch) and also
+// mounts the parent .git so git resolves in-box. Non-`.` sources pass through.
+func TestCastAttachesWorktreeAndGitDir(t *testing.T) {
+	y := `recipes:
+  w:
+    image: img
+    command: [x]
+    sources:
+      - mount: ~/vault
+        path: /root/.cfg
+      - worktree: .
+        path: /work
+`
+	fd := baseData()
+	wt := "/home/t/.dabs/worktrees/wt1"
+	fd.exists[wt] = true
+	fd.exists["/home/t/vault"] = true
+	fd.exists["/repo/.git"] = true // parent store exists (git rev-parse yields a real path)
+	fd.commondir = map[string]string{wt: "/repo/.git"}
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	if err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "w", Worktree: "wt1"}); err != nil {
+		t.Fatalf("cast: %v", err)
+	}
+	// It must NOT fork a fresh worktree.
+	if len(fd.worktrees) != 0 {
+		t.Fatalf("cast forked a worktree, want none: %v", fd.worktrees)
+	}
+	up := onlyUp(t, drv)
+	want := []sandbox.Mount{
+		{Host: "/home/t/vault", Path: "/root/.cfg"}, // passthrough
+		{Host: wt, Path: "/work"},                   // the worktree, attached live
+		{Host: "/repo/.git", Path: "/repo/.git"},    // parent store, so git works in-box
+	}
+	if len(up.Mounts) != len(want) {
+		t.Fatalf("mounts = %+v, want %+v", up.Mounts, want)
+	}
+	for i := range want {
+		if up.Mounts[i] != want[i] {
+			t.Errorf("mount[%d] = %+v, want %+v", i, up.Mounts[i], want[i])
+		}
+	}
+}
+
+// CONTRACT: casting a recipe that has no `.` source is a user error, not a
+// silent no-op — there's nothing to bind the worktree to.
+func TestCastRecipeWithoutDotSourceErrors(t *testing.T) {
+	y := `recipes:
+  v:
+    image: img
+    command: [x]
+    sources:
+      - mount: /data
+        path: /work
+`
+	fd := baseData()
+	wt := "/home/t/.dabs/worktrees/wt1"
+	fd.exists[wt] = true
+	fd.commondir = map[string]string{wt: "/repo/.git"}
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "v", Worktree: "wt1"})
+	if err == nil || !strings.Contains(err.Error(), "no `.` source") {
+		t.Fatalf("want 'no `.` source' error, got %v", err)
+	}
+	if len(drv.ups) != 0 {
+		t.Errorf("box brought up despite bad cast: %v", drv.ups)
+	}
+}
+
+// CONTRACT: casting onto a missing worktree fails cleanly before any box work.
+func TestCastMissingWorktreeErrors(t *testing.T) {
+	y := `recipes:
+  w:
+    image: img
+    command: [x]
+    sources:
+      - worktree: .
+        path: /work
+`
+	fd := baseData()
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "w", Worktree: "ghost"})
+	if err == nil || !strings.Contains(err.Error(), "no worktree") {
+		t.Fatalf("want 'no worktree' error, got %v", err)
+	}
+	if len(drv.ups) != 0 {
+		t.Errorf("box brought up despite missing worktree: %v", drv.ups)
 	}
 }

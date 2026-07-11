@@ -30,9 +30,11 @@ type Registry struct {
 type Recipe struct {
 	Image   ImageRef          `json:"image"`             // the box image (name to reuse, or a build recipe)
 	Workdir string            `json:"workdir,omitempty"` // default /work
-	Command []string          `json:"command,omitempty"` // what `dabs recipe` runs in the box
+	Command []string          `json:"command,omitempty"` // what runs in the box
 	Env     map[string]string `json:"env,omitempty"`     // environment inside the box
 	Sources []Source          `json:"sources,omitempty"` // what lands in the box, and how
+	Target  string            `json:"target,omitempty"`  // which fleet driver runs it (e.g. "docker", a server); default local
+	Keep    bool              `json:"keep,omitempty"`    // keep the box alive after the command (default: delete it)
 }
 
 // ImageRef is a union: either a bare image NAME (reuse ~/.dabs/images/<name>,

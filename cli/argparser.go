@@ -37,6 +37,9 @@ func parseBuild(args []string) (params.Build, error) {
 	var p params.Build
 	fs := newFlagSet("build")
 	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return p, HelpRequestedError{helpText("build", fs)}
+		}
 		return p, BadArgsError{Cmd: "build", Reason: err.Error()}
 	}
 	rest := fs.Args()
@@ -55,6 +58,9 @@ func parseUp(args []string) (params.Up, error) {
 	var p params.Up
 	fs := newFlagSet("up")
 	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return p, HelpRequestedError{helpText("up", fs)}
+		}
 		return p, BadArgsError{Cmd: "up", Reason: err.Error()}
 	}
 	rest := fs.Args()
@@ -74,6 +80,9 @@ func parseExec(args []string) (params.Exec, error) {
 	var p params.Exec
 	fs := newFlagSet("exec")
 	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return p, HelpRequestedError{helpText("exec", fs)}
+		}
 		return p, BadArgsError{Cmd: "exec", Reason: err.Error()}
 	}
 	rest := fs.Args()
@@ -94,6 +103,9 @@ func parseRun(args []string) (params.Run, error) {
 	var p params.Run
 	fs := newFlagSet("run")
 	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return p, HelpRequestedError{helpText("run", fs)}
+		}
 		return p, BadArgsError{Cmd: "run", Reason: err.Error()}
 	}
 	rest := fs.Args()
@@ -119,6 +131,9 @@ func parseDown(args []string) (params.Down, error) {
 	fs.BoolVar(&p.Multiple, "multiple", false, "act on all instances the name matches (required when it matches more than one)")
 	fs.BoolVar(&p.Dry, "dry", false, "only show what the name matches; down nothing")
 	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return p, HelpRequestedError{helpText("down", fs)}
+		}
 		return p, BadArgsError{Cmd: "down", Reason: err.Error()}
 	}
 	// Accept flags AFTER the instance too (`dabs down demo --force`):
@@ -148,6 +163,9 @@ func parseLs(args []string) (params.Ls, error) {
 	var p params.Ls
 	fs := newFlagSet("ls")
 	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return p, HelpRequestedError{helpText("ls", fs)}
+		}
 		return p, BadArgsError{Cmd: "ls", Reason: err.Error()}
 	}
 	if len(fs.Args()) != 0 {

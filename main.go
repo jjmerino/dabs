@@ -40,6 +40,12 @@ func main() {
 	if err == nil {
 		return
 	}
+	// A per-command help request (`dabs <cmd> --help`) is not an error: print
+	// that command's own usage to stdout and exit 0 — no top-level menu dump.
+	if h, ok := err.(cli.HelpRequestedError); ok {
+		fmt.Fprint(os.Stdout, h.Text)
+		return
+	}
 	fmt.Fprintf(os.Stderr, "dabs: %v\n", err)
 	switch err.(type) {
 	case cli.NoCommandError, cli.UnknownCommandError, cli.BadArgsError:

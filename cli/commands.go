@@ -6,32 +6,57 @@ import (
 	"github.com/jjmerino/dabs/core/params"
 )
 
-// Command is one dabs subcommand.
+// Command is one dabs subcommand: the core action it invokes. Each Run
+// composes a pure parser from argparser.go with the action on the CLI's
+// injected Actions; the logic lives in core/actions.
 type Command struct {
-	Help string
-	Run  func(c *CLI, args []string) error
+	Run func(c *CLI, args []string) error
 }
 
-// Commands maps each CLI-facing command to the core action it invokes.
-// Each Run composes a pure parser from argparser.go with the action on the
-// CLI's injected Actions; the logic lives in core/actions.
+// Commands maps each CLI-facing command name to its runner.
 var Commands = map[string]Command{
-	"build":     {"build a recipe's box image: build [recipe|path] (no name → dabs.yaml default)", (*CLI).runBuild},
-	"auth":      {"log a harness into a persistent vault future boxes mount: auth claude", (*CLI).runAuth},
-	"recipe":    {"run a named recipe box: recipe <name> [cmd…] (no name → dabs.yaml default)", (*CLI).runRecipe},
-	"do":        {"run a command in a throwaway box via the default recipe (else sh): do <cmd…>", (*CLI).runDo},
-	"cast":      {"run a recipe onto an existing worktree: cast <recipe> <worktree>", (*CLI).runCast},
-	"recipes":   {"list the known recipes and what each mounts", (*CLI).runRecipes},
-	"worktrees": {"inspect/reap recipe worktrees: worktrees [ls | diff <name> | rm <name> | prune] [--force]", (*CLI).runWorktrees},
-	"up":        {"start a NEW detached box from a recipe (no command): up [recipe|path]", (*CLI).runUp},
-	"exec":      {"exec an exact command inside an instance (no shell): exec <instance> -- <cmd…>", (*CLI).runExec},
-	"run":       {"run a shell command inside an instance (args joined into one `sh -c` line — use `exec` for exact argv): run <instance> <shell…>", (*CLI).runRun},
-	"down":      {"stop + remove an instance by name (--multiple to act on several matches)", (*CLI).runDown},
-	"ls":        {"list sandboxes", (*CLI).runLs},
-	"servers":   {"manage registered servers: servers [ls] | add <name> [host] | rm <name>", (*CLI).runServers},
+	"build":     {(*CLI).runBuild},
+	"auth":      {(*CLI).runAuth},
+	"recipe":    {(*CLI).runRecipe},
+	"do":        {(*CLI).runDo},
+	"cast":      {(*CLI).runCast},
+	"recipes":   {(*CLI).runRecipes},
+	"worktrees": {(*CLI).runWorktrees},
+	"up":        {(*CLI).runUp},
+	"exec":      {(*CLI).runExec},
+	"run":       {(*CLI).runRun},
+	"down":      {(*CLI).runDown},
+	"ls":        {(*CLI).runLs},
+	"servers":   {(*CLI).runServers},
+}
+
+// cmdDoc is a command's human-facing help: Help is the one-line description
+// shown in the top-level menu (`dabs --help`); Args is the argument shape
+// shown (with the command's own flags, if any) by `dabs <cmd> --help`. This
+// is pure data — kept separate from Commands so the runner map has no static
+// reference back to itself (an initialization cycle) through the help path.
+type cmdDoc struct{ Help, Args string }
+
+var commandDocs = map[string]cmdDoc{
+	"build":     {"build a recipe's box image: build [recipe|path] (no name → dabs.yaml default)", "build [recipe|path]"},
+	"auth":      {"log a harness into a persistent vault future boxes mount: auth claude", "auth <provider>"},
+	"recipe":    {"run a named recipe box: recipe <name> [cmd…] (no name → dabs.yaml default)", "recipe [<name>] [cmd…]"},
+	"do":        {"run a command in a throwaway box via the default recipe (else sh): do <cmd…>", "do <cmd…>"},
+	"cast":      {"run a recipe onto an existing worktree: cast <recipe> <worktree>", "cast <recipe> <worktree>"},
+	"recipes":   {"list the known recipes and what each mounts", "recipes [--print]"},
+	"worktrees": {"inspect/reap recipe worktrees: worktrees [ls | diff <name> | rm <name> | prune] [--force]", "worktrees [ls | diff <name> | rm <name> | prune] [--force]"},
+	"up":        {"start a NEW detached box from a recipe (no command): up [recipe|path]", "up [recipe|path]"},
+	"exec":      {"exec an exact command inside an instance (no shell): exec <instance> -- <cmd…>", "exec <instance> -- <cmd…>"},
+	"run":       {"run a shell command inside an instance (args joined into one `sh -c` line — use `exec` for exact argv): run <instance> <shell…>", "run <instance> <shell…>"},
+	"down":      {"stop + remove an instance by name (--multiple to act on several matches)", "down [--force] [--dry] [--multiple] <instance>"},
+	"ls":        {"list sandboxes", "ls"},
+	"servers":   {"manage registered servers: servers [ls] | add <name> [host] | rm <name>", "servers [ls | add <name> [host] | rm <name>]"},
 }
 
 func (c *CLI) runAuth(args []string) error {
+	if wantsHelp(args) {
+		return HelpRequestedError{helpText("auth", nil)}
+	}
 	if len(args) != 1 {
 		return BadArgsError{Cmd: "auth", Reason: "usage: auth <provider> (e.g. auth claude)"}
 	}
@@ -39,6 +64,9 @@ func (c *CLI) runAuth(args []string) error {
 }
 
 func (c *CLI) runRecipe(args []string) error {
+	if wantsHelp(args) {
+		return HelpRequestedError{helpText("recipe", nil)}
+	}
 	// recipe [<name>] [cmd…]: the first arg is the recipe (no name → the
 	// dabs.yaml default); any remaining args are a command appended to the
 	// recipe's own command (which triggers a confirmation before running).
@@ -53,12 +81,18 @@ func (c *CLI) runRecipe(args []string) error {
 }
 
 func (c *CLI) runDo(args []string) error {
+	if wantsHelp(args) {
+		return HelpRequestedError{helpText("do", nil)}
+	}
 	// do <cmd…>: everything is the command (flags included), appended to the
 	// default recipe's command — no name, no `--` needed.
 	return c.actions.Do(params.Do{Cmd: args})
 }
 
 func (c *CLI) runCast(args []string) error {
+	if wantsHelp(args) {
+		return HelpRequestedError{helpText("cast", nil)}
+	}
 	if len(args) != 2 {
 		return BadArgsError{Cmd: "cast", Reason: "usage: cast <recipe> <worktree> (worktree name from: dabs worktrees ls)"}
 	}
@@ -66,6 +100,11 @@ func (c *CLI) runCast(args []string) error {
 }
 
 func (c *CLI) runWorktrees(args []string) error {
+	if wantsHelp(args) {
+		fs := newFlagSet("worktrees")
+		fs.Bool("force", false, "with rm/prune: reap even worktrees with unreviewed work")
+		return HelpRequestedError{helpText("worktrees", fs)}
+	}
 	p := params.Worktrees{}
 	var pos []string
 	for _, a := range args {
@@ -88,6 +127,11 @@ func (c *CLI) runWorktrees(args []string) error {
 }
 
 func (c *CLI) runRecipes(args []string) error {
+	if wantsHelp(args) {
+		fs := newFlagSet("recipes")
+		fs.Bool("print", false, "print each recipe's resolved manifest, not just its name")
+		return HelpRequestedError{helpText("recipes", fs)}
+	}
 	p := params.Recipes{}
 	for _, a := range args {
 		switch a {
@@ -149,6 +193,9 @@ func (c *CLI) runLs(args []string) error {
 }
 
 func (c *CLI) runServers(args []string) error {
+	if wantsHelp(args) {
+		return HelpRequestedError{helpText("servers", nil)}
+	}
 	sub := "ls"
 	if len(args) > 0 {
 		sub = args[0]

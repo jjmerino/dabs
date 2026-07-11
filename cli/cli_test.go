@@ -2,6 +2,7 @@ package cli
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/jjmerino/dabs/core/params"
@@ -177,6 +178,58 @@ func TestRunErrorsReachNoAction(t *testing.T) {
 				t.Errorf("action was called despite error %v", err)
 			}
 		})
+	}
+}
+
+// TestCommandHelpShowsOwnUsage asserts that `dabs <cmd> --help` (and -h) yields
+// that command's OWN usage — its argument shape and its own flags — as a
+// HelpRequestedError that calls NO action, and never leaks the top-level menu.
+func TestCommandHelpShowsOwnUsage(t *testing.T) {
+	tests := []struct {
+		cmd  string
+		want []string // substrings that must appear in the command's own help
+	}{
+		{"down", []string{"dabs down", "--force", "--dry", "<instance>"}},
+		{"up", []string{"dabs up", "[recipe|path]"}},
+		{"worktrees", []string{"dabs worktrees", "diff <name>", "prune", "--force"}},
+		{"recipes", []string{"dabs recipes", "--print"}},
+	}
+	for _, tt := range tests {
+		for _, flag := range []string{"--help", "-h"} {
+			t.Run(tt.cmd+flag, func(t *testing.T) {
+				f := &fakeActions{}
+				err := New(f).Run([]string{tt.cmd, flag})
+				var h HelpRequestedError
+				if !errors.As(err, &h) {
+					t.Fatalf("Run(%s %s) = %v, want HelpRequestedError", tt.cmd, flag, err)
+				}
+				for _, sub := range tt.want {
+					if !strings.Contains(h.Text, sub) {
+						t.Errorf("%s help missing %q in:\n%s", tt.cmd, sub, h.Text)
+					}
+				}
+				// Its own help must NOT be the top-level command menu. The menu
+				// lists sibling commands; a command's own help must not.
+				if strings.Contains(h.Text, "dabs <command> [args]") {
+					t.Errorf("%s help leaked the top-level menu:\n%s", tt.cmd, h.Text)
+				}
+				if n := len(f.build) + len(f.up) + len(f.down) + len(f.ls); n != 0 {
+					t.Errorf("%s --help invoked an action", tt.cmd)
+				}
+			})
+		}
+	}
+}
+
+// TestPassThroughHelpNotIntercepted guards that a `--help` meant for the
+// command run INSIDE a box is forwarded, not eaten as dabs's own help.
+func TestPassThroughHelpNotIntercepted(t *testing.T) {
+	f := &fakeActions{}
+	if err := New(f).Run([]string{"run", "demo-0", "mytool", "--help"}); err != nil {
+		t.Fatalf("Run = %v, want nil", err)
+	}
+	if len(f.run) != 1 || f.run[0].Cmd[len(f.run[0].Cmd)-1] != "--help" {
+		t.Errorf("got %+v, want run to forward --help to the box command", f.run)
 	}
 }
 

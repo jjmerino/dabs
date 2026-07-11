@@ -43,7 +43,7 @@ func Usage(w io.Writer) {
 	sort.Strings(names)
 	rows := make([][]string, 0, len(names))
 	for _, name := range names {
-		rows = append(rows, []string{tui.Accent(name), Commands[name].Help})
+		rows = append(rows, []string{tui.Accent(name), commandDocs[name].Help})
 	}
 	fmt.Fprintln(w, tui.Indent(tui.Rows(nil, rows), 2))
 	fmt.Fprintln(w, "\n"+tui.Muted("agents: `dabs --help-full-for-agents` prints the full guide (recipes, examples)"))

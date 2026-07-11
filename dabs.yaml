@@ -11,6 +11,7 @@ recipes:
   # recipe; this Claude box is project-specific (it mounts YOUR auth vault), so
   # it lives here. This is the whole definition: no mounts are hidden in code.
   claude:
+    description: fresh Claude Code box over the current repo, logged in
     image: claude                         # reuse ~/.dabs/images/claude
                                           #   (built from the bundled image recipe on first use)
     command: [claude]                     # what to run once the box is up
@@ -54,6 +55,7 @@ recipes:
   # Agents: use when you want an isolated agent with throwaway/fresh auth — e.g.
   # reviewing UNTRUSTED code, where you must not expose your real Claude session.
   fresh-claude:
+    description: detached logged-out Claude box with throwaway auth
     image: claude                         # same bundled image as `claude` (has Claude Code)
     command: [claude]                     # drops straight into the box → the /login flow
     env:
@@ -81,6 +83,7 @@ recipes:
   # mounts the parent `.git`, so the agent can commit and the commits reconcile
   # straight into the shared store.
   claudewt:
+    description: Claude box working in a fresh git worktree
     image: claude
     command: [claude]
     keep: true                            # keep the box after claude exits, so you can resume
@@ -124,6 +127,7 @@ recipes:
   # keeps testing that branch. Trade-off: without cast there is no parent .git
   # mount, so git is BLIND in-box; use cast when a test needs in-box git.
   dabswt:
+    description: build and run a branch's dabs in a kept, testable box
     image: { dockerfile: contrib/recipes/dabswt.Dockerfile, context: . }
     target: INTERNAL-docker-privileged-for-nested-sandboxing  # privileged, for nested dabs boxes
     keep: true                            # keep the box alive after the build shell exits — exec in to test
@@ -142,6 +146,7 @@ recipes:
   # provisions the box and points the agent at it. The skill is MOUNTED into the
   # box's project skills dir (where Claude Code looks), and Claude runs it.
   review:
+    description: sandboxed Opus review of this branch vs main
     image: claude                         # bundled image: Claude Code + git
     env: { CLAUDE_CONFIG_DIR: /root/.claude }
     command: [sh, -c, "cd /work && exec claude -p 'Use the review-dabs skill.' --model claude-opus-4-8 --allowedTools Bash Read Grep Glob Skill"]
@@ -161,6 +166,7 @@ recipes:
   # rather than the git-blind copy a `copy:`-based recipe would give when cast.
   # Read-only tools; the review must not modify the live worktree's source.
   review-wt:
+    description: review cast onto an existing worktree, with in-box git
     image: claude
     env: { CLAUDE_CONFIG_DIR: /root/.claude }
     command: [sh, -c, "cd /work && exec claude -p 'Use the review-dabs skill.' --model claude-opus-4-8 --allowedTools Bash Read Grep Glob Skill"]
@@ -183,6 +189,7 @@ recipes:
   # provisions the box (build dabs, mount the skill where Claude Code looks) and
   # asks Claude to run it.
   dumb-user:
+    description: naive user tries to discover dabs on a fresh machine
     image: { dockerfile: contrib/recipes/dumb-user.Dockerfile, context: . }
     env: { CLAUDE_CONFIG_DIR: /root/.claude }
     command: [sh, -c, "cd /work && go build -o /usr/local/bin/dabs . && exec claude -p 'Use the dumb-user skill.' --model claude-haiku-4-5 --allowedTools Bash Write Read Edit Skill"]

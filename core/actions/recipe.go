@@ -404,8 +404,12 @@ func (r Real) Recipes(p params.Recipes) error {
 		if n == reg.Default {
 			head += " " + tui.Badge("default")
 		}
+		if rec.Description != "" {
+			head += "  " + tui.Muted(rec.Description)
+		}
 		fmt.Fprintln(os.Stdout, head)
-		fmt.Fprintln(os.Stdout, tui.Indent(tui.Muted("image=%s  cmd=%s", img, strings.Join(rec.Command, " ")), 2))
+		fmt.Fprintln(os.Stdout, tui.Indent(tui.Muted("image=%s", img), 2))
+		fmt.Fprintln(os.Stdout, tui.Indent(tui.Muted("cmd=%s", strings.Join(rec.Command, " ")), 2))
 		for _, s := range rec.Sources {
 			if kind, origin, err := s.Kind(); err == nil {
 				fmt.Fprintf(os.Stdout, "  %s %-8s %s %s %s\n", tui.Dot(), kind, origin, tui.Arrow(), s.Path)

@@ -128,7 +128,7 @@ e.g. review) at work another agent already started, without cutting a new branch
   lack tools like `ps`; if a journey needs one, it belongs in the
   Dockerfile, not worked around.
 - Instance names accept unambiguous prefixes (git-style) everywhere:
-  `dabs exec myproj-a3f -- ls`. Ambiguity is an error for exec/run/mcp and an
+  `dabs exec myproj-a3f -- ls`. Ambiguity is an error for exec/run and an
   informational list for down.
 - Three levels reach into an existing box, low to high:
   `dabs exec <instance> -- <cmd…>` runs an EXACT argv (no shell); `dabs run
@@ -228,7 +228,6 @@ core/sandbox/          mechanical driver contract — exact names in, state
                        out. Zero vendor imports, zero logic.
 core/sandbox/<kind>/   one driver per kind (apple, bwrap, server). Drivers
                        do no resolution, no policy, no messaging.
-core/mcpserve/         the dabash MCP server, pure over an injected exec.
 ```
 
 **Rules that keep it clean**
@@ -240,8 +239,6 @@ core/mcpserve/         the dabash MCP server, pure over an injected exec.
   goes in `core/actions`; a driver only ever takes exact names.
 - New verb checklist: params struct + Actions method → action file →
   pure parser → command-table entry + runX → fake method in cli_test.go.
-- The MCP server must never write non-protocol bytes to stdout — stdout is
-  the protocol channel.
 - Self-contained: no references to private projects, machines, usernames, or
   home paths anywhere (code, comments, tests, commit messages). Example
   names are neutral (`demo-0`, `myproj`).

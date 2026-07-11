@@ -3,10 +3,9 @@
 // what sandbox.Driver is to containers — where fs/env/git I/O crosses out of
 // core, so that logic can be exercised against a fake.
 //
-// The recipe, auth, and worktree actions route their I/O through this seam;
-// install.go still calls os directly (it predates the seam and isn't yet
-// migrated). Nothing here reaches the network or a container orchestrator —
-// those already live behind sandbox.Driver.
+// The recipe, auth, and worktree actions route their I/O through this seam.
+// Nothing here reaches the network or a container orchestrator — those already
+// live behind sandbox.Driver.
 package data
 
 import "io/fs"

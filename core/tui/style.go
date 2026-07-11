@@ -59,7 +59,7 @@ const (
 	dotGlyph   = "•"
 )
 
-// Heading styles a section title (fleet member, install header, …).
+// Heading styles a section title (usage banner, fleet header, …).
 func Heading(s string) string {
 	if !stdoutIsTTY {
 		return s

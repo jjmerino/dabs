@@ -16,16 +16,15 @@ import (
 type Real struct {
 	drivers map[string]sandbox.Driver // key "local" + config target names
 	order   []string                  // stable iteration order for ls
-	harness fs.FS                     // bundled harness integrations (for install)
 	images  fs.FS                     // bundled build recipes (for auth, …)
 	data    data.Data                 // host effects (fs/env/git) — the testable seam
 	confirm func(string) bool         // look-before-run gate; defaults to tui.Confirm
 }
 
 // New returns actions backed by the given drivers (listed in order), the
-// harness-integration and image filesystems, and the host-effects layer.
-func New(drivers map[string]sandbox.Driver, order []string, harness, images fs.FS, d data.Data) Real {
-	return Real{drivers: drivers, order: order, harness: harness, images: images, data: d, confirm: tui.Confirm}
+// image filesystem, and the host-effects layer.
+func New(drivers map[string]sandbox.Driver, order []string, images fs.FS, d data.Data) Real {
+	return Real{drivers: drivers, order: order, images: images, data: d, confirm: tui.Confirm}
 }
 
 // WithConfirm returns a copy of r whose look-before-run gate is fn, so tests can

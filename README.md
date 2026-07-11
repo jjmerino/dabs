@@ -1,9 +1,9 @@
 # dabs — dumb agent boxes
 
 Disposable sandboxes you can hand to an AI agent. Each box is a pristine
-"fresh machine" built from a Dockerfile; the agent reaches it through a
-single curried shell tool (dabash) and can't touch your host. Every `up` is
-a new instance; boxes run locally or on a remote server.
+"fresh machine" built from a Dockerfile; run a command — or a whole agent via
+a recipe — inside it, and it can't touch your host. Every `up` is a new
+instance; boxes run locally or on a remote server.
 
 ## Requirements
 
@@ -86,26 +86,8 @@ dabs servers rm homelab             # unregister (remote sandboxes untouched)
 
 Route a project to a server with `"target": "homelab"` in its `dabs.json`
 (omit for local). `dabs build`/`up` then run there; `dabs ls` aggregates the
-whole fleet with a target column; `run`/`down`/`mcp` address any instance by
+whole fleet with a target column; `run`/`down` address any instance by
 name wherever it lives.
-
-## Hand a box to an agent (dabash)
-
-`dabs mcp <instance>` serves an MCP stdio server exposing exactly one tool,
-**dabash(command, cwd?)** — dumb agent bash. The instance is bound at launch
-(curried into argv): the tool has no sandbox parameter, so the agent cannot
-address any other box.
-
-```bash
-dabs up ./myproj                 # → myproj-a3f9c21d4e02 up
-claude --setting-sources "" --tools "" --strict-mcp-config \
-  --mcp-config '{"mcpServers":{"dabash":{"command":"dabs","args":["mcp","myproj-a3f"]}}}' \
-  --allowedTools "mcp__dabash__dabash" \
-  -p "figure out what this machine's CLI does and try it"
-```
-
-That agent wakes up with no host filesystem, no user config, and one
-capability: a shell inside its box.
 
 ## Manifest fields (dabs.json)
 

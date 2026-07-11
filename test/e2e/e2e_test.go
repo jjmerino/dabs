@@ -435,6 +435,15 @@ const e2eRecipes = `recipes:
   shellhang:
     image: dabs-e2e
     command: [sh]
+  # For cast: a worktree-source recipe whose command DOES git — proving cast made
+  # the box git-capable. It commits (empty) and records the new HEAD into /work
+  # (the live-mounted worktree), so the host can confirm the commit reconciled.
+  gitprobe:
+    image: dabs-e2e
+    command: [sh, -c, "cd /work && git rev-parse --abbrev-ref HEAD > BRANCH && git -c user.email=box@dabs.test -c user.name=box commit --allow-empty -qm 'from cast box' && git rev-parse HEAD > CAST_HEAD"]
+    sources:
+      - worktree: .
+        path: /work
 `
 
 // installRecipes writes the e2e recipes to ~/.dabs/recipes.yaml and ensures the
@@ -612,6 +621,76 @@ func TestWorktreesInspectAndGuardedReap(t *testing.T) {
 	wantContains(t, out, "removed")
 	if e, _ := os.ReadDir(filepath.Join(home, ".dabs", "worktrees")); len(e) != 0 {
 		t.Fatalf("worktree not reaped after --force: %v", e)
+	}
+}
+
+// gitOut runs a git command in dir and returns trimmed stdout (fatal on error).
+func gitOut(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v in %s: %v\n%s", args, dir, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// TestCastAttachesWorktreeAndGivesGit: `dabs cast <recipe> <worktree>` binds an
+// EXISTING worktree to the recipe's `worktree: .` source — it mounts the
+// worktree live (never forks a new branch) AND mounts the parent .git, so git
+// works inside the box. Proven end-to-end: the box reads the branch, commits,
+// and that commit reconciles into the shared store (visible from the repo).
+func TestCastAttachesWorktreeAndGivesGit(t *testing.T) {
+	clean(t)
+	installRecipes(t)
+	os.RemoveAll(filepath.Join(home, ".dabs", "worktrees")) // isolate from other tests
+	repo := filepath.Join(home, "castrepo")
+	gitRepo(t, repo)
+
+	// A prior agent left a worktree (created the dabs way).
+	if _, code := runIn(repo, "dabs recipe claude-new-worktree"); code != 0 {
+		t.Fatalf("seed worktree via recipe failed")
+	}
+	entries, err := os.ReadDir(filepath.Join(home, ".dabs", "worktrees"))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("want exactly one seeded worktree, got %v (err %v)", entries, err)
+	}
+	name := entries[0].Name()
+	wt := filepath.Join(home, ".dabs", "worktrees", name)
+
+	// Cast a git-doing recipe onto that existing worktree.
+	out, code := run("dabs cast gitprobe " + name)
+	wantExit(t, 0, code)
+	wantContains(t, out, "mounting it instead") // attached, did not fork
+
+	// It must NOT have created a second worktree.
+	if e, _ := os.ReadDir(filepath.Join(home, ".dabs", "worktrees")); len(e) != 1 {
+		t.Fatalf("cast forked a new worktree; want still one, got %v", e)
+	}
+
+	// git ran INSIDE the box against the worktree's own branch...
+	branch := gitOut(t, wt, "rev-parse", "--abbrev-ref", "HEAD")
+	gotBranch, err := os.ReadFile(filepath.Join(wt, "BRANCH"))
+	if err != nil {
+		t.Fatalf("box did not write BRANCH — git was blind in-box: %v", err)
+	}
+	if strings.TrimSpace(string(gotBranch)) != branch {
+		t.Fatalf("in-box branch %q != worktree branch %q", strings.TrimSpace(string(gotBranch)), branch)
+	}
+
+	// ...and its commit reconciled into the SHARED store: the sha the box wrote
+	// is a real commit object reachable from the original repo, subject and all.
+	shaBytes, err := os.ReadFile(filepath.Join(wt, "CAST_HEAD"))
+	if err != nil {
+		t.Fatalf("box could not commit — no CAST_HEAD: %v", err)
+	}
+	sha := strings.TrimSpace(string(shaBytes))
+	if typ := gitOut(t, repo, "cat-file", "-t", sha); typ != "commit" {
+		t.Fatalf("box commit %s not in shared store from the repo (type %q)", sha, typ)
+	}
+	if subj := gitOut(t, wt, "log", "-1", "--format=%s"); subj != "from cast box" {
+		t.Fatalf("worktree HEAD subject = %q, want 'from cast box'", subj)
 	}
 }
 

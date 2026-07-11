@@ -34,7 +34,7 @@ via a recipe (`dabs recipe claude`).
        sources:
          - mount: ~/.dabs/auth/claude   # your shared vault — dabs mounts it, never copies
            path: /root/.claude
-         - worktree: .                  # a fresh git branch of the cwd
+         - mount: .                     # your cwd, live — edits persist on the host
            path: /work
    ```
 
@@ -43,6 +43,15 @@ via a recipe (`dabs recipe claude`).
    `default:`; `dabs recipe` with no name runs that default (no default set → it
    errors and lists the choices, so an agent must pick). `dabs.json` is
    unchanged — the low-level single-box manifest for `dabs build`/`up`.
+
+   **Recipes provision; skills prompt.** A recipe describes how the box is
+   provisioned (image, sources, command) and must NOT bake agent instructions
+   into its `command` — that's the caller's/skill's job. For a Claude recipe
+   that needs a fixed brief (e.g. `review`, `dumb-user`), keep the prompt in a
+   skill under `skills/<name>/SKILL.md`, **mount** that dir where Claude Code
+   discovers project skills (`path: /work/.claude/skills/<name>`, `ro: true`),
+   and make the `command` just `claude -p 'Use the <name> skill.'` (add `Skill`
+   to `--allowedTools`). See `dabs.yaml`.
 
 4. **Reap the worktrees an agent left** (recipes keep them):
 
@@ -58,6 +67,14 @@ via a recipe (`dabs recipe claude`).
    dabs down <instance>            # or: dabs down <name> --force  (all instances)
    dabs down <name> --dry          # preview what a name matches
    ```
+
+**Re-attaching to an existing worktree — `dabs cast <recipe> <worktree>`.** A
+recipe's `worktree:`/`mount:`/`copy:` `.` source normally means "the cwd". `cast`
+binds it to an EXISTING worktree instead (by name from `dabs worktrees ls`):
+`worktree:`/`mount:` mount that worktree live — and also mount its parent `.git`,
+so **git works inside the box** and the agent's commits reconcile straight into
+the shared store (no push). Use it to point a fresh agent (or a different recipe,
+e.g. review) at work another agent already started, without cutting a new branch.
 
 ## Notes
 

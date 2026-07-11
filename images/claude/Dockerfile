@@ -6,14 +6,19 @@
 # vault), so it survives the box and refreshes in place; `dabs claude` mounts
 # that same vault for config + logs.
 FROM node:22-slim
-ARG TARGETARCH
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates git ripgrep curl \
  && rm -rf /var/lib/apt/lists/*
 
 # Go toolchain — dabs is a Go project, so its dev box builds and tests dabs.
-RUN curl -fsSL "https://go.dev/dl/go1.23.4.linux-${TARGETARCH}.tar.gz" | tar -C /usr/local -xz
+# Derive the arch in-layer (dpkg prints amd64/arm64, matching Go's tarball
+# names), so the build never depends on BuildKit's TARGETARCH auto-arg — dabs
+# invokes the builder without it, and an empty arch would 404.
+RUN ARCH="$(dpkg --print-architecture)" \
+ && curl -fsSL "https://go.dev/dl/go1.23.4.linux-${ARCH}.tar.gz" -o /tmp/go.tgz \
+ && tar -C /usr/local -xzf /tmp/go.tgz \
+ && rm /tmp/go.tgz
 ENV PATH=/usr/local/go/bin:$PATH
 
 RUN npm install -g @anthropic-ai/claude-code

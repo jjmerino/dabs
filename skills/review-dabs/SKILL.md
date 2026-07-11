@@ -20,6 +20,12 @@ but do not modify the source.
    - `GOOS=linux go build ./...`
    - `go test ./cli/ ./core/...`
 
-Report **ranked findings** (blocker / major / minor / nit) with `file:line`,
-covering Go style, architecture and seams, and test quality. End with an
-overall verdict.
+Report a **single ranked list of findings** (most severe first) with
+`file:line`, covering Go style, architecture and seams, and test quality.
+Rank orders priority — it never grants permission to skip. Do **not** label any
+finding "optional", "nit", "polish", "minor follow-up", or "nice-to-have": there
+are no skippable findings. Every finding you surface must be resolved in exactly
+one of two ways — (a) it is FIXED, or (b) a HUMAN explicitly approves leaving it
+unfixed. You never unilaterally decide something can be skipped. End with an
+overall verdict that presents every finding as needing a fix or an explicit
+human waiver.

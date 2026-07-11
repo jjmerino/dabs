@@ -119,7 +119,7 @@ func (r Real) matches(instance string) ([]match, error) {
 	return out, nil
 }
 
-// resolveOne is matches for verbs that need exactly one target (run, mcp).
+// resolveOne is matches for verbs that need exactly one target (exec, run, mcp).
 func (r Real) resolveOne(instance string) (match, error) {
 	m, err := r.matches(instance)
 	if err != nil {

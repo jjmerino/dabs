@@ -1,7 +1,7 @@
 // Package recipe is the named-box registry behind `dabs recipe <name>`. A
 // recipe is a fully declarative box: an image, what to mount/copy into it, its
 // env, and the command to run. Everything a box does is visible in the recipe —
-// nothing is hardcoded in Go. `dabs recipe claude` is just the bundled `claude`
+// nothing is hardcoded in Go. `dabs recipe sh` is just the bundled `sh`
 // recipe; the same box is reproducible by hand as a plain dabs up + dabs run.
 //
 // The registry is YAML (so it can carry comments) with a single top-level

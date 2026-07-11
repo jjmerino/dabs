@@ -47,7 +47,7 @@ dabs attach <name>                  # reattach to a detached agent's live sessio
 dabs logs <name> [-f]               # print (or follow) an agent's transcript
 dabs send <name> "<msg>"            # deliver one message into an agent, non-interactively
 dabs tail [--all] [--json]          # stream output from one/all agents
-dabs run <name> -- <cmd…>           # exec a command inside a box
+dabs run <name> <shell…>            # run a shell command line inside a box (exec for exact argv)
 dabs down <name|--all>             # stop + remove
 dabs serve [--port <p>]             # expose the above as a local API for a UI/relay
 ```

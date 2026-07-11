@@ -20,10 +20,19 @@ type Up struct {
 	ManifestPath string // path to manifest file or dir containing one
 }
 
-// Run are the inputs to the run action.
+// Exec are the inputs to the exec action: the lowest level — run an EXACT argv
+// inside an instance, with no shell interpretation.
+type Exec struct {
+	Instance string   // instance name, as reported by ls (e.g. demo-0)
+	Cmd      []string // exact argv, run as-is
+}
+
+// Run are the inputs to the run action: the friendly level — run a shell
+// command LINE inside an instance. Cmd's tokens are joined into one `sh -c`
+// command, so pipes/globs/&& work as written.
 type Run struct {
 	Instance string   // instance name, as reported by ls (e.g. demo-0)
-	Cmd      []string // command to execute inside the instance
+	Cmd      []string // tokens joined into one shell command line
 }
 
 // Down are the inputs to the down action.
@@ -74,6 +83,17 @@ type Recipe struct {
 	// that worktree live (plus its parent .git so git works in-box) rather than
 	// cutting a fresh branch, and `copy: .` snapshots it.
 	Worktree string
+	// Cmd, when non-empty, is APPENDED to the recipe's own command (e.g.
+	// `dabs recipe claude --model x` → `claude --model x`). Passing a command
+	// triggers a look-before-run confirmation.
+	Cmd []string
+}
+
+// Do are the inputs to `dabs do`: run a command in a throwaway recipe box. It
+// is an alias for the default recipe (the dabs.yaml `default:`, else the
+// bundled `sh` box), with Cmd appended to that recipe's command.
+type Do struct {
+	Cmd []string // command appended to the resolved recipe's command
 }
 
 // Recipes are the inputs to listing the known recipes.
@@ -106,8 +126,10 @@ type Actions interface {
 	Up(Up) error
 	Auth(Auth) error
 	Recipe(Recipe) error
+	Do(Do) error
 	Recipes(Recipes) error
 	Worktrees(Worktrees) error
+	Exec(Exec) error
 	Run(Run) error
 	Down(Down) error
 	Ls(Ls) error

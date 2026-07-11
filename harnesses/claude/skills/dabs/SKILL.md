@@ -14,19 +14,22 @@ each `up` is a fresh instance.
 ```bash
 dabs build <dir-with-dabs.json>       # once per Dockerfile change
 dabs up <dir>                         # → <name>-<hex> up   (capture the FULL name)
-dabs run <instance> -- <cmd…>         # execute inside; shell syntax needs sh -c '…'
+dabs run <instance> <shell…>          # run a shell command line inside (sh -c)
+dabs exec <instance> -- <cmd…>        # exec an EXACT argv inside (no shell)
 dabs down <instance>                  # remove it (--force for all of a name)
 ```
 
 ## Run an agent inside the box — with a recipe
 
-Recipes do the plumbing. `dabs recipe claude` runs Claude Code in a fresh box,
-already authenticated. That recipe ships out of the box (`dabs recipes` lists
-it); copy it into `~/.dabs/recipes.yaml` for your own:
+Recipes do the plumbing: a recipe is a declarative box (image, mounts, env,
+command). dabs ships ONE recipe, `sh` (a generic clean-box shell); `dabs recipes`
+lists what's available. Tool-specific recipes aren't bundled — they live in your
+`~/.dabs/recipes.yaml` or a project's `./dabs.yaml`. A Claude Code box mounts
+YOUR auth vault, so it's yours to define; copy this into `~/.dabs/recipes.yaml`:
 
 ```yaml
 recipes:
-  claude:                            # ships out of the box → dabs recipe claude
+  claude:                            # dabs recipe claude
     image: claude
     command: [claude]
     env: { CLAUDE_CONFIG_DIR: /root/.claude }
@@ -36,6 +39,12 @@ recipes:
       - worktree: .                  # a fresh git branch of the cwd
         path: /work
 ```
+
+**One-off command:** `dabs do <cmd…>` runs a command in a throwaway box via the
+project `default:` recipe (or `sh` if there's no `dabs.yaml`), appending your
+command to the recipe's; `dabs recipe <name> <cmd…>` does the same for a named
+recipe. Since it runs an arbitrary command in a box, dabs shows the recipe and
+the exact command and asks for a y/N confirmation first.
 
 ## Notes
 

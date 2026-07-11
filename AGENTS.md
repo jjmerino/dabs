@@ -2,8 +2,9 @@
 
 You are (presumably) a capable agent with host access. dabs lets you run a
 command — or a whole agent — inside a disposable box that has no view of your
-host. Reach in with `dabs run <instance> -- <cmd>`, or run a whole agent inside
-via a recipe (`dabs recipe claude`).
+host. Reach in with `dabs run <instance> <shell…>` (or `dabs exec <instance> --
+<cmd>` for an exact argv), or run a whole agent inside via a recipe
+(`dabs recipe claude`, defined in this repo's `dabs.yaml`).
 
 ## The loop
 
@@ -21,13 +22,30 @@ via a recipe (`dabs recipe claude`).
    ```
 
 3. **Use it directly**, or **run an agent inside it — with a recipe.** Recipes
-   do the plumbing. `dabs recipe claude` runs Claude Code in a fresh box,
-   already authenticated. That recipe ships out of the box — `dabs recipes`
-   lists it; here it is, to copy into `~/.dabs/recipes.yaml` for your own:
+   do the plumbing: a recipe is a fully declarative box (image, what to
+   mount/copy in, env, command). dabs ships exactly ONE recipe — `sh`, the
+   generic clean-box example; `dabs recipes` lists what's available. Here it is,
+   the shape to copy when you write your own into `~/.dabs/recipes.yaml`:
 
    ```yaml
    recipes:
-     claude:                            # ships out of the box → dabs recipe claude
+     sh:                                # ships out of the box → dabs recipe sh
+       image: shell
+       command: [sh]
+       sources:
+         - mount: .                     # your cwd, live — edits persist on the host
+           path: /work
+   ```
+
+   Tool- or project-specific recipes are NOT bundled — they live in your
+   `~/.dabs/recipes.yaml` (global) or a project's `./dabs.yaml`. A Claude Code
+   box, for instance, mounts YOUR auth vault, so it's yours to define, not
+   dabs's to ship. This repo's own `dabs.yaml` defines `claude`, `fresh-claude`,
+   `review`, and more — copy those as a starting point:
+
+   ```yaml
+   recipes:
+     claude:
        image: claude
        command: [claude]
        env: { CLAUDE_CONFIG_DIR: /root/.claude }
@@ -38,11 +56,21 @@ via a recipe (`dabs recipe claude`).
            path: /work
    ```
 
-   Recipes resolve **bundled → `~/.dabs/recipes.yaml` (global) → `./dabs.yaml`
-   (project)**, later winning. A project's `dabs.yaml` can add recipes and set a
-   `default:`; `dabs recipe` with no name runs that default (no default set → it
-   errors and lists the choices, so an agent must pick). `dabs.json` is
-   unchanged — the low-level single-box manifest for `dabs build`/`up`.
+   Recipes resolve **bundled (`sh`) → `~/.dabs/recipes.yaml` (global) →
+   `./dabs.yaml` (project)**, later winning. A project's `dabs.yaml` can add
+   recipes and set a `default:`; `dabs recipe` with no name runs that default (no
+   default set → it errors and lists the choices, so an agent must pick).
+   `dabs.json` is unchanged — the low-level single-box manifest for `dabs
+   build`/`up`.
+
+   **Run a one-off command in a box — `dabs do <cmd…>`.** `dabs do` is the quick
+   "just run this in a sandbox": it uses the project `default:` recipe (or the
+   bundled `sh` box if there's no `dabs.yaml`/default), APPENDS your command to
+   that recipe's command, and runs it in a throwaway box. `dabs recipe <name>
+   <cmd…>` does the same for a named recipe. For the `sh` box that means
+   `dabs do -c 'echo hi'` → runs `sh -c 'echo hi'`. Because you're handing a box
+   an arbitrary command, dabs first prints the recipe and the exact command and
+   asks for a **y/N** confirmation before it builds or runs anything.
 
    **Recipes provision; skills prompt.** A recipe describes how the box is
    provisioned (image, sources, command) and must NOT bake agent instructions
@@ -96,10 +124,14 @@ e.g. review) at work another agent already started, without cutting a new branch
   lack tools like `ps`; if a journey needs one, it belongs in the
   Dockerfile, not worked around.
 - Instance names accept unambiguous prefixes (git-style) everywhere:
-  `dabs run myproj-a3f -- ls`. Ambiguity is an error for run/mcp and an
+  `dabs exec myproj-a3f -- ls`. Ambiguity is an error for exec/run/mcp and an
   informational list for down.
-- `dabs run <instance> -- <cmd…>` is your own direct peek into a box
-  (inspection, setup, planting fixtures). Shell syntax needs `sh -c '…'`.
+- Three levels reach into an existing box, low to high:
+  `dabs exec <instance> -- <cmd…>` runs an EXACT argv (no shell); `dabs run
+  <instance> <shell…>` runs a shell command line (wrapped in `sh -c`, so
+  pipes/globs/`&&` work, no `--` needed); `dabs do <cmd…>` appends to a recipe
+  (see below). exec/run are your direct peek into a box (inspection, setup,
+  planting fixtures).
 - Everything dabs owns is namespaced: it only ever sees or removes its own
   boxes.
 - Keep the build context under your home directory. A context under

@@ -110,6 +110,13 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 	if err != nil {
 		return err
 	}
+	// `cast` binds an EXISTING worktree (mounted, not cut) so buildBox never
+	// journals it — record its box→worktree link here instead.
+	if worktree != "" {
+		if home, herr := r.data.HomeDir(); herr == nil {
+			r.logWorktreeUp(instance, worktree, filepath.Join(home, ".dabs", "worktrees", worktree), name)
+		}
+	}
 	// Delete the box once the command finishes, unless the recipe asks to keep
 	// it alive so the user can run more commands in it or resume. A kept box is
 	// the user's to delete with `dabs down`.
@@ -197,6 +204,7 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName string, rec recipe.Recipe,
 	var mounts []sandbox.Mount
 	var perbox []sandbox.Mount
 	var copies []copyOp
+	var cut []wtCut // fresh worktrees to journal once the box is up
 	for i, s := range sources {
 		rs := resolved[i]
 		switch rs.kind {
@@ -209,6 +217,7 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName string, rec recipe.Recipe,
 			}
 			mounts = append(mounts, sandbox.Mount{Host: wt, Path: s.Path})
 			kept = append(kept, fmt.Sprintf("%s (branch %s)", wt, branch))
+			cut = append(cut, wtCut{name: filepath.Base(wt), path: wt})
 		case "copy":
 			// Mount the origin read-only at a staging path, then snapshot it into
 			// the box-owned destination after up — the box gets its own copy and
@@ -238,6 +247,12 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName string, rec recipe.Recipe,
 	instance, err = drv.Up(sandbox.Spec{Name: image, Workdir: workdir, Env: rec.Env, Mounts: mounts})
 	if err != nil {
 		return "", nil, err
+	}
+
+	// The box exists now, so its instance can be journalled against each fresh
+	// worktree it was cut for (best-effort; a log failure only warns).
+	for _, c := range cut {
+		r.logWorktreeUp(instance, c.name, c.path, recipeName)
 	}
 
 	for _, c := range copies {
@@ -444,6 +459,10 @@ func confirmRecipe(name string, rec recipe.Recipe, command []string) string {
 }
 
 type copyOp struct{ src, dest string }
+
+// wtCut is a fresh worktree buildBox cut, held until the box is up so its
+// instance can be journalled against the worktree's name and absolute path.
+type wtCut struct{ name, path string }
 
 // loadRegistry builds the effective registry: bundled defaults, overlaid by the
 // user's ~/.dabs/recipes.yaml, overlaid by the project's ./dabs.yaml. Later

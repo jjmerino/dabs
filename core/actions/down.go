@@ -34,6 +34,9 @@ func (r Real) Down(p params.Down) error {
 		if err := m.driver.Down(m.name); err != nil {
 			return err
 		}
+		// If this instance is a live worktree-backed box in the journal, record
+		// its `down` (best-effort — the log is the sole instance→worktree record).
+		r.logWorktreeDown(m.name)
 		fmt.Fprintln(os.Stdout, tui.Success("%s down", tui.Accent(m.name)))
 	}
 	return nil

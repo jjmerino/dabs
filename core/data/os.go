@@ -16,13 +16,22 @@ type OS struct{}
 func (OS) HomeDir() (string, error)                          { return os.UserHomeDir() }
 func (OS) ReadFile(path string) ([]byte, error)              { return os.ReadFile(path) }
 func (OS) WriteFile(p string, b []byte, m fs.FileMode) error { return os.WriteFile(p, b, m) }
-func (OS) Stat(path string) (fs.FileInfo, error)             { return os.Stat(path) }
-func (OS) MkdirAll(path string, m fs.FileMode) error         { return os.MkdirAll(path, m) }
-func (OS) MkdirTemp(dir, pattern string) (string, error)     { return os.MkdirTemp(dir, pattern) }
-func (OS) RemoveAll(path string) error                       { return os.RemoveAll(path) }
-func (OS) Getenv(key string) string                          { return os.Getenv(key) }
-func (OS) LookupEnv(key string) (string, bool)               { return os.LookupEnv(key) }
-func (OS) ExpandEnv(s string) string                         { return os.ExpandEnv(s) }
+func (OS) AppendFile(p string, b []byte, m fs.FileMode) error {
+	f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, m)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.Write(b)
+	return err
+}
+func (OS) Stat(path string) (fs.FileInfo, error)         { return os.Stat(path) }
+func (OS) MkdirAll(path string, m fs.FileMode) error     { return os.MkdirAll(path, m) }
+func (OS) MkdirTemp(dir, pattern string) (string, error) { return os.MkdirTemp(dir, pattern) }
+func (OS) RemoveAll(path string) error                   { return os.RemoveAll(path) }
+func (OS) Getenv(key string) string                      { return os.Getenv(key) }
+func (OS) LookupEnv(key string) (string, bool)           { return os.LookupEnv(key) }
+func (OS) ExpandEnv(s string) string                     { return os.ExpandEnv(s) }
 
 func (OS) GitToplevel(dir string) (string, error) {
 	out, err := exec.Command("git", "-C", dir, "rev-parse", "--show-toplevel").CombinedOutput()

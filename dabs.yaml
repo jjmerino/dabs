@@ -104,6 +104,12 @@ recipes:
   # shelling out to `docker`, which is not in this box — so `dabs do`/`up` inside
   # fail at image build (e2e sidesteps this by pre-staging its base image). CLI
   # and logic testing is the point here; add docker-in-box for full nested boots.
+  #
+  # NO WORKTREE YET? Skip cast: plain `dabs recipe dabswt` cuts a FRESH worktree
+  # off the current branch, builds dabs, and keeps box + worktree — so you can
+  # check out a branch, `dabs recipe dabswt`, switch back to main, and the box
+  # keeps testing that branch. Trade-off: without cast there is no parent .git
+  # mount, so git is BLIND in-box; use cast when a test needs in-box git.
   dabswt:
     image: { dockerfile: contrib/recipes/dabswt.Dockerfile, context: . }
     target: INTERNAL-docker-privileged-for-nested-sandboxing  # privileged, for nested dabs boxes

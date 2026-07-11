@@ -181,6 +181,12 @@ dabs exec <instance> -- dabs recipes     # exercise its CLI, no host install
 dabs run  <instance> 'cd /work && git diff --stat && dabs worktrees ls'
 ```
 
+No worktree yet? Skip cast — plain `dabs recipe dabswt` cuts a fresh worktree
+off the current branch, builds dabs, and keeps box + worktree. So you can check
+out a branch, `dabs recipe dabswt`, switch back to main, and the box keeps
+testing that branch. Trade-off: without cast there is no parent `.git` mount, so
+git is blind in-box; use cast when a test needs in-box git.
+
 This covers CLI behaviour, recipe/manifest resolution, cast/worktree/keep/down
 logic, git in-box, and error paths — the fast inner loop for changing dabs.
 It does NOT boot a fresh nested box: dabs builds images by shelling out to

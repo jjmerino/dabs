@@ -37,20 +37,39 @@ recipes:
   # tests to verify — then streams a ranked, evidence-backed review to your
   # terminal. Capture it with:  dabs recipe review | tee review.md
   #
-  # The review instructions live in a skill (skills/review) — the recipe only
+  # The review instructions live in a skill (skills/review-dabs) — the recipe only
   # provisions the box and points the agent at it. The skill is MOUNTED into the
   # box's project skills dir (where Claude Code looks), and Claude runs it.
   review:
     image: claude                         # bundled image: Claude Code + git
     env: { CLAUDE_CONFIG_DIR: /root/.claude }
-    command: [sh, -c, "cd /work && exec claude -p 'Use the review skill.' --model claude-opus-4-8 --allowedTools Bash Read Grep Glob Skill"]
+    command: [sh, -c, "cd /work && exec claude -p 'Use the review-dabs skill.' --model claude-opus-4-8 --allowedTools Bash Read Grep Glob Skill"]
     sources:
       - mount: ~/.dabs/auth/claude        # your Claude login — mounted, never copied
         path: /root/.claude
       - copy: .                           # throwaway copy of the repo (with .git) to diff, build, test
         path: /work
-      - mount: skills/review              # the review skill — mounted where Claude Code discovers project skills
-        path: /work/.claude/skills/review
+      - mount: skills/review-dabs             # the review skill — mounted where Claude Code discovers project skills
+        path: /work/.claude/skills/review-dabs
+        ro: true
+
+  # Agents: like `review`, but CAST onto an EXISTING worktree instead of copying
+  # the cwd:  dabs cast review-wt <worktree>  (worktree name from: dabs worktrees).
+  # Uses a live `worktree:` source so cast attaches that worktree AND mounts its
+  # parent .git — the reviewer gets working git in-box (git diff main...HEAD)
+  # rather than the git-blind copy a `copy:`-based recipe would give when cast.
+  # Read-only tools; the review must not modify the live worktree's source.
+  review-wt:
+    image: claude
+    env: { CLAUDE_CONFIG_DIR: /root/.claude }
+    command: [sh, -c, "cd /work && exec claude -p 'Use the review-dabs skill.' --model claude-opus-4-8 --allowedTools Bash Read Grep Glob Skill"]
+    sources:
+      - mount: ~/.dabs/auth/claude
+        path: /root/.claude
+      - worktree: .                       # cast rewrites this to: attach <worktree> live + mount its parent .git
+        path: /work
+      - mount: skills/review-dabs
+        path: /work/.claude/skills/review-dabs
         ro: true
 
   # Agents: use when you changed dabs's CLI, help text, errors, or recipes and

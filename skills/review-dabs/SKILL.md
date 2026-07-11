@@ -1,11 +1,12 @@
 ---
-name: review
-description: Senior Go code review of the current branch versus main for the dabs codebase — run inside a disposable box by `dabs recipe review`. Diffs, reads, builds, tests, and reports ranked findings.
+name: review-dabs
+description: Senior Go code review of the dabs branch versus main. Diffs, reads, builds, tests, and reports ranked findings. Used by the review and review-wt recipes.
 ---
 
 # Review the dabs branch
 
-You are in a disposable **copy** of the repo, so exercise the code freely.
+You are in a throwaway box with the branch checked out — build and test freely,
+but do not modify the source.
 
 1. Run `git diff main...HEAD` and read the diff and every changed file.
 2. Read `AGENTS.md`, section **Working on the codebase**, and check the diff
@@ -13,8 +14,7 @@ You are in a disposable **copy** of the repo, so exercise the code freely.
    - `cli` stays thin,
    - `core/actions` holds policy,
    - `core/sandbox` holds mechanical drivers,
-   - the `data.Data` and `sandbox.Driver` seams are kept clean,
-   - zero third-party dependencies.
+   - the `data.Data` and `sandbox.Driver` seams are kept clean.
 3. Build both platforms and run the tests to verify:
    - `go build ./...`
    - `GOOS=linux go build ./...`

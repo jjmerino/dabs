@@ -30,7 +30,7 @@ func (r Real) Up(p params.Up) error {
 	// Validate sources before any side effect, then resolve the image WITHOUT
 	// building the recipe's own Dockerfile: `up` boots an image a prior
 	// `dabs build` produced (it may run where no builder exists).
-	kinds, origins, tops, err := r.validateSources(name, rec.Sources)
+	resolved, err := r.validateSources(name, rec.Sources)
 	if err != nil {
 		return err
 	}
@@ -38,7 +38,7 @@ func (r Real) Up(p params.Up) error {
 	if err != nil {
 		return err
 	}
-	instance, kept, err := r.buildBox(drv, name, rec, image, rec.Sources, kinds, origins, tops)
+	instance, kept, err := r.buildBox(drv, name, rec, image, rec.Sources, resolved)
 	if err != nil {
 		return err
 	}

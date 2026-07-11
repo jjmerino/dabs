@@ -96,7 +96,7 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 	// Validate every source BEFORE any side effect, so a bad recipe, a non-git
 	// dir, a repo with no commits, or a missing source path all fail without
 	// building an image or touching the box.
-	kinds, origins, tops, err := r.validateSources(name, sources)
+	resolved, err := r.validateSources(name, sources)
 	if err != nil {
 		return err
 	}
@@ -106,7 +106,7 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 		return err
 	}
 
-	instance, kept, err := r.buildBox(drv, name, rec, image, sources, kinds, origins, tops)
+	instance, kept, err := r.buildBox(drv, name, rec, image, sources, resolved)
 	if err != nil {
 		return err
 	}
@@ -132,48 +132,51 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 	return nil
 }
 
+// resolvedSource is a source after validation: its strategy (mount/worktree/
+// copy), its expanded host origin, and (for worktrees) the repo toplevel (empty
+// otherwise) — the exact inputs buildBox needs to realize the source. Bundling
+// the three keeps them the same length and order as the sources by construction.
+type resolvedSource struct{ kind, origin, top string }
+
 // validateSources checks every source of a recipe up front — a bad source spec,
 // a non-git worktree dir, a repo with no commits, or a missing mount/copy path
-// all fail HERE, before any image build or box touch. For each source it
-// returns the strategy (mount/worktree/copy), the expanded host origin, and
-// (for worktrees) the repo toplevel — the exact inputs buildBox needs to
-// realize the source. Shared by runRecipe and Up so both validate identically.
-func (r Real) validateSources(recipeName string, sources []recipe.Source) (kinds, origins, tops []string, err error) {
-	kinds = make([]string, len(sources))
-	origins = make([]string, len(sources))
-	tops = make([]string, len(sources))
+// all fail HERE, before any image build or box touch. It returns one
+// resolvedSource per source, in source order. Shared by runRecipe and Up so both
+// validate identically.
+func (r Real) validateSources(recipeName string, sources []recipe.Source) ([]resolvedSource, error) {
+	resolved := make([]resolvedSource, len(sources))
 	for i, s := range sources {
 		kind, origin, err := s.Kind()
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("recipe %q: %w", recipeName, err)
+			return nil, fmt.Errorf("recipe %q: %w", recipeName, err)
 		}
 		host, err := r.expandPath(origin)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("recipe %q: %w", recipeName, err)
+			return nil, fmt.Errorf("recipe %q: %w", recipeName, err)
 		}
-		kinds[i], origins[i] = kind, host
+		resolved[i] = resolvedSource{kind: kind, origin: host}
 		switch kind {
 		case "worktree":
 			top, err := r.data.GitToplevel(host)
 			if err != nil {
-				return nil, nil, nil, fmt.Errorf("recipe %q: worktree %s: %w", recipeName, s.Path, err)
+				return nil, fmt.Errorf("recipe %q: worktree %s: %w", recipeName, s.Path, err)
 			}
 			if !r.data.GitHasCommits(top) {
-				return nil, nil, nil, fmt.Errorf("recipe %q: worktree %s: repo has no commits yet — make an initial commit first", recipeName, s.Path)
+				return nil, fmt.Errorf("recipe %q: worktree %s: repo has no commits yet — make an initial commit first", recipeName, s.Path)
 			}
-			tops[i] = top
+			resolved[i].top = top
 		case "mount", "copy":
 			// The host path must exist — a mount/copy of a missing path is a
 			// mistake (e.g. `dabs recipe claude` before `dabs auth claude`),
 			// and gives a cryptic driver failure if passed through.
 			if _, err := r.data.Stat(host); errors.Is(err, fs.ErrNotExist) {
-				return nil, nil, nil, fmt.Errorf("recipe %q: %s source %s does not exist", recipeName, kind, host)
+				return nil, fmt.Errorf("recipe %q: %s source %s does not exist", recipeName, kind, host)
 			} else if err != nil {
-				return nil, nil, nil, fmt.Errorf("recipe %q: %s source %s: %w", recipeName, kind, host, err)
+				return nil, fmt.Errorf("recipe %q: %s source %s: %w", recipeName, kind, host, err)
 			}
 		}
 	}
-	return kinds, origins, tops, nil
+	return resolved, nil
 }
 
 // buildBox realizes a recipe's already-validated sources into a fresh DETACHED
@@ -185,17 +188,18 @@ func (r Real) validateSources(recipeName string, sources []recipe.Source) (kinds
 // recipe says keep; Up leaves it up). On any failure after the box is up it
 // tears the half-built box down. Shared by runRecipe and Up so both mount
 // sources identically.
-func (r Real) buildBox(drv sandbox.Driver, recipeName string, rec recipe.Recipe, image string, sources []recipe.Source, kinds, origins, tops []string) (instance string, kept []string, err error) {
+func (r Real) buildBox(drv sandbox.Driver, recipeName string, rec recipe.Recipe, image string, sources []recipe.Source, resolved []resolvedSource) (instance string, kept []string, err error) {
 	// Turn declared sources into driver mounts + deferred copies (creating
 	// worktrees now that the image is ready).
 	var mounts []sandbox.Mount
 	var copies []copyOp
 	for i, s := range sources {
-		switch kinds[i] {
+		rs := resolved[i]
+		switch rs.kind {
 		case "mount":
-			mounts = append(mounts, sandbox.Mount{Host: origins[i], Path: s.Path, RO: s.RO})
+			mounts = append(mounts, sandbox.Mount{Host: rs.origin, Path: s.Path, RO: s.RO})
 		case "worktree":
-			wt, branch, err := r.addWorktree(tops[i])
+			wt, branch, err := r.addWorktree(rs.top)
 			if err != nil {
 				return "", nil, err
 			}
@@ -206,7 +210,7 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName string, rec recipe.Recipe,
 			// the box-owned destination after up — the box gets its own copy and
 			// the host is never written.
 			staging := fmt.Sprintf("/.dabs/copy/%d", i)
-			mounts = append(mounts, sandbox.Mount{Host: origins[i], Path: staging, RO: true})
+			mounts = append(mounts, sandbox.Mount{Host: rs.origin, Path: staging, RO: true})
 			copies = append(copies, copyOp{src: staging, dest: s.Path})
 		}
 	}

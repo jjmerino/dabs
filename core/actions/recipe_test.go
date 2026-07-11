@@ -821,3 +821,30 @@ func TestRecipeUnknownTargetErrors(t *testing.T) {
 		t.Fatalf("want unknown-target error, got %v", err)
 	}
 }
+
+// CONTRACT: keep:true leaves the box alive after the command (the user reaps it
+// with `dabs down`); default deletes it. This is the "give me a box to work in"
+// vs "run this query" distinction.
+func TestRecipeKeepLeavesBoxAlive(t *testing.T) {
+	y := `recipes:
+  m:
+    image: img
+    command: [x]
+    keep: true
+    sources:
+      - mount: /d
+        path: /work
+`
+	fd := baseData()
+	fd.exists["/d"] = true
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	if err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "m"}); err != nil {
+		t.Fatalf("Recipe: %v", err)
+	}
+	if len(drv.ups) != 1 {
+		t.Fatalf("box not brought up: ups=%d", len(drv.ups))
+	}
+	if len(drv.downs) != 0 {
+		t.Fatalf("keep:true still deleted the box: downs=%v", drv.downs)
+	}
+}

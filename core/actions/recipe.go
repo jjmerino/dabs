@@ -169,7 +169,12 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 	if err != nil {
 		return err
 	}
-	defer drv.Down(instance)
+	// Delete the box once the command finishes, unless the recipe asks to keep
+	// it alive so the user can run more commands in it or resume. A kept box is
+	// the user's to delete with `dabs down`.
+	if !rec.Keep {
+		defer drv.Down(instance)
+	}
 
 	for _, c := range copies {
 		// argv, not a shell string — a dest with a quote/space can't break it.
@@ -189,6 +194,9 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 	}
 	for _, k := range kept {
 		fmt.Fprintf(os.Stdout, "\nworktree kept: %s\n", k)
+	}
+	if rec.Keep {
+		fmt.Fprintf(os.Stdout, "\nbox kept: %s (dabs down %s to delete it)\n", instance, instance)
 	}
 	return nil
 }

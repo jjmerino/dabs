@@ -4,7 +4,7 @@
 //
 // Parsers use the stdlib flag package (one FlagSet per command), so the
 // standard Go convention applies: flags come BEFORE positional arguments
-// (`dabs up --fresh <manifest>`).
+// (`dabs up --flag <recipe>`).
 package cli
 
 import (
@@ -31,7 +31,8 @@ func newFlagSet(cmd string) *flag.FlagSet {
 	return fs
 }
 
-// parseBuild parses `dabs build <manifest|dir>` arguments.
+// parseBuild parses `dabs build [recipe|path]` arguments — an optional recipe
+// name, a dabs.yaml path, or nothing (the registry default).
 func parseBuild(args []string) (params.Build, error) {
 	var p params.Build
 	fs := newFlagSet("build")
@@ -39,14 +40,17 @@ func parseBuild(args []string) (params.Build, error) {
 		return p, BadArgsError{Cmd: "build", Reason: err.Error()}
 	}
 	rest := fs.Args()
-	if len(rest) != 1 {
-		return p, BadArgsError{Cmd: "build", Reason: "expected exactly one <manifest|dir> argument"}
+	if len(rest) > 1 {
+		return p, BadArgsError{Cmd: "build", Reason: "expected an optional recipe name or dabs.yaml path"}
 	}
-	p.ManifestPath = rest[0]
+	if len(rest) == 1 {
+		p.Name = rest[0]
+	}
 	return p, nil
 }
 
-// parseUp parses `dabs up <manifest|dir>` arguments.
+// parseUp parses `dabs up [recipe|path]` arguments — an optional recipe name, a
+// dabs.yaml path, or nothing (the registry default).
 func parseUp(args []string) (params.Up, error) {
 	var p params.Up
 	fs := newFlagSet("up")
@@ -54,10 +58,12 @@ func parseUp(args []string) (params.Up, error) {
 		return p, BadArgsError{Cmd: "up", Reason: err.Error()}
 	}
 	rest := fs.Args()
-	if len(rest) != 1 {
-		return p, BadArgsError{Cmd: "up", Reason: "expected exactly one <manifest|dir> argument"}
+	if len(rest) > 1 {
+		return p, BadArgsError{Cmd: "up", Reason: "expected an optional recipe name or dabs.yaml path"}
 	}
-	p.ManifestPath = rest[0]
+	if len(rest) == 1 {
+		p.Name = rest[0]
+	}
 	return p, nil
 }
 

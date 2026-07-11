@@ -3,33 +3,32 @@ package actions
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 
-	"github.com/jjmerino/dabs/core/manifest"
 	"github.com/jjmerino/dabs/core/params"
-	"github.com/jjmerino/dabs/core/sandbox"
 	"github.com/jjmerino/dabs/core/tui"
 )
 
-// Build resolves the manifest and builds its sandbox image on the
-// manifest's target (local by default).
+// Build resolves a recipe (no name → the registry default, a name → that
+// recipe, a path → a dabs.yaml to load) and builds its box image on the
+// recipe's target (local by default). It reuses the recipe engine's image
+// resolution, so a bare-name image builds from its bundled recipe and an inline
+// {dockerfile,context} image builds from that Dockerfile.
 func (r Real) Build(p params.Build) error {
-	m, err := manifest.Load(p.ManifestPath)
+	reg, name, err := r.resolveRecipe(p.Name)
 	if err != nil {
 		return err
 	}
-	drv, err := r.driverFor(m.Target)
+	rec, err := reg.Get(name)
 	if err != nil {
 		return err
 	}
-	spec := sandbox.BuildSpec{
-		Name:       m.Name,
-		Dockerfile: filepath.Join(m.Dir, m.Dockerfile),
-		Context:    filepath.Join(m.Dir, m.Context),
-	}
-	if err := drv.Build(spec); err != nil {
+	drv, err := r.driverFor(rec.Target)
+	if err != nil {
 		return err
 	}
-	fmt.Fprintln(os.Stdout, tui.Success("%s built", tui.Accent(m.Name)))
+	if _, err := r.ensureImage(drv, name, rec.Image); err != nil {
+		return err
+	}
+	fmt.Fprintln(os.Stdout, tui.Success("%s built", tui.Accent(name)))
 	return nil
 }

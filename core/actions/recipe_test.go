@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/jjmerino/dabs/core/actions"
 	"github.com/jjmerino/dabs/core/data"
@@ -67,6 +68,7 @@ type fakeData struct {
 	env       map[string]string
 	files     map[string][]byte // ReadFile
 	exists    map[string]bool   // Stat -> exists
+	isDir     map[string]bool   // Stat -> IsDir (subset of exists)
 	toplevel  map[string]error  // GitToplevel: dir present with nil err => repo root is the dir
 	noCommits map[string]bool   // GitHasCommits false for these tops
 	worktrees []string          // recorded GitAddWorktree dests
@@ -93,10 +95,24 @@ func (f *fakeData) ReadFile(p string) ([]byte, error) {
 func (f *fakeData) WriteFile(string, []byte, fs.FileMode) error { return nil }
 func (f *fakeData) Stat(p string) (fs.FileInfo, error) {
 	if f.exists[p] {
+		if f.isDir[p] {
+			return dirFileInfo{}, nil
+		}
 		return nil, nil
 	}
 	return nil, fs.ErrNotExist
 }
+
+// dirFileInfo is a minimal fs.FileInfo reporting IsDir()==true, so Stat can
+// stand in for a directory (the `dabs build <dir>` resolution branch).
+type dirFileInfo struct{}
+
+func (dirFileInfo) Name() string       { return "" }
+func (dirFileInfo) Size() int64        { return 0 }
+func (dirFileInfo) Mode() fs.FileMode  { return fs.ModeDir }
+func (dirFileInfo) ModTime() time.Time { return time.Time{} }
+func (dirFileInfo) IsDir() bool        { return true }
+func (dirFileInfo) Sys() any           { return nil }
 func (f *fakeData) MkdirAll(p string, _ fs.FileMode) error {
 	f.mkdirs = append(f.mkdirs, p)
 	return nil
@@ -159,7 +175,7 @@ func newReal(recipesYAML string, fd *fakeData, drv *fakeDriver, bundledImages ..
 }
 
 func baseData() *fakeData {
-	return &fakeData{home: "/home/t", env: map[string]string{}, exists: map[string]bool{}, toplevel: map[string]error{}, noCommits: map[string]bool{}}
+	return &fakeData{home: "/home/t", env: map[string]string{}, exists: map[string]bool{}, isDir: map[string]bool{}, toplevel: map[string]error{}, noCommits: map[string]bool{}}
 }
 
 func onlyUp(t *testing.T, d *fakeDriver) sandbox.Spec {

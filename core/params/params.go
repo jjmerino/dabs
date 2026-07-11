@@ -10,14 +10,17 @@
 // fields (funcs, channels, io types) — then it does not go in this file.
 package params
 
-// Build are the inputs to the build action.
+// Build are the inputs to the build action. Name selects the recipe to build:
+// "" is the registry default, a bare name is that recipe, and a path is a
+// dabs.yaml (or a dir containing one) to load and take the default from.
 type Build struct {
-	ManifestPath string // path to manifest file or dir containing one
+	Name string // recipe name, a dabs.yaml path, or "" for the default
 }
 
-// Up are the inputs to the up action.
+// Up are the inputs to the up action. Name selects the recipe to bring up, with
+// the same meaning as Build.Name.
 type Up struct {
-	ManifestPath string // path to manifest file or dir containing one
+	Name string // recipe name, a dabs.yaml path, or "" for the default
 }
 
 // Exec are the inputs to the exec action: the lowest level — run an EXACT argv
@@ -58,7 +61,7 @@ type ServersList struct{}
 // dabs installed. Via names the transport (default "ssh"); Host is that
 // transport's address.
 type ServersAdd struct {
-	Name string // fleet name (what manifests put in "target")
+	Name string // fleet name (what a recipe's "target" routes to)
 	Host string // transport address; defaults to Name
 	Via  string // transport strategy; default "ssh"
 }

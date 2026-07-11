@@ -34,7 +34,7 @@ func buildDrivers() (map[string]sandbox.Driver, []string, error) {
 		fmt.Fprintln(os.Stderr, tui.Warn("dabs: local driver unavailable: %v", err))
 	}
 
-	// docker driver: selectable via dabs.json "driver":"docker". Registered
+	// docker driver: selectable via a recipe's `target: docker`. Registered
 	// whenever docker is present, regardless of platform.
 	if dkr, err := dockerdrv.New(); err == nil {
 		drivers["docker"] = dkr

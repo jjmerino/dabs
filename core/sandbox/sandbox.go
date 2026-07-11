@@ -38,7 +38,7 @@ type Info struct {
 }
 
 // BuildSpec describes the image a driver should build for a sandbox.
-// Paths are absolute (the manifest loader resolves them).
+// Paths are absolute (the recipe/image resolver resolves them).
 type BuildSpec struct {
 	Name       string // sandbox identity WITHIN dabs; the driver derives its own image reference
 	Dockerfile string // absolute path to the build recipe

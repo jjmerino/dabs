@@ -46,5 +46,5 @@ func Usage(w io.Writer) {
 		rows = append(rows, []string{tui.Accent(name), Commands[name].Help})
 	}
 	fmt.Fprintln(w, tui.Indent(tui.Rows(nil, rows), 2))
-	fmt.Fprintln(w, "\n"+tui.Muted("agents: `dabs --help-full-for-agents` prints the full guide (recipes, manifests, examples)"))
+	fmt.Fprintln(w, "\n"+tui.Muted("agents: `dabs --help-full-for-agents` prints the full guide (recipes, examples)"))
 }

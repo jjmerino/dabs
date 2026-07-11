@@ -15,9 +15,9 @@ recipes:
       - mount: .
         path: /work
 
-  # dabs recipe claude — a fresh, isolated Claude Code box on a git worktree of
-  # the current repo, already logged in from `dabs auth claude`. This is the
-  # whole definition: no mounts are hidden in dabs' code.
+  # dabs recipe claude — a fresh Claude Code box over the current repo, already
+  # logged in from `dabs auth claude`. This is the whole definition: no mounts
+  # are hidden in dabs' code.
   claude:
     image: claude                         # reuse ~/.dabs/images/claude
                                           #   (built from the bundled image recipe on first use)
@@ -32,8 +32,8 @@ recipes:
       # refresh inside the box writes straight back to the host and outlives it.
       - mount: ~/.dabs/auth/claude
         path: /root/.claude
-      # The code — a fresh git branch off HEAD of this repo, mounted live so the
-      # agent works in isolation and you review the branch afterward. Swap
-      # `worktree:` for `copy:` to hand the box a throwaway snapshot instead.
-      - worktree: .
+      # The code — your current directory, mounted live so the agent's edits
+      # persist on the host and you review them with normal git. Swap `mount:`
+      # for `copy:` to hand the box a throwaway snapshot instead.
+      - mount: .
         path: /work

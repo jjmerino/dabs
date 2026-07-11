@@ -34,7 +34,7 @@ via a recipe (`dabs recipe claude`).
        sources:
          - mount: ~/.dabs/auth/claude   # your shared vault — dabs mounts it, never copies
            path: /root/.claude
-         - worktree: .                  # a fresh git branch of the cwd
+         - mount: .                     # your cwd, live — edits persist on the host
            path: /work
    ```
 

@@ -6,6 +6,23 @@ default: review
 
 recipes:
 
+  # dabs recipe claudewt — like the bundled `claude` recipe, but the agent works
+  # in a fresh git WORKTREE instead of your live tree. `worktree: .` cuts a new
+  # branch off HEAD (`dabs/<id>`) at ~/.dabs/worktrees/<repo>-<id> and mounts it
+  # live, so your working tree stays untouched and the agent's commits land on
+  # their own branch — kept after the box exits to review and reap with
+  # `dabs worktrees`. The vault stays a plain mount so token refreshes persist.
+  claudewt:
+    image: claude
+    command: [claude]
+    env:
+      CLAUDE_CONFIG_DIR: /root/.claude
+    sources:
+      - mount: ~/.dabs/auth/claude
+        path: /root/.claude
+      - worktree: .
+        path: /work
+
   # Agents: use when you want a thorough, sandboxed code review of the current
   # branch vs `main` before merging. Opus reviews inside a throwaway COPY of the
   # repo — it runs `git diff main...HEAD`, reads the code, builds it, and runs the

@@ -10,20 +10,26 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jjmerino/dabs/core/sandbox"
 	"github.com/jjmerino/dabs/core/tui"
 )
 
 // wtLogEntry is one line of ~/.dabs/worktrees/log.jsonl, the append-only journal
 // of worktree-backed box lifecycles. The log is the ONLY record of which
 // instance belongs to which worktree, so `down` and the liveness column both
-// read it back. Path/Recipe are carried on `up` entries only.
+// read it back.
+//
+// Only Event, Instance and Worktree are ever read back (for the down-lookup and
+// the liveness fold). TS, Path and Recipe are INSPECTION-ONLY: they are written
+// for a human (or a future tool) reading the journal and are never parsed by
+// dabs itself. They ride on `up` entries only.
 type wtLogEntry struct {
-	Event    string `json:"event"` // "up" | "down"
-	TS       string `json:"ts"`
+	Event    string `json:"event"` // "up" | "down" — read back
 	Instance string `json:"instance"`
-	Worktree string `json:"worktree"`         // short name under ~/.dabs/worktrees
-	Path     string `json:"path,omitempty"`   // absolute worktree path (up only)
-	Recipe   string `json:"recipe,omitempty"` // recipe that made the box (up only)
+	Worktree string `json:"worktree"`         // short name under ~/.dabs/worktrees — read back
+	TS       string `json:"ts"`               // inspection-only
+	Path     string `json:"path,omitempty"`   // absolute worktree path (up only) — inspection-only
+	Recipe   string `json:"recipe,omitempty"` // recipe that made the box (up only) — inspection-only
 }
 
 // wtLogFile is the journal's basename; it sits in ~/.dabs/worktrees alongside
@@ -127,6 +133,11 @@ func (r Real) readWtLog() ([]wtLogEntry, error) {
 // instance → worktree name. An `up` marks an instance live; a later `down` for
 // the same instance clears it. This is the log-derived liveness both `down` and
 // the worktrees DETAIL column rely on.
+//
+// This fold IS the on-read compaction: every up/down pair collapses to nothing,
+// so however long the file grows, only currently-live instances survive the
+// computation — dead entries never accumulate in memory. (The file itself is
+// append-only and is not rewritten; a size-bounded rewrite is left out of scope.)
 func liveBoxes(entries []wtLogEntry) map[string]string {
 	live := map[string]string{}
 	for _, e := range entries {
@@ -140,17 +151,51 @@ func liveBoxes(entries []wtLogEntry) map[string]string {
 	return live
 }
 
+// fleetInstances is the set of instance names actually alive across the whole
+// driver fleet, so the journal can be reconciled against reality. Best-effort:
+// a driver that errors/times out is skipped (liveness is advisory, never worth
+// hanging or failing `dabs worktrees`).
+func (r Real) fleetInstances() map[string]bool {
+	alive := map[string]bool{}
+	for _, drv := range r.drivers {
+		infos, err := lsTimeout(drv, remoteTimeout)
+		if err != nil {
+			continue
+		}
+		for _, in := range infos {
+			alive[in.Name] = true
+		}
+	}
+	return alive
+}
+
 // liveByWorktree inverts liveBoxes to worktree name → live instance, for the
-// per-worktree DETAIL column. If a worktree somehow has more than one live box,
-// the last one in the log wins.
+// per-worktree DETAIL column, reconciled against the real fleet: a worktree is
+// reported live only when the journal AND the drivers agree its box exists. A
+// dangling `up` left by a crash, reboot, OOM, or a manual `docker rm` thus reads
+// as "no box" rather than a phantom live. If a worktree somehow has more than one
+// live box, the last one in the log wins.
 func (r Real) liveByWorktree() map[string]string {
 	entries, err := r.readWtLog()
 	if err != nil {
 		return nil
 	}
+	alive := r.fleetInstances()
 	byWt := map[string]string{}
 	for inst, wt := range liveBoxes(entries) {
-		byWt[wt] = inst
+		if alive[inst] {
+			byWt[wt] = inst
+		}
 	}
 	return byWt
+}
+
+// teardown brings a box down and, when it was a journaled worktree-backed box,
+// records the matching `down` — keeping the journal balanced on EVERY teardown
+// that follows a journaled `up`: the non-keep recipe teardown and buildBox's
+// post-`up` failure cleanup. A plain (non-worktree) box logs nothing, because
+// logWorktreeDown no-ops when the instance isn't a live journal entry.
+func (r Real) teardown(drv sandbox.Driver, instance string) {
+	drv.Down(instance)
+	r.logWorktreeDown(instance)
 }

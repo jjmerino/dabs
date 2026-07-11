@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/jjmerino/dabs/core/params"
+	"github.com/jjmerino/dabs/core/sandbox"
 )
 
 const wtBase = "/home/t/.dabs/worktrees"
@@ -102,8 +103,10 @@ func TestWorktreeLsColumnsAndLiveness(t *testing.T) {
 				`{"event":"up","ts":"t2","instance":"box-dead","worktree":"wtdead"}` + "\n" +
 				`{"event":"down","ts":"t3","instance":"box-dead","worktree":"wtdead"}` + "\n"),
 	}
+	// The fleet actually has box-live running (liveness is journal ∩ fleet).
+	drv := &fakeDriver{infos: []sandbox.Info{{Name: "box-live"}}}
 	out := captureStdout(t, func() {
-		if err := newReal("", fd, &fakeDriver{}).Worktrees(params.Worktrees{Sub: "ls"}); err != nil {
+		if err := newReal("", fd, drv).Worktrees(params.Worktrees{Sub: "ls"}); err != nil {
 			t.Fatalf("ls: %v", err)
 		}
 	})

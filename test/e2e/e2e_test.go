@@ -618,6 +618,38 @@ func TestRecipeNewWorktree(t *testing.T) {
 	vaultHasToken(t)
 }
 
+// TestNonKeepWorktreeRecipeJournalBalanced (regression, finding #1): a NON-KEEP
+// `worktree:` recipe (claude-new-worktree) tears its box down automatically when
+// the command exits — the journal must record BOTH the `up` and a matching
+// `down`, so the (now dead) box never reads as live. The worktree survives (kept)
+// but `dabs worktrees` shows it with no box.
+func TestNonKeepWorktreeRecipeJournalBalanced(t *testing.T) {
+	clean(t)
+	installRecipes(t)
+	os.RemoveAll(filepath.Join(home, ".dabs", "worktrees")) // isolate the journal too
+	repo := filepath.Join(home, "wtbalance")
+	gitRepo(t, repo)
+
+	if _, code := runIn(repo, "dabs recipe claude-new-worktree"); code != 0 {
+		t.Fatalf("recipe failed")
+	}
+	logPath := filepath.Join(home, ".dabs", "worktrees", "log.jsonl")
+	log := readFile(t, logPath)
+	t.Logf("log.jsonl after non-keep recipe:\n%s", log)
+	if up, down := strings.Count(log, `"event":"up"`), strings.Count(log, `"event":"down"`); up != 1 || down != 1 {
+		t.Fatalf("journal not balanced: up=%d down=%d\n%s", up, down, log)
+	}
+
+	// The kept worktree reads as having no live box (the box was torn down).
+	out, code := run("dabs worktrees")
+	wantExit(t, 0, code)
+	t.Logf("dabs worktrees after non-keep teardown:\n%s", out)
+	wantContains(t, out, "no box")
+	if strings.Contains(out, " live") {
+		t.Fatalf("a torn-down box still reads as live:\n%s", out)
+	}
+}
+
 // TestWorktreesInspectAndGuardedReap: a recipe leaves a worktree with the box's
 // uncommitted write; `dabs worktrees` lists it as having work, `rm` refuses to
 // discard it, and `rm --force` reaps it.

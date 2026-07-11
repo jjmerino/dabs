@@ -121,7 +121,10 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 	// it alive so the user can run more commands in it or resume. A kept box is
 	// the user's to delete with `dabs down`.
 	if !rec.Keep {
-		defer drv.Down(instance)
+		// teardown (not a bare drv.Down) so a journaled worktree-backed box also
+		// gets its matching `down` — otherwise a non-keep `worktree:` recipe would
+		// leave a dead box reading as live forever.
+		defer r.teardown(drv, instance)
 	}
 
 	for _, k := range kept {
@@ -258,11 +261,11 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName string, rec recipe.Recipe,
 	for _, c := range copies {
 		// argv, not a shell string — a dest with a quote/space can't break it.
 		if out, err := drv.Exec(instance, []string{"mkdir", "-p", c.dest}); err != nil {
-			drv.Down(instance) // don't leave a half-built box behind
+			r.teardown(drv, instance) // don't leave a half-built box behind — and balance any journaled `up`
 			return "", nil, fmt.Errorf("recipe %q: mkdir %s: %w: %s", recipeName, c.dest, err, out)
 		}
 		if out, err := drv.Exec(instance, []string{"cp", "-a", c.src + "/.", c.dest}); err != nil {
-			drv.Down(instance)
+			r.teardown(drv, instance)
 			return "", nil, fmt.Errorf("recipe %q: copy into %s: %w: %s", recipeName, c.dest, err, out)
 		}
 	}

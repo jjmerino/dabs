@@ -169,6 +169,25 @@ system. Vendor tools lie: Apple's `container` is not Docker-flag-compatible;
 `exec -i` fails on non-TTY stdin; docker export drops resolv.conf. The Linux
 (bwrap) driver is exercised over ssh on a real host.
 
+**Test dabs WITH dabs — `dabs cast dabswt <worktree>`.** You do not need to
+install a branch's dabs on your host to try it. Cast the `dabswt` recipe onto a
+worktree: it builds `dabs` from that worktree inside a privileged, bubblewrap-
+carrying box and keeps the box alive. The built dabs runs sandboxed in the box
+while you (the agent) stay outside on the host, unsandboxed — then reach in:
+
+```bash
+dabs cast dabswt <worktree>              # build the branch's dabs in a kept box
+dabs exec <instance> -- dabs recipes     # exercise its CLI, no host install
+dabs run  <instance> 'cd /work && git diff --stat && dabs worktrees ls'
+```
+
+This covers CLI behaviour, recipe/manifest resolution, cast/worktree/keep/down
+logic, git in-box, and error paths — the fast inner loop for changing dabs.
+It does NOT boot a fresh nested box: dabs builds images by shelling out to
+`docker`, which is not in the `dabswt` box, so `dabs do`/`up` inside fail at
+image build. Full nested boots stay the e2e suite's job (it pre-stages a base
+image); reach for `./run_e2e.sh` when you need a real nested sandbox.
+
 **Layout**
 
 ```

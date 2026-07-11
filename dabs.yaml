@@ -84,6 +84,35 @@ recipes:
       - worktree: .
         path: /work
 
+  # dabs cast dabswt <worktree> — a box that builds dabs FROM that worktree and
+  # keeps running, so you (or an agent) can test a branch's dabs by exec'ing into
+  # the box: `dabs exec <instance> -- dabs …` or `dabs run <instance> 'dabs …'`.
+  # The source comes from the mounted worktree, built to /usr/local/bin/dabs at
+  # start. `keep: true` keeps the box after the build shell exits — that is the
+  # point: a live, testable dabs per worktree. Cast (not plain `dabs recipe`) so
+  # the parent .git is mounted and git works in-box.
+  #
+  # The box is PRIVILEGED (target below) and carries bubblewrap, so the built
+  # dabs boots its driver fleet and runs for real — full CLI, recipe resolution,
+  # cast/worktree/keep/down logic, git, error paths — sandboxed in the box while
+  # the driver (you, an agent) stays OUTSIDE on the host, unsandboxed. This is dabs
+  # testing dabs, the trick the e2e suite uses. A host Claude can exercise a
+  # branch's dabs end-to-end without installing it on the host: build once with
+  # `dabs cast dabswt <worktree>`, then `dabs exec`/`dabs run` into the kept box.
+  #
+  # LIMIT: booting a FRESH nested box needs an image, and dabs builds images by
+  # shelling out to `docker`, which is not in this box — so `dabs do`/`up` inside
+  # fail at image build (e2e sidesteps this by pre-staging its base image). CLI
+  # and logic testing is the point here; add docker-in-box for full nested boots.
+  dabswt:
+    image: { dockerfile: contrib/recipes/dabswt.Dockerfile, context: . }
+    target: INTERNAL-docker-privileged-for-nested-sandboxing  # privileged, for nested dabs boxes
+    keep: true                            # keep the box alive after the build shell exits — exec in to test
+    command: [sh, -c, "cd /work && go build -o /usr/local/bin/dabs . && dabs --help 2>&1 | head -1; exec sh"]
+    sources:
+      - worktree: .                       # cast rewrites this: attach <worktree> live + mount its parent .git
+        path: /work
+
   # Agents: use when you want a thorough, sandboxed code review of the current
   # branch vs `main` before merging. Opus reviews inside a throwaway COPY of the
   # repo — it runs `git diff main...HEAD`, reads the code, builds it, and runs the

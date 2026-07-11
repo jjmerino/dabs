@@ -109,6 +109,15 @@ func TestRunDelegatesToActions(t *testing.T) {
 			},
 		},
 		{
+			name: "down --multiple after the name",
+			args: []string{"down", "demo", "--multiple"},
+			want: func(t *testing.T, f *fakeActions) {
+				if len(f.down) != 1 || f.down[0] != (params.Down{Instance: "demo", Multiple: true}) {
+					t.Errorf("got %+v, want Down{Instance:demo Multiple:true}", f.down)
+				}
+			},
+		},
+		{
 			name: "ls",
 			args: []string{"ls"},
 			want: func(t *testing.T, f *fakeActions) {

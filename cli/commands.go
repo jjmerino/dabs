@@ -48,7 +48,7 @@ var commandDocs = map[string]cmdDoc{
 	"up":        {"start a NEW detached box from a recipe (no command): up [recipe|path]", "up [recipe|path]"},
 	"exec":      {"exec an exact command inside an instance (no shell): exec <instance> -- <cmd…>", "exec <instance> -- <cmd…>"},
 	"run":       {"run a shell command inside an instance (args joined into one `sh -c` line — use `exec` for exact argv): run <instance> <shell…>", "run <instance> <shell…>"},
-	"down":      {"stop + remove instances by name (--force downs all matches)", "down [--force] [--dry] <instance>"},
+	"down":      {"stop + remove an instance by name (--multiple to act on several matches)", "down [--force] [--dry] [--multiple] <instance>"},
 	"ls":        {"list sandboxes", "ls"},
 	"servers":   {"manage registered servers: servers [ls] | add <name> [host] | rm <name>", "servers [ls | add <name> [host] | rm <name>]"},
 }

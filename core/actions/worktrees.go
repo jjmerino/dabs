@@ -28,7 +28,7 @@ func (r Real) Worktrees(p params.Worktrees) error {
 		if err != nil {
 			return err
 		}
-		names = worktreeNames(names) // the log file lives here too; it is not a worktree
+		names = r.worktreeNames(base, names) // keep only dabs's own worktrees; skip journal/junk
 		if len(names) == 0 {
 			fmt.Fprintln(os.Stdout, tui.Muted("no worktrees"))
 			return nil
@@ -77,7 +77,7 @@ func (r Real) Worktrees(p params.Worktrees) error {
 		if err != nil {
 			return err
 		}
-		names = worktreeNames(names) // never reap the log file as if it were a worktree
+		names = r.worktreeNames(base, names) // never reap the journal or junk as if a worktree
 		var kept []string
 		for _, n := range names {
 			if err := r.reapWorktree(filepath.Join(base, n), p.Force); err != nil {
@@ -95,18 +95,30 @@ func (r Real) Worktrees(p params.Worktrees) error {
 	}
 }
 
-// worktreeNames drops the box-lifecycle journal (and any other non-directory
-// bookkeeping) from a listing of ~/.dabs/worktrees, so only actual worktrees are
-// treated as worktrees. The log lives in the same dir but is not one.
-func worktreeNames(names []string) []string {
+// worktreeNames keeps only dabs's OWN worktrees from a raw listing of
+// ~/.dabs/worktrees. dabs owns this directory and knows its own vocabulary, so
+// rather than blocklisting the names of junk that shares it (the box-lifecycle
+// journal, a macOS .DS_Store, any stray file), it recognizes its entries
+// positively by convention: a real worktree is a directory that git resolves as
+// a worktree checkout. Anything that doesn't conform is silently dropped —
+// never an error, it simply isn't a worktree.
+func (r Real) worktreeNames(base string, names []string) []string {
 	out := names[:0:0]
 	for _, n := range names {
-		if n == wtLogFile {
-			continue
+		if r.isWorktree(filepath.Join(base, n)) {
+			out = append(out, n)
 		}
-		out = append(out, n)
 	}
 	return out
+}
+
+// isWorktree reports whether path is one of dabs's own git worktree checkouts.
+// The check is git's own recognition (a valid worktree resolves a common git
+// dir); a non-directory, a plain directory, or any junk resolves nothing and is
+// rejected without erroring.
+func (r Real) isWorktree(path string) bool {
+	_, err := r.data.GitCommonDir(path)
+	return err == nil
 }
 
 // reapWorktree removes one worktree, refusing to discard unreviewed work unless

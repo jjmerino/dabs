@@ -120,13 +120,15 @@ func parseRun(args []string) (params.Run, error) {
 	return p, nil
 }
 
-// parseDown parses `dabs down [--force] <instance>` arguments (instance as
-// reported by ls, e.g. demo-0; --force downs every instance the name
-// matches).
+// parseDown parses `dabs down [--force] [--multiple] <instance>` arguments
+// (instance as reported by ls, e.g. demo-0). A name matching more than one
+// instance is refused unless --multiple is passed; --force only skips
+// confirmation.
 func parseDown(args []string) (params.Down, error) {
 	var p params.Down
 	fs := newFlagSet("down")
-	fs.BoolVar(&p.Force, "force", false, "down every instance the name matches")
+	fs.BoolVar(&p.Force, "force", false, "skip the confirmation prompt")
+	fs.BoolVar(&p.Multiple, "multiple", false, "act on all instances the name matches (required when it matches more than one)")
 	fs.BoolVar(&p.Dry, "dry", false, "only show what the name matches; down nothing")
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
@@ -141,6 +143,8 @@ func parseDown(args []string) (params.Down, error) {
 		switch a {
 		case "--force", "-force":
 			p.Force = true
+		case "--multiple", "-multiple":
+			p.Multiple = true
 		case "--dry", "-dry":
 			p.Dry = true
 		default:

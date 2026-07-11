@@ -30,6 +30,14 @@ recipes:
       # applies to every recipe that mounts the vault into a `claude` box.
       - mount: ~/.dabs/auth/claude
         path: /root/.claude
+      # Per-box session history: a fresh, empty, box-private dir nested over the
+      # vault's projects/ (Claude Code's transcripts, keyed by cwd). Every box
+      # runs with cwd=/work off the shared vault, so without this their sessions
+      # pile into the same projects/-work/ and `claude --continue` in one box
+      # resurfaces another's. Credentials and settings still come from the shared
+      # vault above; only the session history is private to this box.
+      - perbox: projects
+        path: /root/.claude/projects
       # The code — your current directory, mounted live so the agent's edits
       # persist on the host and you review them with normal git. Swap `mount:`
       # for `copy:` to hand the box a throwaway snapshot instead.
@@ -81,6 +89,11 @@ recipes:
     sources:
       - mount: ~/.dabs/auth/claude
         path: /root/.claude
+      # Per-box session history, nested over the shared vault's projects/ — see
+      # the `claude` recipe above. Keeps each worktree box's transcripts private
+      # while credentials/settings stay shared.
+      - perbox: projects
+        path: /root/.claude/projects
       - worktree: .
         path: /work
 

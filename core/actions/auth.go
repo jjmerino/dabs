@@ -9,6 +9,7 @@ import (
 
 	"github.com/jjmerino/dabs/core/params"
 	"github.com/jjmerino/dabs/core/sandbox"
+	"github.com/jjmerino/dabs/core/tui"
 )
 
 // authClaudeDir is the box path where Claude Code keeps ALL its state. The
@@ -75,8 +76,7 @@ func (r Real) Auth(p params.Auth) error {
 	// claudeAiOauth.accessToken for future sandboxes to mount.
 	credPath := filepath.Join(vault, ".credentials.json")
 
-	fmt.Fprintf(os.Stdout, "\nThe next step must be completed by you. When Claude appears, /login "+
-		"and complete the initial setup. Once done, /exit Claude to continue.\n\n")
+	fmt.Fprintln(os.Stderr, "\n"+tui.Box("The next step must be completed by you.\nWhen Claude appears, /login and complete the initial setup.\nOnce done, /exit Claude to continue.")+"\n")
 	if err := drv.Run(instance, []string{"claude"}); err != nil {
 		return fmt.Errorf("auth: login: %w", err)
 	}
@@ -84,7 +84,7 @@ func (r Real) Auth(p params.Auth) error {
 	if r.credAccessToken(credPath) == "" {
 		return fmt.Errorf("auth: login did not produce a credential (not completed?)")
 	}
-	fmt.Fprintf(os.Stdout, "claude authenticated → %s\n", vault)
+	fmt.Fprintln(os.Stdout, tui.Success("claude authenticated %s %s", tui.Arrow(), vault))
 	return nil
 }
 

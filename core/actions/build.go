@@ -8,6 +8,7 @@ import (
 	"github.com/jjmerino/dabs/core/manifest"
 	"github.com/jjmerino/dabs/core/params"
 	"github.com/jjmerino/dabs/core/sandbox"
+	"github.com/jjmerino/dabs/core/tui"
 )
 
 // Build resolves the manifest and builds its sandbox image on the
@@ -29,6 +30,6 @@ func (r Real) Build(p params.Build) error {
 	if err := drv.Build(spec); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stdout, "%s built\n", m.Name)
+	fmt.Fprintln(os.Stdout, tui.Success("%s built", tui.Accent(m.Name)))
 	return nil
 }

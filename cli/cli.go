@@ -6,6 +6,7 @@ import (
 	"sort"
 
 	"github.com/jjmerino/dabs/core/params"
+	"github.com/jjmerino/dabs/core/tui"
 )
 
 // CLI dispatches parsed commands to the injected params.Actions.
@@ -34,14 +35,16 @@ func (c *CLI) Run(args []string) error {
 
 // Usage writes the command list to w.
 func Usage(w io.Writer) {
-	fmt.Fprintln(w, "usage: dabs <command> [args]")
+	fmt.Fprintln(w, tui.Heading("usage:")+" dabs <command> [args]")
 	names := make([]string, 0, len(Commands))
 	for name := range Commands {
 		names = append(names, name)
 	}
 	sort.Strings(names)
+	rows := make([][]string, 0, len(names))
 	for _, name := range names {
-		fmt.Fprintf(w, "  %-6s %s\n", name, Commands[name].Help)
+		rows = append(rows, []string{tui.Accent(name), Commands[name].Help})
 	}
-	fmt.Fprintln(w, "\nagents: `dabs --help-full-for-agents` prints the full guide (recipes, manifests, examples)")
+	fmt.Fprintln(w, tui.Indent(tui.Rows(nil, rows), 2))
+	fmt.Fprintln(w, "\n"+tui.Muted("agents: `dabs --help-full-for-agents` prints the full guide (recipes, manifests, examples)"))
 }

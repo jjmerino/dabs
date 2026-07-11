@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/jjmerino/dabs/core/params"
+	"github.com/jjmerino/dabs/core/tui"
 )
 
 // Down removes the instances matching the name, wherever in the fleet they
@@ -17,23 +18,23 @@ func (r Real) Down(p params.Down) error {
 		return err
 	}
 	if len(matches) == 0 {
-		fmt.Fprintf(os.Stdout, "nothing matches %s\n", p.Instance)
+		fmt.Fprintln(os.Stdout, tui.Muted("nothing matches %s", p.Instance))
 		return nil
 	}
 	if p.Dry {
-		fmt.Fprintf(os.Stdout, "%s matches: %s\n", p.Instance, names(matches))
+		fmt.Fprintf(os.Stdout, "%s %s %s\n", tui.Accent(p.Instance), tui.Muted("matches:"), names(matches))
 		return nil
 	}
 	if len(matches) > 1 && !p.Force {
-		fmt.Fprintf(os.Stdout, "%s matches the following instances: %s. Use --force to bring down all.\n",
-			p.Instance, names(matches))
+		fmt.Fprintln(os.Stdout, tui.Warn("%s matches %d instances: %s", p.Instance, len(matches), names(matches)))
+		fmt.Fprintln(os.Stdout, tui.Muted("use --force to bring down all"))
 		return nil
 	}
 	for _, m := range matches {
 		if err := m.driver.Down(m.name); err != nil {
 			return err
 		}
-		fmt.Fprintf(os.Stdout, "%s down\n", m.name)
+		fmt.Fprintln(os.Stdout, tui.Success("%s down", tui.Accent(m.name)))
 	}
 	return nil
 }

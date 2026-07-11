@@ -1,14 +1,13 @@
 package actions
 
 import (
-	"bufio"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/jjmerino/dabs/core/params"
+	"github.com/jjmerino/dabs/core/tui"
 )
 
 // harnessTarget describes where a harness integration is shipped from (in
@@ -51,15 +50,14 @@ func (r Real) Install(p params.Install) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Install %s\n  to %s\nProceed? [y/N] ", t.summary, dst)
-	if !confirm() {
-		fmt.Println("cancelled")
+	if !tui.Confirm(fmt.Sprintf("Install %s\n  to %s", t.summary, dst)) {
+		fmt.Fprintln(os.Stdout, tui.Muted("cancelled"))
 		return nil
 	}
 	if err := writeFS(r.harness, t.srcRel, dst); err != nil {
 		return err
 	}
-	fmt.Printf("installed %s %s → %s\n", t.name, t.what, dst)
+	fmt.Fprintln(os.Stdout, tui.Success("installed %s %s %s %s", t.name, t.what, tui.Arrow(), dst))
 	return nil
 }
 
@@ -75,32 +73,31 @@ func (r Real) Uninstall(p params.Uninstall) error {
 		return err
 	}
 	if _, err := os.Stat(dst); os.IsNotExist(err) {
-		fmt.Printf("%s %s not installed (%s)\n", t.name, t.what, dst)
+		fmt.Fprintln(os.Stdout, tui.Muted("%s %s not installed (%s)", t.name, t.what, dst))
 		return nil
 	}
-	fmt.Printf("Remove %s %s at %s? [y/N] ", t.name, t.what, dst)
-	if !confirm() {
-		fmt.Println("cancelled")
+	if !tui.Confirm(fmt.Sprintf("Remove %s %s at %s", t.name, t.what, dst)) {
+		fmt.Fprintln(os.Stdout, tui.Muted("cancelled"))
 		return nil
 	}
 	if err := os.RemoveAll(dst); err != nil {
 		return fmt.Errorf("uninstall: %w", err)
 	}
-	fmt.Printf("removed %s %s\n", t.name, t.what)
+	fmt.Fprintln(os.Stdout, tui.Success("removed %s %s", t.name, t.what))
 	return nil
 }
 
 func printInstallHelp(targets map[string]harnessTarget) error {
-	fmt.Println("dabs install <harness> — install the dabash integration for a harness.")
-	fmt.Println()
+	fmt.Fprintln(os.Stdout, tui.Heading("dabs install <harness>")+tui.Muted(" — install the dabash integration for a harness."))
+	fmt.Fprintln(os.Stdout)
 	for _, name := range []string{"pi", "claude"} {
 		t := targets[name]
 		dst, _ := t.dest()
-		fmt.Printf("  dabs install %-7s %s\n", name, t.summary)
-		fmt.Printf("  %-20s→ %s\n", "", dst)
+		fmt.Fprintf(os.Stdout, "  %s %s\n", tui.Accent(fmt.Sprintf("dabs install %-7s", name)), t.summary)
+		fmt.Fprintf(os.Stdout, "  %-20s%s %s\n", "", tui.Arrow(), tui.Muted("%s", dst))
 	}
-	fmt.Println()
-	fmt.Println("Each asks for confirmation. Remove with `dabs uninstall <harness>`.")
+	fmt.Fprintln(os.Stdout)
+	fmt.Fprintln(os.Stdout, tui.Muted("Each asks for confirmation. Remove with `dabs uninstall <harness>`."))
 	return nil
 }
 
@@ -110,15 +107,6 @@ func home(parts ...string) (string, error) {
 		return "", fmt.Errorf("install: %w", err)
 	}
 	return filepath.Join(append([]string{h}, parts...)...), nil
-}
-
-func confirm() bool {
-	sc := bufio.NewScanner(os.Stdin)
-	if !sc.Scan() {
-		return false
-	}
-	a := strings.ToLower(strings.TrimSpace(sc.Text()))
-	return a == "y" || a == "yes"
 }
 
 // writeFS copies the srcRel subtree of the embedded harness FS to dst,

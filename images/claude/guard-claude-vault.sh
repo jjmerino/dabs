@@ -15,6 +15,12 @@
 # control must never fail open. Exit 2 blocks the call and feeds stderr back to
 # the model. Erring broad on the command is intentional: the agent has no
 # legitimate reason to touch /root/.claude from a shell.
+#
+# SCOPE: this raises the bar; it is NOT a hard boundary. It matches literal
+# command text, so variable indirection / $HOME / quoting can evade it
+# (e.g. a=/root/.cla; cat $a...ude/x). The real controls are the disposable box
+# and the managed-settings Read-tool deny; treat this Bash hook as one more
+# layer, not the sole guarantee that the credential can't be read from a shell.
 input=$(cat)
 
 cmd=$(printf '%s' "$input" | node -e '

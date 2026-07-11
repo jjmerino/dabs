@@ -4,35 +4,51 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/jjmerino/dabs/core/manifest"
 	"github.com/jjmerino/dabs/core/params"
-	"github.com/jjmerino/dabs/core/sandbox"
 	"github.com/jjmerino/dabs/core/tui"
 )
 
-// Up resolves the manifest and starts a NEW pristine instance of its
-// sandbox on the manifest's target (local by default), reporting the
-// instance name.
+// Up resolves a recipe (no name → the registry default, a name → that recipe, a
+// path → a dabs.yaml to load), prepares its sources, and starts a NEW pristine
+// DETACHED instance on the recipe's target (local by default): image, sources,
+// env, and workdir. Unlike `dabs recipe`, it does NOT run the recipe's command
+// and does NOT tear the box down — it reports the instance name and leaves the
+// box up for `dabs exec`/`dabs run` (and `dabs down` to reap).
 func (r Real) Up(p params.Up) error {
-	m, err := manifest.Load(p.ManifestPath)
+	reg, name, err := r.resolveRecipe(p.Name)
 	if err != nil {
 		return err
 	}
-	drv, err := r.driverFor(m.Target)
+	rec, err := reg.Get(name)
 	if err != nil {
 		return err
 	}
-	spec := sandbox.Spec{
-		Name:    m.Name,
-		Workdir: m.Workdir,
-		Env:     m.Env,
-	}
-	instance, err := drv.Up(spec)
+	drv, err := r.driverFor(rec.Target)
 	if err != nil {
 		return err
 	}
-	if m.Target != "" {
-		fmt.Fprintln(os.Stdout, tui.Success("%s up on %s", tui.Accent(instance), m.Target))
+	// Validate sources before any side effect, then resolve the image WITHOUT
+	// building the recipe's own Dockerfile: `up` boots an image a prior
+	// `dabs build` produced (it may run where no builder exists).
+	kinds, origins, tops, err := r.validateSources(name, rec.Sources)
+	if err != nil {
+		return err
+	}
+	image, err := r.resolveBuiltImage(drv, name, rec.Image, rec.Target)
+	if err != nil {
+		return err
+	}
+	instance, kept, err := r.buildBox(drv, name, rec, image, rec.Sources, kinds, origins, tops)
+	if err != nil {
+		return err
+	}
+	// `up` is DETACHED: it never runs the recipe's command and never tears the
+	// box down — keep is implicit. The box is the user's to reap with `dabs down`.
+	for _, k := range kept {
+		fmt.Fprintln(os.Stdout, tui.Success("worktree kept: %s", k))
+	}
+	if rec.Target != "" {
+		fmt.Fprintln(os.Stdout, tui.Success("%s up on %s", tui.Accent(instance), rec.Target))
 		return nil
 	}
 	fmt.Fprintln(os.Stdout, tui.Success("%s up", tui.Accent(instance)))

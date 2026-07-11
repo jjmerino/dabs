@@ -28,8 +28,8 @@ func (s Server) Transport() string {
 }
 
 // Config declares the sandbox fleet: the local driver always exists;
-// servers add remote machines. Manifests choose where their sandboxes live
-// via dabs.json "target"; ls aggregates across everything.
+// servers add remote machines. Recipes choose where their sandboxes live
+// via their `target`; ls aggregates across everything.
 type Config struct {
 	Servers map[string]Server `json:"servers"`
 }

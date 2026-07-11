@@ -16,14 +16,14 @@ type Command struct {
 // Each Run composes a pure parser from argparser.go with the action on the
 // CLI's injected Actions; the logic lives in core/actions.
 var Commands = map[string]Command{
-	"build":     {"build the sandbox image from the manifest's Dockerfile", (*CLI).runBuild},
+	"build":     {"build a recipe's box image: build [recipe|path] (no name → dabs.yaml default)", (*CLI).runBuild},
 	"auth":      {"log a harness into a persistent vault future boxes mount: auth claude", (*CLI).runAuth},
 	"recipe":    {"run a named recipe box: recipe <name> [cmd…] (no name → dabs.yaml default)", (*CLI).runRecipe},
 	"do":        {"run a command in a throwaway box via the default recipe (else sh): do <cmd…>", (*CLI).runDo},
 	"cast":      {"run a recipe onto an existing worktree: cast <recipe> <worktree>", (*CLI).runCast},
 	"recipes":   {"list the known recipes and what each mounts", (*CLI).runRecipes},
 	"worktrees": {"inspect/reap recipe worktrees: worktrees [ls | diff <name> | rm <name> | prune] [--force]", (*CLI).runWorktrees},
-	"up":        {"start a NEW box from a manifest (dir or dabs.json); to run a recipe use `recipe`", (*CLI).runUp},
+	"up":        {"start a NEW detached box from a recipe (no command): up [recipe|path]", (*CLI).runUp},
 	"exec":      {"exec an exact command inside an instance (no shell): exec <instance> -- <cmd…>", (*CLI).runExec},
 	"run":       {"run a shell command inside an instance (args joined into one `sh -c` line — use `exec` for exact argv): run <instance> <shell…>", (*CLI).runRun},
 	"down":      {"stop + remove instances by name (--force downs all matches)", (*CLI).runDown},

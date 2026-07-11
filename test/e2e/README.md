@@ -31,8 +31,8 @@ so a plain `go test ./...` stays hermetic and never touches sandboxes.
 
 - `e2e_test.go` — one file: `TestMain` builds the dab under test from source
   and builds the base image; one `test_*` per CLI behavior.
-- `dabs.json` + `Dockerfile` — the base inner image (`dabs-e2e`) the boxes
-  come from.
+- `dabs.yaml` + `Dockerfile` — the base recipe (`dabs-e2e`) the inner boxes
+  come from; `dabs build`/`up` resolve it.
 
 ## Notes
 

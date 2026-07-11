@@ -27,7 +27,7 @@ import (
 
 var (
 	home    string // isolated HOME for this run
-	baseDir string // this package dir: holds the base image dabs.json + Dockerfile
+	baseDir string // this package dir: holds the base recipe dabs.yaml + Dockerfile
 )
 
 const sandboxName = "dabs-e2e"
@@ -55,8 +55,8 @@ func setupAndRun(m *testing.M) int {
 	defer os.RemoveAll(home) // teardown: isolated HOME and everything under it
 	os.Setenv("HOME", home)
 
-	// The base image the inner boxes come from is this package's own
-	// dabs.json + Dockerfile (name "dabs-e2e"); build it once with the source
+	// The base image the inner boxes come from is this package's own recipe
+	// (dabs.yaml, recipe "dabs-e2e") + Dockerfile; build it once with the source
 	// dabs and reuse it across tests.
 	baseDir, err = os.Getwd()
 	if err != nil {
@@ -161,10 +161,14 @@ func splitArgs(s string) []string {
 	return args
 }
 
-func writeManifest(dir, name, dockerfile string) {
+// writeRecipe writes a minimal buildable recipe (a dabs.yaml + Dockerfile) into
+// dir: one recipe named `name`, set as the default, whose image builds from the
+// Dockerfile. It replaces the old dabs.json manifest fixtures now that build/up
+// resolve recipes.
+func writeRecipe(dir, name, dockerfile string) {
 	os.MkdirAll(dir, 0o755)
-	os.WriteFile(filepath.Join(dir, "dabs.json"),
-		[]byte(fmt.Sprintf("{\"name\":%q,\"env\":{\"E2E\":\"yes\"}}\n", name)), 0o644)
+	yaml := fmt.Sprintf("default: %s\nrecipes:\n  %s:\n    image: { dockerfile: Dockerfile, context: . }\n    env: { E2E: \"yes\" }\n", name, name)
+	os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644)
 	os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte(dockerfile), 0o644)
 }
 
@@ -260,7 +264,7 @@ func TestBuild(t *testing.T) {
 		t.Skip("prebuilt mode: docker build path is tested on the host, not in-box")
 	}
 	d := filepath.Join(home, "bt")
-	writeManifest(d, "bt", "FROM alpine:3.20\nWORKDIR /work\n")
+	writeRecipe(d, "bt", "FROM alpine:3.20\nWORKDIR /work\n")
 	out, code := run("dabs build " + d)
 	wantExit(t, 0, code)
 	wantContains(t, out, "bt built")
@@ -773,29 +777,36 @@ func TestHelpRendersAndPointsToFull(t *testing.T) {
 	wantContains(t, full, "dabs box") // the bundled AGENTS.md guide
 }
 
-// TestUpBareNameHintsRecipe: `dabs up <name>` (not a manifest) fails with a hint
-// that up takes a manifest and recipes are run with `dabs recipe`.
-func TestUpBareNameHintsRecipe(t *testing.T) {
-	out, code := run("dabs up not-a-manifest")
+// TestUpUnknownRecipeLists: `dabs up <bogus>` (not a recipe, not a path) fails
+// clearly, listing the known recipes and pointing at the recipe/path/default
+// forms — build/up resolve a recipe now, not a manifest.
+func TestUpUnknownRecipeLists(t *testing.T) {
+	out, code := run("dabs up not-a-recipe")
 	if code == 0 {
 		t.Fatalf("want non-zero exit; got 0\n%s", out)
 	}
-	wantContains(t, out, "manifest")
-	wantContains(t, out, "recipe")
+	wantContains(t, out, "no recipe")
+	wantContains(t, out, "dabs.yaml path") // the hint naming the accepted forms
 }
 
-// TestManifestEnvTypeErrorIsFriendly: a wrong-typed field says what it should be,
-// not the Go struct type.
-func TestManifestEnvTypeErrorIsFriendly(t *testing.T) {
-	d := filepath.Join(home, "badenv")
-	os.MkdirAll(d, 0o755)
-	os.WriteFile(filepath.Join(d, "dabs.json"), []byte(`{"name":"x","env":[1,2]}`), 0o644)
-	out, code := run("dabs build " + d)
-	if code == 0 {
-		t.Fatalf("want non-zero exit; got 0\n%s", out)
+// TestUpFromDabsYamlPath: `dabs up <path/to/dabs.yaml>` loads that file and boots
+// its recipe — proving the "a path is a dabs.yaml to load" form. The recipe
+// reuses the prebuilt base image by BARE name, so up needs no builder in-box.
+func TestUpFromDabsYamlPath(t *testing.T) {
+	clean(t)
+	dir := filepath.Join(home, "yamlpath")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
 	}
-	wantContains(t, out, "must be an object")
-	wantNotContains(t, out, "map[string]string")
+	yaml := "default: " + sandboxName + "\nrecipes:\n  " + sandboxName +
+		":\n    image: " + sandboxName + "\n    workdir: /work\n"
+	if err := os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, code := run("dabs up " + filepath.Join(dir, "dabs.yaml")) // a FILE path
+	wantExit(t, 0, code)
+	wantContains(t, out, sandboxName+"-")
+	wantContains(t, out, " up")
 }
 
 // TestRecipesPrintShowsFormat: `dabs recipes --print` dumps the authoring YAML,

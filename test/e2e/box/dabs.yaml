@@ -1,0 +1,15 @@
+# The box the e2e suite itself runs in (see run_e2e.sh, which builds and ups it
+# from the repo root). A recipe now, not a dabs.json manifest: `dabs build
+# test/e2e/box` builds this image, `dabs up test/e2e/box` boots it detached.
+# Inline build paths resolve relative to THIS file's dir (like the old
+# manifest): the context is the repo root three levels up, which carries the
+# .e2e-stage the Dockerfile copies in. `target` routes it to the privileged
+# docker driver so the nested bwrap driver works.
+default: e2e-box
+recipes:
+  e2e-box:
+    image:
+      dockerfile: Dockerfile
+      context: ../../..
+    target: INTERNAL-docker-privileged-for-nested-sandboxing
+    workdir: /work

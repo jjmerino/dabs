@@ -1,7 +1,0 @@
-{
-  "name": "e2e-box",
-  "target": "INTERNAL-docker-privileged-for-nested-sandboxing",
-  "workdir": "/work",
-  "dockerfile": "Dockerfile",
-  "context": "../../.."
-}

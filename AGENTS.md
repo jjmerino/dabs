@@ -44,6 +44,15 @@ via a recipe (`dabs recipe claude`).
    errors and lists the choices, so an agent must pick). `dabs.json` is
    unchanged — the low-level single-box manifest for `dabs build`/`up`.
 
+   **Recipes provision; skills prompt.** A recipe describes how the box is
+   provisioned (image, sources, command) and must NOT bake agent instructions
+   into its `command` — that's the caller's/skill's job. For a Claude recipe
+   that needs a fixed brief (e.g. `review`, `dumb-user`), keep the prompt in a
+   skill under `skills/<name>/SKILL.md`, **mount** that dir where Claude Code
+   discovers project skills (`path: /work/.claude/skills/<name>`, `ro: true`),
+   and make the `command` just `claude -p 'Use the <name> skill.'` (add `Skill`
+   to `--allowedTools`). See `dabs.yaml`.
+
 4. **Reap the worktrees an agent left** (recipes keep them):
 
    ```bash

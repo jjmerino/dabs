@@ -11,27 +11,41 @@ recipes:
   # repo — it runs `git diff main...HEAD`, reads the code, builds it, and runs the
   # tests to verify — then streams a ranked, evidence-backed review to your
   # terminal. Capture it with:  dabs recipe review | tee review.md
+  #
+  # The review instructions live in a skill (skills/review) — the recipe only
+  # provisions the box and points the agent at it. The skill is MOUNTED into the
+  # box's project skills dir (where Claude Code looks), and Claude runs it.
   review:
     image: claude                         # bundled image: Claude Code + git
     env: { CLAUDE_CONFIG_DIR: /root/.claude }
-    command: [sh, -c, "cd /work && exec claude -p 'Do a senior Go code review of this branch versus main. Run git diff main...HEAD and read the diff and changed files. Read AGENTS.md section Working on the codebase and check the diff respects the architecture: cli thin, core/actions policy, core/sandbox mechanical drivers, the data.Data and sandbox.Driver seams, zero third-party deps. Build both platforms (go build ./... and GOOS=linux go build ./...) and run go test ./cli/ ./core/... to verify. You are in a disposable copy, so exercise the code. Report ranked findings (blocker/major/minor/nit) with file:line on Go style, architecture and seams, and test quality, then an overall verdict.' --model claude-opus-4-8 --allowedTools Bash Read Grep Glob"]
+    command: [sh, -c, "cd /work && exec claude -p 'Use the review skill.' --model claude-opus-4-8 --allowedTools Bash Read Grep Glob Skill"]
     sources:
       - mount: ~/.dabs/auth/claude        # your Claude login — mounted, never copied
         path: /root/.claude
       - copy: .                           # throwaway copy of the repo (with .git) to diff, build, test
         path: /work
+      - mount: skills/review              # the review skill — mounted where Claude Code discovers project skills
+        path: /work/.claude/skills/review
+        ro: true
 
   # Agents: use when you changed dabs's CLI, help text, errors, or recipes and
   # want to know whether a brand-new user can still figure it out. Drops a naive
   # Haiku on a fresh machine that has ONLY dabs (built from this tree) + Claude
   # Code, and asks it to discover and use dabs on its own — then report friction
   # and bugs. If the dumb user gets stuck, that is a UX bug.
+  #
+  # The naive-user brief lives in a skill (skills/dumb-user) — the recipe only
+  # provisions the box (build dabs, mount the skill where Claude Code looks) and
+  # asks Claude to run it.
   dumb-user:
     image: { dockerfile: contrib/recipes/dumb-user.Dockerfile, context: . }
     env: { CLAUDE_CONFIG_DIR: /root/.claude }
-    command: [sh, -c, "cd /work && go build -o /usr/local/bin/dabs . && exec claude -p 'You are a brand-new user on a fresh machine. A CLI called dabs is installed; you have never seen it. Figure out what it does and become productive on your own, using whatever help the tool provides. Try: discover its commands, start an isolated box and run a command inside it, and create your own recipe. Then report what you did, how you discovered how, what worked, and what was confusing or broken. Be blunt and honest.' --model claude-haiku-4-5 --allowedTools Bash Write Read Edit"]
+    command: [sh, -c, "cd /work && go build -o /usr/local/bin/dabs . && exec claude -p 'Use the dumb-user skill.' --model claude-haiku-4-5 --allowedTools Bash Write Read Edit Skill"]
     sources:
       - mount: ~/.dabs/auth/claude
         path: /root/.claude
       - copy: .                           # the agent builds dabs from this copy and tries it
         path: /work
+      - mount: skills/dumb-user           # the naive-user skill — mounted where Claude Code discovers project skills
+        path: /work/.claude/skills/dumb-user
+        ro: true

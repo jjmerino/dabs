@@ -26,7 +26,7 @@ var Commands = map[string]Command{
 	"up":        {"start a NEW detached box from a recipe (no command): up [recipe|path]", (*CLI).runUp},
 	"exec":      {"exec an exact command inside an instance (no shell): exec <instance> -- <cmd…>", (*CLI).runExec},
 	"run":       {"run a shell command inside an instance (args joined into one `sh -c` line — use `exec` for exact argv): run <instance> <shell…>", (*CLI).runRun},
-	"down":      {"stop + remove instances by name (--force downs all matches)", (*CLI).runDown},
+	"down":      {"stop + remove an instance by name (--multiple to act on several matches)", (*CLI).runDown},
 	"ls":        {"list sandboxes", (*CLI).runLs},
 	"servers":   {"manage registered servers: servers [ls] | add <name> [host] | rm <name>", (*CLI).runServers},
 }

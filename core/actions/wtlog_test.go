@@ -170,6 +170,7 @@ func TestNonKeepWorktreeRecipeBalancesJournal(t *testing.T) {
 func TestLivenessRequiresFleetAgreement(t *testing.T) {
 	fd := baseData()
 	fd.dirs = map[string][]string{wtBase: {"wtghost"}}
+	fd.commondir = map[string]string{wtBase + "/wtghost": wtBase + "/wtghost/.git"}
 	fd.states = map[string]wtState{wtBase + "/wtghost": {branch: "dabs/gg"}}
 	fd.files = map[string][]byte{
 		wtBase + "/log.jsonl": []byte(

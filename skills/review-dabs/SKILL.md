@@ -19,6 +19,11 @@ but do not modify the source.
    - `go build ./...`
    - `GOOS=linux go build ./...`
    - `go test ./cli/ ./core/...`
+4. Flag any reference to a time-bound project or one-time change **by name** in
+   permanent code — comments, identifiers, test names, doc prose. Future
+   engineers will not know what it was. If a tui reskin happens, a comment about
+   "the reskin" (as if it were the one and only) is a finding: permanent code
+   must describe what the thing IS, not the change that introduced it.
 
 Report a **single ranked list of findings** (most severe first) with
 `file:line`, covering Go style, architecture and seams, and test quality.

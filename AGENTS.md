@@ -96,7 +96,8 @@ host. Reach in with `dabs run <instance> <shell…>` (or `dabs exec <instance> -
 5. **Reap boxes when done:**
 
    ```bash
-   dabs down <instance>            # or: dabs down <name> --force  (all instances)
+   dabs down <instance>            # exactly one match required
+   dabs down <name> --multiple     # act on ALL matches (needed for >1)
    dabs down <name> --dry          # preview what a name matches
    ```
 
@@ -128,8 +129,11 @@ e.g. review) at work another agent already started, without cutting a new branch
   lack tools like `ps`; if a journey needs one, it belongs in the
   Dockerfile, not worked around.
 - Instance names accept unambiguous prefixes (git-style) everywhere:
-  `dabs exec myproj-a3f -- ls`. Ambiguity is an error for exec/run and an
-  informational list for down.
+  `dabs exec myproj-a3f -- ls`. Ambiguity is an error for exec/run; for down
+  it is refused too — a name matching more than one instance downs NOTHING and
+  lists the matches, and you must pass `--multiple` to act on all of them. An
+  empty/blank name matches nothing (never "all"). `--force` only skips
+  confirmation; it does not authorize multi-match reaping.
 - Three levels reach into an existing box, low to high:
   `dabs exec <instance> -- <cmd…>` runs an EXACT argv (no shell); `dabs run
   <instance> <shell…>` runs a shell command line (wrapped in `sh -c`, so

@@ -41,7 +41,8 @@ type Run struct {
 // Down are the inputs to the down action.
 type Down struct {
 	Instance string // instance name, as reported by ls (e.g. demo-0)
-	Force    bool   // when the name matches several instances, down them all
+	Force    bool   // skip the confirmation prompt / force through
+	Multiple bool   // authorize acting on more than one match; without it a name matching several instances is refused
 	Dry      bool   // only show what the name matches; down nothing
 }
 

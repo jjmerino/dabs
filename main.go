@@ -20,7 +20,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, tui.Failure("dabs: %v", err))
 		os.Exit(1)
 	}
-	a := actions.New(drivers, order, harnessFS, imagesFS, data.OS{})
+	a := actions.New(drivers, order, imagesFS, data.OS{})
 	c := cli.New(a)
 
 	// Help is not an error: render it to stdout and exit 0. Basic help points

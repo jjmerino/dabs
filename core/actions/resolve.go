@@ -10,9 +10,8 @@ import (
 	"github.com/jjmerino/dabs/core/tui"
 )
 
-// warnf is where resolution warnings go: stderr, NEVER stdout. Resolution
-// runs inside `dabs mcp`, whose stdout is the MCP protocol channel — a stray
-// byte there corrupts the stream.
+// warnf is where resolution warnings go: stderr, NEVER stdout, so a warning
+// never mingles with a command's real output on stdout.
 var warnf = os.Stderr
 
 // remoteTimeout bounds how long a single remote driver's Ls may take during
@@ -52,8 +51,8 @@ func lsTimeout(d sandbox.Driver, timeout time.Duration) ([]sandbox.Info, error) 
 // prefix matches, on any target. Domain logic: drivers only see exact names.
 //
 // Fast path: a LOCAL exact match returns before any remote is queried, so
-// handing a local box to an agent (dabs mcp <full-name>) never pays an ssh
-// round-trip or risks hanging on a slow server. Remote drivers are queried
+// addressing a local box by its full name never pays an ssh round-trip or
+// risks hanging on a slow server. Remote drivers are queried
 // concurrently, each bounded by remoteTimeout.
 func (r Real) matches(instance string) ([]match, error) {
 	var out []match
@@ -120,7 +119,7 @@ func (r Real) matches(instance string) ([]match, error) {
 	return out, nil
 }
 
-// resolveOne is matches for verbs that need exactly one target (exec, run, mcp).
+// resolveOne is matches for verbs that need exactly one target (exec, run).
 func (r Real) resolveOne(instance string) (match, error) {
 	m, err := r.matches(instance)
 	if err != nil {

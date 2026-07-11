@@ -172,7 +172,7 @@ func newReal(recipesYAML string, fd *fakeData, drv *fakeDriver, bundledImages ..
 		fd.files[fd.home+"/.dabs/recipes.yaml"] = []byte(recipesYAML)
 	}
 	drivers := map[string]sandbox.Driver{"local": drv}
-	return actions.New(drivers, []string{"local"}, fstest.MapFS{}, imgs, fd)
+	return actions.New(drivers, []string{"local"}, imgs, fd)
 }
 
 func baseData() *fakeData {
@@ -899,7 +899,7 @@ func TestRecipeTargetRoutesToDriver(t *testing.T) {
 	remote := &fakeDriver{built: map[string]bool{"img": true}}
 	r := actions.New(
 		map[string]sandbox.Driver{"local": local, "remote": remote},
-		[]string{"local", "remote"}, fstest.MapFS{}, fstest.MapFS{}, fd,
+		[]string{"local", "remote"}, fstest.MapFS{}, fd,
 	)
 	if err := r.Recipe(params.Recipe{Name: "m"}); err != nil {
 		t.Fatalf("Recipe: %v", err)

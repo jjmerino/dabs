@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/jjmerino/dabs/core/params"
+	"github.com/jjmerino/dabs/core/sandbox"
 )
 
 const wtBase = "/home/t/.dabs/worktrees"
@@ -81,5 +82,54 @@ func TestWorktreePruneForceReapsAll(t *testing.T) {
 	}
 	if len(fd.removed) != 2 {
 		t.Fatalf("prune --force should remove all, removed %v", fd.removed)
+	}
+}
+
+// CONTRACT: `worktrees ls` prints NAME | WORKTREE | STATE | DETAIL — the WORKTREE
+// column is the ABSOLUTE path, the branch is folded into DETAIL, and per-worktree
+// box liveness is read from the log.
+func TestWorktreeLsColumnsAndLiveness(t *testing.T) {
+	fd := baseData()
+	// The journal lives in the worktrees dir too; ls must not treat it as one.
+	fd.dirs = map[string][]string{wtBase: {"log.jsonl", "wtlive", "wtdead"}}
+	fd.states = map[string]wtState{
+		wtBase + "/wtlive": {branch: "dabs/aa", dirty: true},
+		wtBase + "/wtdead": {branch: "dabs/bb"},
+	}
+	// A live box for wtlive (up, no matching down); wtdead's box came down.
+	fd.files = map[string][]byte{
+		wtBase + "/log.jsonl": []byte(
+			`{"event":"up","ts":"t1","instance":"box-live","worktree":"wtlive","path":"` + wtBase + `/wtlive","recipe":"r"}` + "\n" +
+				`{"event":"up","ts":"t2","instance":"box-dead","worktree":"wtdead"}` + "\n" +
+				`{"event":"down","ts":"t3","instance":"box-dead","worktree":"wtdead"}` + "\n"),
+	}
+	// The fleet actually has box-live running (liveness is journal ∩ fleet).
+	drv := &fakeDriver{infos: []sandbox.Info{{Name: "box-live"}}}
+	out := captureStdout(t, func() {
+		if err := newReal("", fd, drv).Worktrees(params.Worktrees{Sub: "ls"}); err != nil {
+			t.Fatalf("ls: %v", err)
+		}
+	})
+	if !strings.Contains(out, "NAME") || !strings.Contains(out, "WORKTREE") ||
+		!strings.Contains(out, "STATE") || !strings.Contains(out, "DETAIL") {
+		t.Fatalf("header not NAME|WORKTREE|STATE|DETAIL:\n%s", out)
+	}
+	if strings.Contains(out, "BRANCH") {
+		t.Fatalf("BRANCH must be folded into DETAIL, not a column:\n%s", out)
+	}
+	// The WORKTREE column shows the absolute path, and the branch is in DETAIL.
+	if !strings.Contains(out, wtBase+"/wtlive") || !strings.Contains(out, "branch dabs/aa") {
+		t.Fatalf("missing abs path / branch in detail:\n%s", out)
+	}
+	// Liveness: wtlive has a live box; wtdead has none.
+	if !strings.Contains(out, "box box-live live") {
+		t.Fatalf("wtlive should show its live box:\n%s", out)
+	}
+	if !strings.Contains(out, "no box") {
+		t.Fatalf("wtdead should show no box:\n%s", out)
+	}
+	// The journal file must never appear as a worktree row.
+	if strings.Contains(out, "log.jsonl") {
+		t.Fatalf("log.jsonl leaked into the worktrees listing:\n%s", out)
 	}
 }

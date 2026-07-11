@@ -17,6 +17,9 @@ type Data interface {
 	HomeDir() (string, error)
 	ReadFile(path string) ([]byte, error)
 	WriteFile(path string, b []byte, perm fs.FileMode) error
+	// AppendFile appends b to path (creating it if absent), for append-only
+	// logs like the worktree box-lifecycle journal.
+	AppendFile(path string, b []byte, perm fs.FileMode) error
 	Stat(path string) (fs.FileInfo, error)
 	MkdirAll(path string, perm fs.FileMode) error
 	MkdirTemp(dir, pattern string) (string, error)

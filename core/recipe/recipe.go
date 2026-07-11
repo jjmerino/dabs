@@ -64,22 +64,30 @@ func (r *ImageRef) UnmarshalJSON(b []byte) error {
 }
 
 // Source is one thing placed into the box at Path. Exactly one of Mount /
-// Worktree / Copy names the host origin and picks HOW it lands:
+// Worktree / Copy / Perbox names the origin and picks HOW it lands:
 //   - mount:    a live bind — the box's writes hit the host (vault, pairing).
 //   - worktree: a fresh git branch off HEAD of the named repo, mounted live.
 //   - copy:     a snapshot taken at up time — the box owns it, host untouched.
+//   - perbox:   a fresh, empty, box-private host dir, mounted live. Its value is
+//     a LABEL (not a host path): the dir is allocated per box (under
+//     ~/.dabs/boxes/<id>/<label>), starts empty, and has no shared host origin —
+//     so a bind nested over an earlier mount (e.g. Claude's projects/ over the
+//     shared vault) gives that box its own private slice of an otherwise shared
+//     tree.
 //
 // Host paths may use ~ and $VAR/${VAR}; they are expanded at load-adjacent time.
 type Source struct {
 	Mount    string `json:"mount,omitempty"`
 	Worktree string `json:"worktree,omitempty"`
 	Copy     string `json:"copy,omitempty"`
+	Perbox   string `json:"perbox,omitempty"`
 	Path     string `json:"path"`         // absolute destination inside the box
 	RO       bool   `json:"ro,omitempty"` // for mount: read-only
 }
 
-// Kind returns which of the three source strategies this entry uses, plus the
-// host origin. An entry that names none (or more than one) is invalid.
+// Kind returns which source strategy this entry uses, plus its origin (a host
+// path for mount/worktree/copy, a per-box label for perbox). An entry that names
+// none (or more than one) is invalid.
 func (s Source) Kind() (kind, origin string, err error) {
 	set := map[string]string{}
 	if s.Mount != "" {
@@ -91,8 +99,11 @@ func (s Source) Kind() (kind, origin string, err error) {
 	if s.Copy != "" {
 		set["copy"] = s.Copy
 	}
+	if s.Perbox != "" {
+		set["perbox"] = s.Perbox
+	}
 	if len(set) != 1 {
-		return "", "", fmt.Errorf("source for %q must set exactly one of mount/worktree/copy", s.Path)
+		return "", "", fmt.Errorf("source for %q must set exactly one of mount/worktree/copy/perbox", s.Path)
 	}
 	for k, v := range set {
 		kind, origin = k, v

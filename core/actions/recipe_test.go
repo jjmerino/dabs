@@ -611,6 +611,92 @@ func TestCastMissingWorktreeErrors(t *testing.T) {
 	}
 }
 
+// --- tests: the generic perbox source -----------------------------------------
+
+// CONTRACT: a `perbox:` source yields a fresh, empty, box-private host mount
+// (under ~/.dabs/boxes/…/<label>) at its Path, created on the host, writable,
+// and — since it exists to overlay an earlier mount — applied AFTER any mount it
+// nests over, regardless of its position among the recipe's sources.
+func TestPerboxSourceIsPrivateAndAppliedLast(t *testing.T) {
+	// The perbox source is declared BEFORE the mount it nests over, to prove the
+	// engine still applies it LAST (overlay ordering is not source order).
+	y := `recipes:
+  r:
+    image: img
+    command: [run]
+    sources:
+      - mount: /home/t/vault
+        path: /cfg
+      - perbox: sessions
+        path: /cfg/sessions
+      - mount: /work
+        path: /work
+`
+	fd := baseData()
+	fd.exists["/home/t/vault"] = true
+	fd.exists["/work"] = true
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	if err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "r"}); err != nil {
+		t.Fatalf("Recipe: %v", err)
+	}
+	up := onlyUp(t, drv)
+
+	// The perbox mount is applied LAST so it lands over the /cfg mount it nests in.
+	pb := up.Mounts[len(up.Mounts)-1]
+	if pb.Path != "/cfg/sessions" {
+		t.Fatalf("last mount = %+v, want the perbox mount at /cfg/sessions", pb)
+	}
+	// It is a fresh box-private host dir, not a shared origin.
+	if !strings.HasPrefix(pb.Host, "/home/t/.dabs/boxes/") || !strings.HasSuffix(pb.Host, "/sessions") {
+		t.Errorf("perbox host = %q, want a per-box dir under ~/.dabs/boxes/…/sessions", pb.Host)
+	}
+	if pb.RO {
+		t.Errorf("perbox mount is read-only; the box must be able to write it")
+	}
+	// The shared /cfg mount is untouched and precedes the overlay.
+	if up.Mounts[0] != (sandbox.Mount{Host: "/home/t/vault", Path: "/cfg"}) {
+		t.Errorf("first mount = %+v, want the shared /cfg mount intact", up.Mounts[0])
+	}
+	// The per-box dir is created on the host so the bind mount resolves.
+	made := false
+	for _, m := range fd.mkdirs {
+		if m == pb.Host {
+			made = true
+		}
+	}
+	if !made {
+		t.Errorf("per-box dir %q was not created on the host (mkdirs=%v)", pb.Host, fd.mkdirs)
+	}
+}
+
+// CONTRACT: a `perbox:` source is visible in the look-before-run summary like
+// every other source, so a user approves the mount that actually gets applied.
+func TestPerboxSourceShownInConfirm(t *testing.T) {
+	y := `recipes:
+  r:
+    image: img
+    command: [run]
+    sources:
+      - mount: /home/t/vault
+        path: /cfg
+      - perbox: sessions
+        path: /cfg/sessions
+`
+	fd := baseData()
+	fd.exists["/home/t/vault"] = true
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	asked := ""
+	confirm := func(prompt string) bool { asked = prompt; return true }
+	// Appending a command triggers the look-before-run confirmation.
+	if err := newReal(y, fd, drv).WithConfirm(confirm).
+		Recipe(params.Recipe{Name: "r", Cmd: []string{"x"}}); err != nil {
+		t.Fatalf("Recipe: %v", err)
+	}
+	if !strings.Contains(asked, "perbox") || !strings.Contains(asked, "sessions → /cfg/sessions") {
+		t.Errorf("confirm summary omits the perbox source:\n%s", asked)
+	}
+}
+
 // --- tests: appended command + confirmation + `dabs do` -----------------------
 
 const appendRecipe = `recipes:

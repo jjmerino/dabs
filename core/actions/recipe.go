@@ -128,6 +128,9 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 			} else if err != nil {
 				return fmt.Errorf("recipe %q: %s source %s: %w", name, kind, host, err)
 			}
+		case "perbox":
+			// A per-box dir has no shared host origin to validate — it is
+			// allocated fresh and empty at prep time.
 		}
 	}
 
@@ -139,6 +142,7 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 	// Turn declared sources into driver mounts + deferred copies (creating
 	// worktrees now that the image is ready).
 	var mounts []sandbox.Mount
+	var perbox []sandbox.Mount
 	var copies []copyOp
 	var kept []string
 	for i, s := range sources {
@@ -159,8 +163,20 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 			staging := fmt.Sprintf("/.dabs/copy/%d", i)
 			mounts = append(mounts, sandbox.Mount{Host: origins[i], Path: staging, RO: true})
 			copies = append(copies, copyOp{src: staging, dest: s.Path})
+		case "perbox":
+			// A fresh, empty, box-private host dir (under ~/.dabs/boxes/<id>/<label>)
+			// mounted live at s.Path. Held aside and appended LAST so it lands on
+			// top of any earlier mount it nests over (e.g. Claude's projects/ over
+			// the shared vault).
+			host, err := r.perboxDir(origins[i])
+			if err != nil {
+				return err
+			}
+			perbox = append(perbox, sandbox.Mount{Host: host, Path: s.Path})
 		}
 	}
+	// Perbox mounts overlay earlier mounts, so they must be applied after them.
+	mounts = append(mounts, perbox...)
 
 	workdir := rec.Workdir
 	if workdir == "" {
@@ -393,6 +409,22 @@ func (r Real) addWorktree(top string) (path, branch string, err error) {
 		return "", "", fmt.Errorf("recipe: %w", err)
 	}
 	return path, branch, nil
+}
+
+// perboxDir allocates a fresh, empty host dir private to one box for a `perbox:`
+// source, at ~/.dabs/boxes/<id>/<label>, and creates it so the live bind mount
+// resolves. The label only names the dir; the box gets a brand-new empty slice
+// every up.
+func (r Real) perboxDir(label string) (string, error) {
+	home, err := r.data.HomeDir()
+	if err != nil {
+		return "", fmt.Errorf("recipe: home: %w", err)
+	}
+	dir := filepath.Join(home, ".dabs", "boxes", randHex(4), label)
+	if err := r.data.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("recipe: per-box dir: %w", err)
+	}
+	return dir, nil
 }
 
 // castSources rewrites a recipe's sources to bind an existing dabs worktree

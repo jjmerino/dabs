@@ -774,3 +774,50 @@ func TestDoConfirmsEvenWithoutCommand(t *testing.T) {
 		t.Errorf("box touched despite a denied `dabs do`: ups=%v runs=%v", drv.ups, drv.runs)
 	}
 }
+
+// --- tests: recipe target routing (the last dabs.json field) ------------------
+
+// CONTRACT: a recipe's `target` routes the box to that fleet driver (default
+// local) — the one manifest field recipes were missing.
+func TestRecipeTargetRoutesToDriver(t *testing.T) {
+	y := `recipes:
+  m:
+    image: img
+    command: [x]
+    target: remote
+    sources:
+      - mount: /d
+        path: /work
+`
+	fd := baseData()
+	fd.exists["/d"] = true
+	fd.files = map[string][]byte{fd.home + "/.dabs/recipes.yaml": []byte(y)}
+	local := &fakeDriver{built: map[string]bool{"img": true}}
+	remote := &fakeDriver{built: map[string]bool{"img": true}}
+	r := actions.New(
+		map[string]sandbox.Driver{"local": local, "remote": remote},
+		[]string{"local", "remote"}, fstest.MapFS{}, fstest.MapFS{}, fd,
+	)
+	if err := r.Recipe(params.Recipe{Name: "m"}); err != nil {
+		t.Fatalf("Recipe: %v", err)
+	}
+	if len(remote.ups) != 1 || len(local.ups) != 0 {
+		t.Fatalf("target=remote routed wrong: local ups=%d remote ups=%d", len(local.ups), len(remote.ups))
+	}
+}
+
+// CONTRACT: an unknown target fails clearly (proving target flows to driverFor).
+func TestRecipeUnknownTargetErrors(t *testing.T) {
+	y := `recipes:
+  m:
+    image: img
+    command: [x]
+    target: nope
+`
+	fd := baseData()
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "m"})
+	if err == nil || !strings.Contains(err.Error(), "no sandbox target") {
+		t.Fatalf("want unknown-target error, got %v", err)
+	}
+}

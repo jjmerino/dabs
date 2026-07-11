@@ -87,7 +87,7 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 		}
 	}
 
-	drv, err := r.driverFor("") // recipes are a local concern
+	drv, err := r.driverFor(rec.Target) // "" = local; a recipe may target a driver/server
 	if err != nil {
 		return err
 	}

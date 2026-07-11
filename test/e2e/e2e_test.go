@@ -754,8 +754,10 @@ func TestRecipeLocalDabsYamlDefault(t *testing.T) {
 	}
 	out, code := runIn(dir, "dabs recipes")
 	wantExit(t, 0, code)
-	wantContains(t, out, "probe")
-	wantContains(t, out, "(default)")
+	// The default marker is a lipgloss badge that degrades to a bare word when
+	// piped; assert it sits next to the recipe name so a dropped/misattached
+	// marker still fails.
+	wantContains(t, out, "probe default")
 
 	out, code = runIn(dir, "dabs recipe") // no name → default
 	wantExit(t, 0, code)
@@ -853,8 +855,13 @@ func TestServersAddAndList(t *testing.T) {
 	run("dabs servers add s1 host1.example")
 	t.Cleanup(func() { run("dabs servers rm s1") })
 	out, _ := run("dabs servers ls")
+	// The fleet renders as a NAME/VIA/DESTINATION table, so the transport and
+	// host land in separate columns (padding between them) rather than a
+	// contiguous "ssh host1.example". Assert each meaningful token — name,
+	// transport, host — so a missing/garbled value still fails.
 	wantContains(t, out, "s1")
-	wantContains(t, out, "ssh host1.example")
+	wantContains(t, out, "ssh")
+	wantContains(t, out, "host1.example")
 }
 
 func TestServersRemove(t *testing.T) {

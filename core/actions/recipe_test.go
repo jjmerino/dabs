@@ -94,7 +94,13 @@ func (f *fakeData) ReadFile(p string) ([]byte, error) {
 	}
 	return nil, fs.ErrNotExist
 }
-func (f *fakeData) WriteFile(string, []byte, fs.FileMode) error { return nil }
+func (f *fakeData) WriteFile(p string, b []byte, _ fs.FileMode) error {
+	if f.files == nil {
+		f.files = map[string][]byte{}
+	}
+	f.files[p] = append([]byte(nil), b...)
+	return nil
+}
 func (f *fakeData) AppendFile(p string, b []byte, _ fs.FileMode) error {
 	if f.files == nil {
 		f.files = map[string][]byte{}
@@ -561,11 +567,9 @@ func TestCastAttachesWorktreeAndGitDir(t *testing.T) {
         path: /work
 `
 	fd := baseData()
-	wt := "/home/t/.dabs/worktrees/wt1"
-	fd.exists[wt] = true
+	wt := seedWorktreeNode(fd, "wt1", wtState{branch: "dabs/wt1"})
 	fd.exists["/home/t/vault"] = true
 	fd.exists["/repo/.git"] = true // parent store exists (git rev-parse yields a real path)
-	fd.commondir = map[string]string{wt: "/repo/.git"}
 	drv := &fakeDriver{built: map[string]bool{"img": true}}
 	if err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "w", Worktree: "wt1"}); err != nil {
 		t.Fatalf("cast: %v", err)
@@ -602,9 +606,7 @@ func TestCastRecipeWithoutDotSourceErrors(t *testing.T) {
         path: /work
 `
 	fd := baseData()
-	wt := "/home/t/.dabs/worktrees/wt1"
-	fd.exists[wt] = true
-	fd.commondir = map[string]string{wt: "/repo/.git"}
+	seedWorktreeNode(fd, "wt1", wtState{branch: "dabs/wt1"})
 	drv := &fakeDriver{built: map[string]bool{"img": true}}
 	err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "v", Worktree: "wt1"})
 	if err == nil || !strings.Contains(err.Error(), "no `.` source") {

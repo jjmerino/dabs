@@ -19,10 +19,10 @@ type logLine struct {
 	Recipe   string `json:"recipe"`
 }
 
-// readLog parses every JSON line the fake recorded at ~/.dabs/worktrees/log.jsonl.
+// readLog parses every JSON line the fake recorded at ~/.dabs/log.jsonl.
 func readLog(t *testing.T, fd *fakeData) []logLine {
 	t.Helper()
-	b := fd.files[wtBase+"/log.jsonl"]
+	b := fd.files[logPath]
 	var out []logLine
 	for _, line := range strings.Split(string(b), "\n") {
 		line = strings.TrimSpace(line)
@@ -67,8 +67,17 @@ func TestRecipeWorktreeLogsUp(t *testing.T) {
 		t.Fatalf("up entry instance/recipe wrong: %+v", e)
 	}
 	// The worktree the box was cut is the one the fake recorded; path is absolute.
-	if e.Path != fd.worktrees[0] || e.Worktree == "" || !strings.HasPrefix(e.Path, wtBase) {
+	if e.Path != fd.worktrees[0] || e.Worktree == "" || !strings.HasPrefix(e.Path, nodeBase) {
 		t.Fatalf("up entry worktree/path wrong: %+v (created %v)", e, fd.worktrees)
+	}
+	// The journal keys on the NODE's id — NEVER on a path basename. Deriving it
+	// from the path records the data dir ("data") for every worktree, so liveness
+	// keys on a name no node has and every box reads as dead.
+	if e.Worktree == "data" {
+		t.Fatalf("journal keyed on the data dir instead of the node id: %+v", e)
+	}
+	if want := nodeBase + "/" + e.Worktree + "/data"; e.Path != want {
+		t.Fatalf("journal name and path disagree: worktree=%q path=%q, want %q", e.Worktree, e.Path, want)
 	}
 }
 
@@ -89,7 +98,7 @@ func TestRecipeMountLogsNothing(t *testing.T) {
 		t.Fatalf("Recipe: %v", err)
 	}
 	if len(readLog(t, fd)) != 0 {
-		t.Fatalf("plain box should log nothing, got %v", fd.files[wtBase+"/log.jsonl"])
+		t.Fatalf("plain box should log nothing, got %v", fd.files[logPath])
 	}
 }
 
@@ -99,8 +108,8 @@ func TestRecipeMountLogsNothing(t *testing.T) {
 func TestDownLogsWorktreeDownFromLog(t *testing.T) {
 	fd := baseData()
 	fd.files = map[string][]byte{
-		wtBase + "/log.jsonl": []byte(
-			`{"event":"up","ts":"t1","instance":"img-inst","worktree":"proj-aa","path":"` + wtBase + `/proj-aa","recipe":"w"}` + "\n"),
+		logPath: []byte(
+			`{"event":"up","ts":"t1","instance":"img-inst","worktree":"proj-aa","path":"` + nodeBase + `/proj-aa/data","recipe":"w"}` + "\n"),
 	}
 	drv := &fakeDriver{infos: []sandbox.Info{{Name: "img-inst", Driver: "fake"}}}
 	r := newReal("", fd, drv)
@@ -128,7 +137,7 @@ func TestDownPlainBoxLogsNothing(t *testing.T) {
 		t.Fatalf("Down: %v", err)
 	}
 	if len(readLog(t, fd)) != 0 {
-		t.Fatalf("plain box down should log nothing, got %v", fd.files[wtBase+"/log.jsonl"])
+		t.Fatalf("plain box down should log nothing, got %v", fd.files[logPath])
 	}
 }
 
@@ -169,13 +178,9 @@ func TestNonKeepWorktreeRecipeBalancesJournal(t *testing.T) {
 // not a phantom live — liveness is journal ∩ fleet.
 func TestLivenessRequiresFleetAgreement(t *testing.T) {
 	fd := baseData()
-	fd.dirs = map[string][]string{wtBase: {"wtghost"}}
-	fd.commondir = map[string]string{wtBase + "/wtghost": wtBase + "/wtghost/.git"}
-	fd.states = map[string]wtState{wtBase + "/wtghost": {branch: "dabs/gg"}}
-	fd.files = map[string][]byte{
-		wtBase + "/log.jsonl": []byte(
-			`{"event":"up","ts":"t1","instance":"box-gone","worktree":"wtghost","path":"` + wtBase + `/wtghost","recipe":"r"}` + "\n"),
-	}
+	ghost := seedWorktreeNode(fd, "wtghost", wtState{branch: "dabs/gg"})
+	fd.files[logPath] = []byte(
+		`{"event":"up","ts":"t1","instance":"box-gone","worktree":"wtghost","path":"` + ghost + `","recipe":"r"}` + "\n")
 	// Fleet reports NO instances — the box is gone.
 	drv := &fakeDriver{}
 	out := captureStdout(t, func() {

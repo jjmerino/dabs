@@ -114,11 +114,13 @@ func (s Source) Kind() (kind, origin string, err error) {
 	for k, v := range set {
 		kind, origin = k, v
 	}
-	if s.Path == "" {
-		return "", "", fmt.Errorf("source %s:%s missing box path", kind, origin)
-	}
 	return kind, origin, nil
 }
+
+// NeedsBoxPath reports whether this source must say where it lands in a box. A
+// recipe with an image puts its sources somewhere; a recipe without one only
+// makes places, and a place has nowhere to land.
+func (s Source) NeedsBoxPath() bool { return s.Path == "" }
 
 // Get resolves a recipe by name, or errors with the list of known names — so a
 // caller (usually an agent) that guessed wrong sees the real options.

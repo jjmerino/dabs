@@ -13,10 +13,9 @@ import (
 //	    dabs-node.json   — ours: what this node is, and the recipe that made it
 //	    data/            — the user's: what the recipe's `.` resolves to
 //
-// Today the only kind is a worktree. The layout is deliberately kind-agnostic:
-// a node's identity, provenance and lifetime are the same questions whatever
-// was provisioned, so growing a new kind means adding a nest below, not a new
-// directory tree.
+// The layout is kind-agnostic: a node's identity, provenance and lifetime are the
+// same questions whatever was provisioned, so a new kind adds a nest below, not a
+// new directory tree.
 const nodeFile = "dabs-node.json"
 
 // Node is the record at ~/.dabs/nodes/<id>/dabs-node.json. Fields common to
@@ -184,6 +183,10 @@ func (r Real) readNode(id string) (Node, error) {
 	var n Node
 	if err := json.Unmarshal(b, &n); err != nil {
 		return Node{}, fmt.Errorf("node %s: %w", id, err)
+	}
+	// A record with no kind carries a worktree nest, and the nest is what it is.
+	if n.Kind == "" && n.Worktree != nil {
+		n.Kind = KindWorktree
 	}
 	return n, nil
 }

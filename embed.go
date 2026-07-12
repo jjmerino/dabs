@@ -2,8 +2,8 @@ package main
 
 import "embed"
 
-// imagesFS bundles dabs-owned build recipes (the auth box, …) INTO the binary,
-// so commands like `dabs auth claude` build their image from any install.
+// imagesFS bundles dabs-owned build recipes (…) INTO the binary,
+// so a recipe naming a bundled image builds it from any install.
 //
 //go:embed all:images
 var imagesFS embed.FS

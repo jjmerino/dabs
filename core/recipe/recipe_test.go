@@ -81,15 +81,21 @@ func TestSourceKind(t *testing.T) {
 		wantErr string
 	}{
 		{"mount", recipe.Source{Mount: "/a", Path: "/work"}, "mount", ""},
+		{"mkmount", recipe.Source{Mkmount: "/a", Path: "/work"}, "mkmount", ""},
 		{"copy", recipe.Source{Copy: "/a", Path: "/work"}, "copy", ""},
 		{"worktree", recipe.Source{Worktree: ".", Path: "/work"}, "worktree", ""},
 		{"none", recipe.Source{Path: "/work"}, "", "exactly one"},
 		{"two", recipe.Source{Mount: "/a", Copy: "/b", Path: "/work"}, "", "exactly one"},
-		{"no path", recipe.Source{Mount: "/a"}, "", "box path"},
+		// A source with no box path is a source for a recipe that makes a PLACE and
+		// no box — there is nowhere for it to land, and that is not an error.
+		{"no path", recipe.Source{Mount: "/a"}, "mount", ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			kind, _, err := c.src.Kind()
+			if c.name == "no path" && !c.src.NeedsBoxPath() {
+				t.Error("a source with no path must report NeedsBoxPath, so a box recipe can refuse it")
+			}
 			if c.want == "" {
 				if err == nil || !strings.Contains(err.Error(), c.wantErr) {
 					t.Fatalf("want error containing %q, got kind=%q err=%v", c.wantErr, kind, err)

@@ -16,7 +16,7 @@ import (
 type Real struct {
 	drivers map[string]sandbox.Driver // key "local" + config target names
 	order   []string                  // stable iteration order for ls
-	images  fs.FS                     // bundled build recipes (for auth, …)
+	images  fs.FS                     // bundled build recipes (…)
 	data    data.Data                 // host effects (fs/env/git) — the testable seam
 	confirm func(string) bool         // look-before-run gate; defaults to tui.Confirm
 }

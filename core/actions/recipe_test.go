@@ -6,11 +6,13 @@ package actions_test
 // cause), not by mirroring the implementation, so they can actually fail.
 
 import (
+	"encoding/json"
 	"errors"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -81,6 +83,7 @@ type fakeData struct {
 	states    map[string]wtState  // GitState by worktree path
 	removed   []string            // recorded GitRemoveWorktree
 	rmAll     []string            // recorded RemoveAll
+	copies    []string            // recorded CopyDir
 	commondir map[string]string   // GitCommonDir: worktree path -> parent .git (present => a worktree)
 }
 
@@ -102,8 +105,29 @@ func (f *fakeData) WriteFile(p string, b []byte, _ fs.FileMode) error {
 		f.files = map[string][]byte{}
 	}
 	f.files[p] = append([]byte(nil), b...)
+	// A written node record makes its node listable, as it does on a real disk —
+	// otherwise the fake would let a node be written and never found again.
+	if strings.HasSuffix(p, "/"+nodeFileName) {
+		dir := filepath.Dir(p)
+		root := filepath.Dir(dir)
+		if f.dirs == nil {
+			f.dirs = map[string][]string{}
+		}
+		name := filepath.Base(dir)
+		for _, have := range f.dirs[root] {
+			if have == name {
+				return nil
+			}
+		}
+		f.dirs[root] = append(f.dirs[root], name)
+	}
 	return nil
 }
+
+// nodeFileName is the record actions writes for every node. The fake mirrors the
+// real layout so a node written can be listed.
+const nodeFileName = "dabs-node.json"
+
 func (f *fakeData) AppendFile(p string, b []byte, _ fs.FileMode) error {
 	if f.files == nil {
 		f.files = map[string][]byte{}
@@ -137,9 +161,13 @@ func (f *fakeData) MkdirAll(p string, _ fs.FileMode) error {
 }
 func (f *fakeData) MkdirTemp(string, string) (string, error) { return "/tmp/x", nil }
 func (f *fakeData) Getwd() (string, error)                   { return f.cwd, nil }
-func (f *fakeData) RemoveAll(p string) error                 { f.rmAll = append(f.rmAll, p); return nil }
-func (f *fakeData) Getenv(k string) string                   { return f.env[k] }
-func (f *fakeData) LookupEnv(k string) (string, bool)        { v, ok := f.env[k]; return v, ok }
+func (f *fakeData) CopyDir(src, dst string) error {
+	f.copies = append(f.copies, src+" -> "+dst)
+	return nil
+}
+func (f *fakeData) RemoveAll(p string) error          { f.rmAll = append(f.rmAll, p); return nil }
+func (f *fakeData) Getenv(k string) string            { return f.env[k] }
+func (f *fakeData) LookupEnv(k string) (string, bool) { v, ok := f.env[k]; return v, ok }
 func (f *fakeData) ExpandEnv(s string) string {
 	return os.Expand(s, func(k string) string { return f.env[k] })
 }
@@ -1162,4 +1190,80 @@ func TestMissingMountOriginPointsAtMkmount(t *testing.T) {
 	if len(drv.ups) != 0 {
 		t.Errorf("a box was booted despite the bad source: %+v", drv.ups)
 	}
+}
+
+// CONTRACT: a recipe whose `.` source is a COPY mints a NEW workdir node every
+// run — the same way a worktree recipe cuts a new branch every run — and it needs
+// NO GIT to do it. Two runs over one directory give two independent places, which
+// is what lets them be worked in parallel. A LIVE mount is the opposite: the place
+// IS the host directory, so reaching it again is the same node.
+//
+// The fake has no git at all (GitToplevel errors for every dir), so this cannot
+// pass by accident through a worktree.
+func TestCopyRecipeMintsAFreshWorkdirEveryRunWithoutGit(t *testing.T) {
+	fd := baseData()
+	fd.exists["/cwd"] = true
+	// No entry in fd.toplevel: every GitToplevel call errors. There is no repo.
+
+	copyY := `recipes:
+  d:
+    image: img
+    command: [x]
+    sources:
+      - copy: .
+        path: /work
+`
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	real := newReal(copyY, fd, drv)
+	for i := 0; i < 2; i++ {
+		if err := real.Recipe(params.Recipe{Name: "d"}); err != nil {
+			t.Fatalf("run %d: %v", i, err)
+		}
+	}
+	wds := workdirNodes(t, fd)
+	if len(wds) != 2 {
+		t.Fatalf("two copy runs made %d workdir nodes, want 2 (one place per run): %v", len(wds), wds)
+	}
+	if wds[0] == wds[1] {
+		t.Fatalf("both runs reused one workdir node %q; parallel runs would share a directory", wds[0])
+	}
+
+	// A LIVE mount names the host dir itself, so a second run is the same place.
+	fd2 := baseData()
+	fd2.exists["/cwd"] = true
+	mountY := `recipes:
+  m:
+    image: img
+    command: [x]
+    sources:
+      - mount: .
+        path: /work
+`
+	drv2 := &fakeDriver{built: map[string]bool{"img": true}}
+	real2 := newReal(mountY, fd2, drv2)
+	for i := 0; i < 2; i++ {
+		if err := real2.Recipe(params.Recipe{Name: "m"}); err != nil {
+			t.Fatalf("mount run %d: %v", i, err)
+		}
+	}
+	if got := workdirNodes(t, fd2); len(got) != 1 {
+		t.Errorf("two mount runs made %d workdir nodes, want 1 (the same place): %v", len(got), got)
+	}
+}
+
+// workdirNodes reads back the workdir nodes the engine wrote into the fake.
+func workdirNodes(t *testing.T, fd *fakeData) []string {
+	t.Helper()
+	var out []string
+	for path, b := range fd.files {
+		if !strings.HasSuffix(path, "/dabs-node.json") {
+			continue
+		}
+		var n struct{ ID, Kind string }
+		if json.Unmarshal(b, &n) == nil && n.Kind == "workdir" {
+			out = append(out, n.ID)
+		}
+	}
+	sort.Strings(out)
+	return out
 }

@@ -276,12 +276,29 @@ func TestUpCreatesDistinctInstances(t *testing.T) {
 	wantContains(t, out, b)
 }
 
-func TestLsEmpty(t *testing.T) {
+// A reaped box leaves its NODE behind — the marker of what ran and from where —
+// so `ls` still shows it, as gone. What must not survive a reap is a LIVE box.
+func TestLsAfterReapShowsNoLiveBox(t *testing.T) {
 	clean(t)
+	i := up(t)
+	run("dabs down " + i + " --force")
 	out, _ := run("dabs ls")
-	wantContains(t, out, "local")
-	wantContains(t, out, "this machine")
-	wantNotContains(t, out, sandboxName+"-") // none of OUR instances
+	if isLive(out, i) {
+		t.Fatalf("%s still live after down:\n%s", i, out)
+	}
+	wantContains(t, out, i) // its node remains: what ran, and from where
+}
+
+// isLive reports whether ls shows this instance as anything other than gone. The
+// driver names the state (running, ready, …), so the test asks the only question
+// it actually cares about.
+func isLive(ls, instance string) bool {
+	for _, line := range strings.Split(ls, "\n") {
+		if strings.Contains(line, instance) && !strings.Contains(line, "gone") {
+			return true
+		}
+	}
+	return false
 }
 
 func TestLsShowsInstanceAndDriver(t *testing.T) {
@@ -361,13 +378,14 @@ func TestDownOne(t *testing.T) {
 
 func TestDownDryListsAndKeeps(t *testing.T) {
 	clean(t)
-	up(t)
-	up(t)
+	a, b := up(t), up(t)
 	out, _ := run("dabs down " + sandboxName + " --dry")
 	wantContains(t, out, "matches")
 	ls, _ := run("dabs ls")
-	if strings.Count(ls, sandboxName+"-") != 2 {
-		t.Fatalf("expected 2 instances after --dry, got:\n%s", ls)
+	for _, i := range []string{a, b} {
+		if !isLive(ls, i) {
+			t.Fatalf("--dry reaped %s; it must only preview:\n%s", i, ls)
+		}
 	}
 }
 
@@ -377,17 +395,24 @@ func TestDownDryListsAndKeeps(t *testing.T) {
 // fleet; it must refuse and leave everything standing.
 func TestDownRefusesMultiMatchWithoutMultiple(t *testing.T) {
 	clean(t)
-	up(t)
-	up(t)
+	a, b := up(t), up(t)
 	// --force alone against a prefix matching both boxes: reaps NOTHING.
 	run("dabs down " + sandboxName + " --force")
 	out, _ := run("dabs ls")
-	wantContains(t, out, sandboxName+"-")
+	for _, i := range []string{a, b} {
+		if !isLive(out, i) {
+			t.Fatalf("--force alone reaped %s on a multi-match; only --multiple may:\n%s", i, out)
+		}
+	}
 
 	// --multiple is the approval — now they go.
 	run("dabs down " + sandboxName + " --multiple --force")
 	out, _ = run("dabs ls")
-	wantNotContains(t, out, sandboxName+"-")
+	for _, i := range []string{a, b} {
+		if isLive(out, i) {
+			t.Fatalf("%s still live after --multiple --force:\n%s", i, out)
+		}
+	}
 }
 
 func TestDownMissingIsNotError(t *testing.T) {

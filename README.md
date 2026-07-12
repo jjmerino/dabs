@@ -39,36 +39,43 @@ go install github.com/jjmerino/dabs@latest
 
 ## Quick start
 
-Describe the sandbox with two files in your project:
+Describe the box with two files in your project:
 
-```json
-// dabs.json — the manifest: identity + runtime contract
-{ "name": "myproj", "env": { "MY_FLAG": "1" } }
+```yaml
+# dabs.yaml — the recipes: a box is a name, an image, sources, a command
+recipes:
+  myproj:
+    image: { dockerfile: Dockerfile, context: . }
+    command: [sh]
+    env: { MY_FLAG: "1" }
+    sources:
+      - mount: .           # your cwd, live — edits persist on the host
+        path: /work
 ```
 
 ```dockerfile
 # Dockerfile — what "fresh machine" means for your program
 FROM ubuntu:24.04
 WORKDIR /work
-COPY . /work
-RUN ./install.sh
+RUN apt-get update && apt-get install -y git
 ```
 
 Then:
 
 ```bash
-dabs build ./myproj              # build the box's image
-dabs up ./myproj                 # → myproj-a3f9c21d4e02 up   (a NEW pristine box)
+dabs build myproj                # build the box's image
+dabs up myproj                   # → myproj-a3f9c21d4e02 up   (a NEW pristine box)
 dabs ls                          # name  status  driver
 dabs run myproj-a3f 'ls | wc -l'         # run a shell line inside (instance prefixes ok, git-style)
 dabs exec myproj-a3f -- ./mycli --help   # exec an exact command inside (no shell)
+dabs recipe myproj               # boot a box and run its command
 dabs down myproj-a3f             # remove it
 ```
 
 Every `up` creates a **new** instance with a random id — the image is the
 clean state, so "give me a fresh machine" is instant and there is nothing to
-clean up. `down <name> --dry` shows what a name matches; `--force` downs all
-matches.
+clean up. `down <name> --dry` shows what a name matches; a name matching more
+than one instance is refused unless you pass `--multiple`.
 
 ## Remote servers
 
@@ -84,23 +91,56 @@ dabs servers ls                     # name  strategy destination
 dabs servers rm homelab             # unregister (remote sandboxes untouched)
 ```
 
-Route a project to a server with `"target": "homelab"` in its `dabs.json`
-(omit for local). `dabs build`/`up` then run there; `dabs ls` aggregates the
-whole fleet with a target column; `run`/`down` address any instance by
-name wherever it lives.
+Route a recipe to a server with `target: homelab` (omit for local). `dabs
+build`/`up` then run there; `dabs ls` aggregates the whole fleet with a target
+column; `run`/`down` address any instance by name wherever it lives.
 
-## Manifest fields (dabs.json)
+## Recipe fields (dabs.yaml)
+
+A recipe is the whole box spec. Recipes resolve bundled (`sh`) →
+`~/.dabs/recipes.yaml` (global) → `./dabs.yaml` (project), later winning; a
+top-level `default:` names the recipe `build`/`up`/`recipe`/`do` use when given
+no name.
 
 | field | default | meaning |
 |---|---|---|
-| `name` | (required) | sandbox identity; instances are `<name>-<hex>` |
+| `image` | (required) | a bare image NAME to reuse, or `{dockerfile, context}` to build |
 | `workdir` | `/work` | cwd inside the box |
+| `command` | — | what runs in the box |
 | `env` | — | environment inside the box |
-| `dockerfile` | `Dockerfile` | build recipe, relative to the manifest |
-| `context` | `.` | build context, relative to the manifest |
+| `sources` | — | what lands in the box, and how |
+| `target` | local | which fleet driver runs it |
+| `keep` | `false` | keep the box alive after the command finishes |
 
-Paths given to `build`/`up` may be the manifest file or a directory
-containing `dabs.json`.
+Paths given to `build`/`up` may be a `dabs.yaml` or a directory containing one.
+
+### Sources
+
+Each source names its origin with exactly one of four kinds, and a `path`
+inside the box:
+
+| kind | what lands in the box | the host |
+|---|---|---|
+| `mount` | a live bind; the box's writes hit the host | must exist (`ro: true` for read-only) |
+| `mkmount` | a live bind | created (0700) if absent |
+| `worktree` | a fresh git branch off HEAD, mounted live | your tree untouched; reap with `dabs worktrees` |
+| `copy` | a snapshot taken at `up` | untouched |
+
+Host paths may use `~` and `$VAR`. dabs also supplies the box's three node
+spaces to source paths — `$NODE_VOLUME` (survives `down`), `$NODE_EPHEMERAL`
+(`down` asks first), `$NODE_TMP` (`down` reaps quietly) — so a box can keep a
+private, persistent slice of an otherwise shared tree:
+
+```yaml
+sources:
+  - mkmount: ~/.dabs/shared/claude          # a login dir every box shares
+    path: /root/.claude
+  - mkmount: $NODE_VOLUME/claude/projects   # this box's sessions, kept across `down`
+    path: /root/.claude/projects
+```
+
+An agent harness logs in by running the box: the first `mkmount` creates the dir
+empty, you log in once inside, and every later box that mounts it is logged in.
 
 ## Design
 
@@ -108,8 +148,9 @@ containing `dabs.json`.
   `core/sandbox` is the mechanical driver contract (exact names in, state
   out); drivers live under `core/sandbox/<vendor>` and are build-tagged when
   OS-coupled. Zero dependencies.
-- Boxes are copies, not mounts: source enters via image layers at `build`
-  time. Editing your working tree never leaks into a running box.
+- The image is the frozen fresh machine — rebuild it to change what a box
+  carries. What crosses the boundary at runtime is exactly what the recipe's
+  `sources` declare, and nothing else.
 
 ## License
 

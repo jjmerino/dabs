@@ -14,10 +14,9 @@ RUN echo hello-from-image > /work/marker.txt
 
 # A FAKE `claude`: a real CLI on PATH that only "logs in" — it writes the
 # credential Claude Code would (valid JSON, with a non-empty
-# claudeAiOauth.accessToken) and exits 0, so `dabs auth claude` (via
-# DABS_AUTH_IMAGE=dabs-e2e) can be exercised with nothing built in-box. A heredoc
-# keeps the JSON quotes intact — `dabs auth` parses the token, so mangled JSON
-# fails.
+# claudeAiOauth.accessToken) and exits 0. A recipe that mkmounts a shared login
+# dir can then be driven end to end with nothing built in-box. The heredoc keeps
+# the JSON quotes intact.
 RUN cat > /usr/local/bin/claude <<'SH' \
  && chmod +x /usr/local/bin/claude
 #!/bin/sh

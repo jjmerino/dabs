@@ -16,6 +16,7 @@ package e2e
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -395,36 +396,68 @@ func TestDownMissingIsNotError(t *testing.T) {
 	wantContains(t, out, "nothing matches")
 }
 
-// --- auth --------------------------------------------------------------------
+// --- logging a harness in ------------------------------------------------------
 
-// TestAuthClaudeCapturesCredential drives `dabs auth claude` against the FAKE
-// claude baked into the prebuilt base image (a real CLI named `claude` that
-// only "logs in" by writing a credential). It proves the live vault mount
-// captures that credential onto the host: the login writes inside the box, and
-// it lands in the host vault (~/.dabs/auth/claude) because the vault is
-// bind-mounted read-write. This is the driver's mount support under test —
-// bwrap in the runner. DABS_AUTH_IMAGE reuses the prebuilt image, so nothing
-// is built in-box.
-func TestAuthClaudeCapturesCredential(t *testing.T) {
+// CONTRACT: there is no login verb. A recipe mkmounts a shared login dir; the
+// FIRST box creates it (mkmount, not mount — the dir is not there yet), the
+// harness logs in inside the box, and the credential lands on the HOST because
+// the mount is live. Every LATER box that names the same dir is already logged
+// in. This is the whole mechanism, so it is tested as one story.
+//
+// The fake `claude` baked into the base image is a real CLI on PATH that only
+// "logs in": it writes the credential Claude Code would and exits.
+func TestSharedLoginDirIsCreatedCapturedAndReusedByEveryBox(t *testing.T) {
 	clean(t)
-	t.Setenv("DABS_AUTH_IMAGE", sandboxName) // reuse the prebuilt base image
+	installRecipes(t)
+	shared := filepath.Join(home, ".dabs", "shared", "claude")
+	cred := filepath.Join(shared, ".credentials.json")
 
-	out, code := run("dabs auth claude")
+	// It does not exist yet. mkmount must create it; a plain mount would refuse.
+	if _, err := os.Stat(shared); !os.IsNotExist(err) {
+		t.Fatalf("shared login dir already exists before any box ran: %v", err)
+	}
+
+	dir := filepath.Join(home, "proj")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// First box: creates the dir, logs in, credential writes through to the host.
+	out, code := runIn(dir, "dabs recipe claude-mounted")
 	wantExit(t, 0, code)
-	wantContains(t, out, "claude authenticated")
+	wantContains(t, out, "fake-claude: login ok")
 
-	cred := filepath.Join(home, ".dabs", "auth", "claude", ".credentials.json")
 	data, err := os.ReadFile(cred)
 	if err != nil {
-		t.Fatalf("credential not captured to vault: %v", err)
+		t.Fatalf("credential not captured to the host: %v", err)
 	}
 	wantContains(t, string(data), "fake-token")
+
+	// Second box: the login is already there, mounted from the same host dir.
+	out2, code2 := runIn(dir, "dabs run "+upRecipeBox(t, dir)+" cat /root/.claude/.credentials.json")
+	wantExit(t, 0, code2)
+	wantContains(t, out2, "fake-token")
+}
+
+// upRecipeBox boots a box from the shared-login recipe and returns its instance,
+// so a test can look inside a box the recipe provisioned.
+func upRecipeBox(t *testing.T, dir string) string {
+	t.Helper()
+	out, code := runIn(dir, "dabs up claude-mounted")
+	if code != 0 {
+		t.Fatalf("up: %s", out)
+	}
+	fields := strings.Fields(out)
+	if len(fields) == 0 {
+		t.Fatalf("up printed nothing useful: %q", out)
+	}
+	return fields[0]
 }
 
 // --- recipes -----------------------------------------------------------------
 
 // The e2e recipes: three made-up recipes that each place the code into /work a
-// different way (mount / copy / worktree) and mount the auth vault, then run the
+// different way (mount / copy / worktree) and mkmount the shared login dir, then run the
 // FAKE `claude` (which writes a credential and exits). They use the prebuilt
 // base image (dabs-e2e) so nothing is built in-box. Written to the user's
 // ~/.dabs/recipes.yaml, so this also exercises user-registry override + merge.
@@ -433,7 +466,7 @@ const e2eRecipes = `recipes:
     image: dabs-e2e
     command: [sh, -c, "echo box-was-here > /work/from-box.txt; claude"]
     sources:
-      - mount: ~/.dabs/auth/claude
+      - mkmount: ~/.dabs/shared/claude
         path: /root/.claude
       - mount: .
         path: /work
@@ -441,7 +474,7 @@ const e2eRecipes = `recipes:
     image: dabs-e2e
     command: [sh, -c, "cat /work/seed.txt; echo box > /work/from-box.txt; claude"]
     sources:
-      - mount: ~/.dabs/auth/claude
+      - mkmount: ~/.dabs/shared/claude
         path: /root/.claude
       - copy: .
         path: /work
@@ -449,7 +482,7 @@ const e2eRecipes = `recipes:
     image: dabs-e2e
     command: [sh, -c, "echo box-was-here > /work/from-box.txt; claude"]
     sources:
-      - mount: ~/.dabs/auth/claude
+      - mkmount: ~/.dabs/shared/claude
         path: /root/.claude
       - worktree: .
         path: /work
@@ -467,17 +500,15 @@ const e2eRecipes = `recipes:
         path: /work
 `
 
-// installRecipes writes the e2e recipes to ~/.dabs/recipes.yaml and ensures the
-// auth vault dir exists (recipes mount it, so the bind needs a real host dir).
+// installRecipes writes the e2e recipes to ~/.dabs/recipes.yaml. The shared login
+// dir they mkmount is NOT created here: creating it is the recipe's job, and that
+// is under test.
 func installRecipes(t *testing.T) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Join(home, ".dabs"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(home, ".dabs", "recipes.yaml"), []byte(e2eRecipes), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(home, ".dabs", "auth", "claude"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -508,7 +539,7 @@ func gitRepo(t *testing.T, dir string) {
 
 func vaultHasToken(t *testing.T) {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join(home, ".dabs", "auth", "claude", ".credentials.json"))
+	data, err := os.ReadFile(filepath.Join(home, ".dabs", "shared", "claude", ".credentials.json"))
 	if err != nil {
 		t.Fatalf("vault mount failed: credential not written back to host: %v", err)
 	}
@@ -833,8 +864,9 @@ func TestWorktreeBoxLifecycleLog(t *testing.T) {
 	}
 }
 
-// worktreeDirs lists the worktree names under ~/.dabs/worktrees, excluding the
-// box-lifecycle journal (log.jsonl) that now lives in the same directory.
+// worktreeDirs lists the WORKTREE nodes. Every kind of node lives under
+// ~/.dabs/nodes — project, workdir, worktree, box — so the kind in each node's
+// record is what tells them apart, never the directory listing.
 func worktreeDirs(t *testing.T) []string {
 	t.Helper()
 	entries, err := os.ReadDir(filepath.Join(home, ".dabs", "nodes"))
@@ -846,14 +878,26 @@ func worktreeDirs(t *testing.T) []string {
 	}
 	var out []string
 	for _, e := range entries {
-		out = append(out, e.Name())
+		if !e.IsDir() {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(home, ".dabs", "nodes", e.Name(), "dabs-node.json"))
+		if err != nil {
+			continue
+		}
+		var n struct {
+			Kind string `json:"kind"`
+		}
+		if json.Unmarshal(b, &n) == nil && n.Kind == "worktree" {
+			out = append(out, e.Name())
+		}
 	}
 	return out
 }
 
 // worktreeData is the checkout a worktree node owns — what a recipe's `.` sees.
 func worktreeData(name string) string {
-	return filepath.Join(home, ".dabs", "nodes", name, "data")
+	return filepath.Join(home, ".dabs", "nodes", name, "ephemeral", "worktree")
 }
 
 // journalPath is the box-lifecycle journal.

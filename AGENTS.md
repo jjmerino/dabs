@@ -13,10 +13,12 @@ It decides what every bare command does. Nothing below is meaningful until you
 know what is in it:
 
 - **`default:`** is what `dabs build`, `dabs up`, `dabs recipe`, and `dabs do`
-  resolve to when you pass no name. It is NOT a shell by default. In this repo
-  it is `review` — a `claude -p` agent — so a bare `dabs do -c 'echo hi'`
-  appends your argv to Claude's, boots an agent, and prints nothing for minutes.
-  Want a shell? Name one: `dabs do` is not it; `dabs recipe sh -c 'echo hi'` is.
+  resolve to when you pass no name. It is NOT a shell. A `default:` naming a
+  `claude -p` agent turns a bare `dabs do -c 'echo hi'` into your argv appended
+  to Claude's — an agent that boots and prints nothing for minutes. This repo
+  sets no `default:`, so `build`/`up`/`recipe` with no name list the choices and
+  `dabs do` falls back to the bundled `sh` box. Name the recipe you mean:
+  `dabs recipe sh -c 'echo hi'`.
 - **Which recipes exist**, and what each one mounts, copies, and runs. `dabs
   recipes` lists them; `dabs recipes --print` dumps the bundled ones.
 
@@ -61,8 +63,8 @@ know what is in it:
 
    Tool- or project-specific recipes are NOT bundled — they live in your
    `~/.dabs/recipes.yaml` (global) or a project's `./dabs.yaml`. A Claude Code
-   box, for instance, mounts YOUR auth vault, so it's yours to define, not
-   dabs's to ship. This repo's own `dabs.yaml` defines `claude`, `fresh-claude`,
+   box, for instance, mounts YOUR login dir, so it's yours to define, not dabs's
+   to ship. This repo's own `dabs.yaml` defines `claude`, `fresh-claude`,
    `review`, and more — copy those as a starting point:
 
    ```yaml
@@ -72,11 +74,18 @@ know what is in it:
        command: [claude]
        env: { CLAUDE_CONFIG_DIR: /root/.claude }
        sources:
-         - mount: ~/.dabs/auth/claude   # your shared vault — dabs mounts it, never copies
+         - mkmount: ~/.dabs/shared/claude       # the login dir, shared by every box that names it
            path: /root/.claude
-         - mount: .                     # your cwd, live — edits persist on the host
+         - mkmount: $NODE_VOLUME/claude/projects # this box's sessions; they survive `down`
+           path: /root/.claude/projects
+         - mount: .                             # your cwd, live — edits persist on the host
            path: /work
    ```
+
+   **Logging a harness in is just running the recipe.** `mkmount:` creates its
+   host dir (0700) if it isn't there, so the first box boots with an empty login
+   dir, Claude says "not logged in", you `/login` once inside, and every later box
+   that mounts that dir is logged in. There is no separate login command.
 
    Recipes resolve **bundled (`sh`) → `~/.dabs/recipes.yaml` (global) →
    `./dabs.yaml` (project)**, later winning. A project's `dabs.yaml` can add
@@ -96,9 +105,35 @@ know what is in it:
    **`do` appends — it does not give you a shell.** What you get depends entirely
    on the default recipe's own `command`. Against the bundled `sh` box,
    `dabs do -c 'echo hi'` runs `sh -c 'echo hi'`. Against a recipe whose command
-   is `claude -p '…'` — like this repo's `review` default — the same argv is
-   appended to *Claude's* command line, which is almost never what you meant.
-   Read `dabs.yaml`, then pick the recipe explicitly.
+   is `claude -p '…'`, the same argv is appended to *Claude's* command line, which
+   is almost never what you meant. Read `dabs.yaml`, then pick the recipe
+   explicitly.
+
+   **Sources — four kinds.** Each entry names its origin with exactly one of:
+
+   | kind | what lands in the box | the host |
+   |---|---|---|
+   | `mount` | a live bind; the box's writes hit the host | must exist — a missing origin is a typo, and dabs refuses it |
+   | `mkmount` | a live bind | created (0700) if absent — say it where you mean "provision this" |
+   | `worktree` | a fresh git branch off HEAD, mounted live | your tree is untouched; reap with `dabs worktrees` |
+   | `copy` | a snapshot taken at `up` | untouched |
+
+   **Nodes and their three spaces.** A node is a marker for a place dabs
+   provisioned — kind `project | workdir | worktree | box`, chained
+   `project → (workdir | worktree)? → box`. Every node has three directories, and
+   the one a recipe mounts declares what happens to the bytes (`down` reads the
+   space, not the recipe). A source path may name the box node's spaces:
+
+   ```
+   $NODE_VOLUME      survives `down`       — sessions, caches
+   $NODE_EPHEMERAL   `down` asks first     — work you would miss
+   $NODE_TMP         `down` reaps quietly  — scratch
+   ```
+
+   dabs substitutes them into source paths only; they are not environment
+   variables inside the box. An `mkmount:` into `$NODE_VOLUME` nested over a
+   shared mount gives one box its own persistent slice of an otherwise shared
+   tree — that is how the `claude` recipe keeps its sessions across a `down`.
 
    **Recipes provision; skills prompt.** A recipe describes how the box is
    provisioned (image, sources, command) and must NOT bake agent instructions
@@ -164,6 +199,14 @@ e.g. review) at work another agent already started, without cutting a new branch
   pipes/globs/`&&` work, no `--` needed); `dabs do <cmd…>` appends to a recipe
   (see below). exec/run are your direct peek into a box (inspection, setup,
   planting fixtures).
+- Mounts land parent-before-child whatever order the recipe declares them in:
+  actions sort them by box-path depth, because bwrap binds in argv order (a
+  parent listed after its child silently masks it) while apple/docker resolve
+  nesting themselves. Declaration order is yours to choose.
+- `dabs down` reaps a box node's spaces: `tmp/` silently, `ephemeral/` only with
+  consent when it holds files, `volume/` never. A worktree's checkout lives in
+  its OWN node's ephemeral space, so `down` never touches it — `dabs worktrees
+  rm` does, and it still refuses unreviewed work.
 - Everything dabs owns is namespaced: it only ever sees or removes its own
   boxes.
 - Keep the build context under your home directory. A context under
@@ -182,8 +225,10 @@ recipes:
     env: { KEY: value }
     target: <server>               # route to a registered server; omit for local
     sources:
-      - mount: .                   # what lands in the box (mount/copy/worktree)
-        path: /work
+      - mount: .                   # what lands in the box
+        path: /work                #   kinds: mount | mkmount | worktree | copy
+      - mkmount: $NODE_VOLUME/cache  # a box-private dir that survives `down`
+        path: /root/.cache
 ```
 
 `dabs build [recipe|path]` builds a recipe's image; `dabs up [recipe|path]`

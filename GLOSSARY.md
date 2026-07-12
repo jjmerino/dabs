@@ -104,11 +104,6 @@ print `(no instances)`.
 *Used in:* `cli/commands.go:30`, `core/actions/ls.go:11-13,40`,
 `core/sandbox/sandbox.go:55` (`Driver.Ls`).
 
-### auth
-Log a harness into a persistent vault that future boxes mount (e.g.
-`auth claude`).
-*Used in:* `cli/commands.go:20,34-39`, `core/actions/auth.go`.
-
 ### servers
 Manage registered remote servers: `servers [ls] | add <name> [host] | rm <name>`.
 *Used in:* `cli/commands.go:31,151-182`, `core/config/config.go`.
@@ -156,7 +151,7 @@ Which fleet driver runs a recipe/box — `""` = local, or a server / driver-kind
 name. Servers are one kind of target; future driver kinds (modal, daytona) will
 be targets without being servers.
 *Used in:* `core/recipe/recipe.go:37`, `core/actions/real.go:15,37`,
-`core/config/config.go:15-16`, `dabs.json` (`"target"`).
+`core/config/config.go:15-16`, `dabs.yaml` (`target:`).
 
 ### workdir / env
 The cwd (`/work` default) and environment variables inside the box.
@@ -169,30 +164,69 @@ The cwd (`/work` default) and environment variables inside the box.
 
 A recipe's `sources:` list places things into the box at a `path`. Exactly one
 of the four kinds names each source's origin and picks HOW it lands.
-*All defined in:* `core/recipe/recipe.go:66-108`, `core/actions/recipe.go`.
+*All defined in:* `core/recipe/recipe.go:67-121`, `core/actions/recipe.go`.
 
 ### mount
-A live bind — the box's writes hit the host and persist past the box (vault,
-pairing, the cwd). `ro: true` makes it read-only.
-*Used in:* `core/recipe/recipe.go:70,82`, `core/sandbox/sandbox.go:14-21`
+A live bind — the box's writes hit the host and persist past the box (a shared
+login dir, the cwd). The host path must exist: a missing one is a typo, and dabs
+refuses it. `ro: true` makes it read-only.
+*Used in:* `core/recipe/recipe.go:69-72,87`, `core/sandbox/sandbox.go:14-21`
 (`Mount`).
+
+### mkmount
+A live bind that CREATES its host origin (0700) if it is not there. Say it where
+you mean "provision this": a login dir a harness will fill, a session dir that
+starts empty.
+*Used in:* `core/recipe/recipe.go:72-74,88`, `core/actions/recipe.go` (`buildBox`).
 
 ### worktree
 A fresh git branch off HEAD of the named repo, mounted live — how an agent gets
-an isolated, reconcilable checkout. Reaped via `dabs worktrees`.
-*Used in:* `core/recipe/recipe.go:71,80`, `AGENTS.md`.
+an isolated, reconcilable checkout. The checkout lives in its own worktree node's
+ephemeral space. Reaped via `dabs worktrees`.
+*Used in:* `core/recipe/recipe.go:75,89`, `AGENTS.md`.
 
 ### copy
 A snapshot taken at `up` time — the box owns it, the host is untouched.
-*Used in:* `core/recipe/recipe.go:72,81`.
+*Used in:* `core/recipe/recipe.go:76,90`.
 
-### perbox
-A fresh, empty, box-private host dir mounted live. Its value is a LABEL (not a
-host path); the dir is allocated per box under `~/.dabs/boxes/<id>/<label>` and
-starts empty — used to give one box a private slice nested over an otherwise
-shared mount.
-*Used in:* `core/recipe/recipe.go:73-79,84`,
-`core/actions/recipe.go:236-244,598-602` (`perboxDir`).
+---
+
+## Nodes and spaces
+
+### node
+A marker for one place dabs provisioned, recorded at `~/.dabs/nodes/<id>/`. It
+carries a `kind`, a `parent`, and the recipe that made it — so listing, reaping
+and casting read what dabs wrote rather than sniffing the filesystem.
+*Used in:* `core/actions/node.go:20-73`.
+
+### kind (of node)
+What a node marks: **project** (the directory a command ran from — dabs records
+it and never reaps it), **workdir** (a host directory a recipe mounted or copied
+as `.`), **worktree** (a git worktree dabs cut), **box** (one running sandbox).
+The chain is constrained to `project → (workdir | worktree)? → box`: boxes never
+nest, a worktree is never cut inside a box.
+*Used in:* `core/actions/node.go:52-65` (`NodeKind`).
+
+### space
+One of the three directories every node offers. Which one a recipe mounts
+declares what happens to the bytes — convention, not configuration: `down` reads
+the space, not the recipe.
+
+| space | `down` |
+|---|---|
+| `volume/` | keeps it |
+| `ephemeral/` | asks before deleting a non-empty one |
+| `tmp/` | removes it silently |
+
+*Used in:* `core/actions/node.go:106-126`, `core/actions/down.go:54-95`
+(`reapBoxSpaces`).
+
+### $NODE_VOLUME / $NODE_EPHEMERAL / $NODE_TMP
+The box node's three spaces, supplied by dabs to source paths so a recipe can
+name them without knowing an id. They are substituted in source paths ONLY — not
+exported into the box's environment.
+*Used in:* `core/actions/recipe.go` (`mintBoxNode`, `expandPathWith`),
+`core/recipe/recipe.go:79-85`.
 
 ---
 
@@ -280,6 +314,6 @@ Same artifact, two names — folds into the resolution of cluster #1 (drivers ke
 
 The reach-in and teardown vocabulary was used confidently and correctly by naive
 users: `dabs run <instance>` and `dabs down <instance>`. The source kinds
-(`mount`/`worktree`/`copy`/`perbox`), `recipe`, `cast`, `up`, and `do` did not
+(`mount`/`mkmount`/`worktree`/`copy`), `recipe`, `cast`, `up`, and `do` did not
 surface as points of confusion. The confusion is specifically the lifecycle
 noun, and specifically at boot/list/image time.

@@ -35,6 +35,11 @@ func (r Real) Down(p params.Down) error {
 		return fmt.Errorf("%q matches %d instances; pass --multiple to down all of them", p.Instance, len(matches))
 	}
 	for _, m := range matches {
+		// Reap the box's spaces BEFORE the box, so a refusal leaves the box up and
+		// the state intact rather than half-gone.
+		if err := r.reapBoxSpaces(m.name, p.Force); err != nil {
+			return err
+		}
 		if err := m.driver.Down(m.name); err != nil {
 			return err
 		}
@@ -44,4 +49,73 @@ func (r Real) Down(p params.Down) error {
 		fmt.Fprintln(os.Stdout, tui.Success("%s down", tui.Accent(m.name)))
 	}
 	return nil
+}
+
+// reapBoxSpaces applies each space's promise to the box node behind an instance:
+// tmp/ goes silently, ephemeral/ goes only with consent when it holds something,
+// and volume/ stays. The node record stays too — it is the marker of what ran and
+// from where.
+//
+// The space decides, not the recipe, so `down` never has to interpret intent.
+//
+// A worktree lives in its OWN node's ephemeral space, not the box's, so `down`
+// never reaps a checkout — `dabs worktrees rm` does, and it still refuses
+// unreviewed work.
+//
+// A box with no node has nothing to reap and is not an error.
+func (r Real) reapBoxSpaces(instance string, force bool) error {
+	n, ok := r.boxNodeFor(instance)
+	if !ok {
+		return nil
+	}
+	tmp, err := r.resolveNodeSpace(n.ID, SpaceTmp)
+	if err != nil {
+		return err
+	}
+	if err := r.data.RemoveAll(tmp); err != nil {
+		return fmt.Errorf("down: %s: %w", tmp, err)
+	}
+
+	eph, err := r.resolveNodeSpace(n.ID, SpaceEphemeral)
+	if err != nil {
+		return err
+	}
+	held, err := r.spaceHolds(eph)
+	if err != nil {
+		return err
+	}
+	if !held {
+		return r.data.RemoveAll(eph)
+	}
+	if !force && !r.confirm(fmt.Sprintf("%s holds files that `down` will delete.\n%s\nDelete them?",
+		tui.Accent(n.ID), tui.Muted(eph))) {
+		return fmt.Errorf("down: %s: kept (its ephemeral space holds files)", n.ID)
+	}
+	return r.data.RemoveAll(eph)
+}
+
+// spaceHolds reports whether a space has anything worth asking about. Absent or
+// empty holds nothing.
+func (r Real) spaceHolds(dir string) (bool, error) {
+	entries, err := r.data.ReadDir(dir)
+	if err != nil {
+		return false, nil // absent — nothing to reap
+	}
+	return len(entries) > 0, nil
+}
+
+// boxNodeFor finds the box node dabs wrote for an instance. A node id is minted
+// before its box exists, so the link is recorded on the node, never derived from
+// the name.
+func (r Real) boxNodeFor(instance string) (Node, bool) {
+	nodes, err := r.listNodes()
+	if err != nil {
+		return Node{}, false
+	}
+	for _, n := range nodes {
+		if n.Kind == KindBox && n.Instance == instance {
+			return n, true
+		}
+	}
+	return Node{}, false
 }

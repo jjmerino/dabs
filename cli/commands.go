@@ -16,7 +16,6 @@ type Command struct {
 // Commands maps each CLI-facing command name to its runner.
 var Commands = map[string]Command{
 	"build":     {(*CLI).runBuild},
-	"auth":      {(*CLI).runAuth},
 	"recipe":    {(*CLI).runRecipe},
 	"do":        {(*CLI).runDo},
 	"cast":      {(*CLI).runCast},
@@ -39,7 +38,6 @@ type cmdDoc struct{ Help, Args string }
 
 var commandDocs = map[string]cmdDoc{
 	"build":     {"build a recipe's box image: build [recipe|path] (no name → dabs.yaml default)", "build [recipe|path]"},
-	"auth":      {"log a harness into a persistent vault future boxes mount: auth claude", "auth <provider>"},
 	"recipe":    {"run a named recipe box: recipe <name> [cmd…] (no name → dabs.yaml default)", "recipe [<name>] [cmd…]"},
 	"do":        {"run a command in a throwaway box via the default recipe (else sh): do <cmd…>", "do <cmd…>"},
 	"cast":      {"run a recipe onto an existing worktree: cast <recipe> <worktree>", "cast <recipe> <worktree>"},
@@ -51,16 +49,6 @@ var commandDocs = map[string]cmdDoc{
 	"down":      {"stop + remove an instance by name (--multiple to act on several matches)", "down [--force] [--dry] [--multiple] <instance>"},
 	"ls":        {"list sandboxes", "ls"},
 	"servers":   {"manage registered servers: servers [ls] | add <name> [host] | rm <name>", "servers [ls | add <name> [host] | rm <name>]"},
-}
-
-func (c *CLI) runAuth(args []string) error {
-	if wantsHelp(args) {
-		return HelpRequestedError{helpText("auth", nil)}
-	}
-	if len(args) != 1 {
-		return BadArgsError{Cmd: "auth", Reason: "usage: auth <provider> (e.g. auth claude)"}
-	}
-	return c.actions.Auth(params.Auth{Provider: args[0]})
 }
 
 func (c *CLI) runRecipe(args []string) error {

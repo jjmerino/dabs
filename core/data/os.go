@@ -177,3 +177,13 @@ func (OS) GitRemoveWorktree(worktree string) error {
 	}
 	return nil
 }
+
+// CopyDir copies src's contents into dst with cp(1), which preserves modes,
+// symlinks and hardlinks — a naive walk does not.
+func (OS) CopyDir(src, dst string) error {
+	out, err := exec.Command("cp", "-a", src+"/.", dst).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("copy %s -> %s: %w: %s", src, dst, err, out)
+	}
+	return nil
+}

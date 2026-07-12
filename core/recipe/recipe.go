@@ -65,34 +65,42 @@ func (r *ImageRef) UnmarshalJSON(b []byte) error {
 }
 
 // Source is one thing placed into the box at Path. Exactly one of Mount /
-// Worktree / Copy / Perbox names the origin and picks HOW it lands:
-//   - mount:    a live bind — the box's writes hit the host (vault, pairing).
+// Mkmount / Worktree / Copy names the origin and picks HOW it lands:
+//   - mount:    a live bind — the box's writes hit the host. The host path must
+//     exist; a missing one is a typo, not an instruction.
+//   - mkmount:  a live bind that CREATES the host path first (0700) if it is not
+//     there. Say it where you mean "provision this": a login dir a harness will
+//     fill, a session dir that starts empty.
 //   - worktree: a fresh git branch off HEAD of the named repo, mounted live.
 //   - copy:     a snapshot taken at up time — the box owns it, host untouched.
-//   - perbox:   a fresh, empty, box-private host dir, mounted live. Its value is
-//     a LABEL (not a host path): the dir is allocated per box (under
-//     ~/.dabs/boxes/<id>/<label>), starts empty, and has no shared host origin —
-//     so a bind nested over an earlier mount (e.g. Claude's projects/ over the
-//     shared vault) gives that box its own private slice of an otherwise shared
-//     tree.
 //
-// Host paths may use ~ and $VAR/${VAR}; they are expanded at load-adjacent time.
+// Host paths may use ~ and $VAR/${VAR}. dabs supplies the running box's node
+// spaces as variables, so a source can point at them without knowing an id:
+//
+//	$NODE_VOLUME     survives `down`      — sessions, caches
+//	$NODE_EPHEMERAL  `down` asks first    — work you would miss
+//	$NODE_TMP        `down` reaps quietly — scratch
+//
+// A mkmount into $NODE_VOLUME nested over a shared mount gives the box its own
+// persistent slice of an otherwise shared tree.
 type Source struct {
 	Mount    string `json:"mount,omitempty"`
+	Mkmount  string `json:"mkmount,omitempty"`
 	Worktree string `json:"worktree,omitempty"`
 	Copy     string `json:"copy,omitempty"`
-	Perbox   string `json:"perbox,omitempty"`
 	Path     string `json:"path"`         // absolute destination inside the box
 	RO       bool   `json:"ro,omitempty"` // for mount: read-only
 }
 
-// Kind returns which source strategy this entry uses, plus its origin (a host
-// path for mount/worktree/copy, a per-box label for perbox). An entry that names
-// none (or more than one) is invalid.
+// Kind returns which source strategy this entry uses, plus its host origin. An
+// entry that names none (or more than one) is invalid.
 func (s Source) Kind() (kind, origin string, err error) {
 	set := map[string]string{}
 	if s.Mount != "" {
 		set["mount"] = s.Mount
+	}
+	if s.Mkmount != "" {
+		set["mkmount"] = s.Mkmount
 	}
 	if s.Worktree != "" {
 		set["worktree"] = s.Worktree
@@ -100,20 +108,19 @@ func (s Source) Kind() (kind, origin string, err error) {
 	if s.Copy != "" {
 		set["copy"] = s.Copy
 	}
-	if s.Perbox != "" {
-		set["perbox"] = s.Perbox
-	}
 	if len(set) != 1 {
-		return "", "", fmt.Errorf("source for %q must set exactly one of mount/worktree/copy/perbox", s.Path)
+		return "", "", fmt.Errorf("source for %q must set exactly one of mount/mkmount/worktree/copy", s.Path)
 	}
 	for k, v := range set {
 		kind, origin = k, v
 	}
-	if s.Path == "" {
-		return "", "", fmt.Errorf("source %s:%s missing box path", kind, origin)
-	}
 	return kind, origin, nil
 }
+
+// NeedsBoxPath reports whether this source must say where it lands in a box. A
+// recipe with an image puts its sources somewhere; a recipe without one only
+// makes places, and a place has nowhere to land.
+func (s Source) NeedsBoxPath() bool { return s.Path == "" }
 
 // Get resolves a recipe by name, or errors with the list of known names — so a
 // caller (usually an agent) that guessed wrong sees the real options.

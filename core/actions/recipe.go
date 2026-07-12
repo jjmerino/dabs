@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/jjmerino/dabs/core/params"
@@ -65,6 +66,12 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 		return err
 	}
 	command := append(append([]string{}, rec.Command...), extra...)
+	// A recipe with no image is a recipe for a PLACE, not a box: it provisions its
+	// nodes (a worktree, a directory) and stops. Nodes do not need a box; a box
+	// mounts what a node owns.
+	if rec.Image.Name == "" && rec.Image.Dockerfile == "" {
+		return r.provisionNodes(name, rec, worktree)
+	}
 	if len(command) == 0 {
 		return fmt.Errorf("recipe %q: no command to run", name)
 	}
@@ -93,10 +100,17 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 		return err
 	}
 
+	// Name the box's node first: a source may mount one of its spaces, so the
+	// paths must exist as values before anything is validated or built.
+	boxID, vars, err := r.mintBoxNode(name)
+	if err != nil {
+		return err
+	}
+
 	// Validate every source BEFORE any side effect, so a bad recipe, a non-git
 	// dir, a repo with no commits, or a missing source path all fail without
 	// building an image or touching the box.
-	resolved, err := r.validateSources(name, sources)
+	resolved, err := r.validateSources(name, sources, vars)
 	if err != nil {
 		return err
 	}
@@ -106,7 +120,7 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 		return err
 	}
 
-	instance, kept, err := r.buildBox(drv, name, rec, image, sources, resolved)
+	instance, kept, err := r.buildBox(drv, name, boxID, rec, image, sources, resolved)
 	if err != nil {
 		return err
 	}
@@ -146,6 +160,121 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 	return nil
 }
 
+// sortMountsByDepth orders mounts parent-before-child by box path, so a mount
+// NESTED inside another lands on top of it instead of under it.
+//
+// Drivers do not agree on this. bwrap binds in argv order, so a parent listed
+// after its child masks the child — silently, with the parent's own content at
+// the child's path. Apple's `container` and docker resolve nesting themselves and
+// do not care. A recipe authored on macOS would therefore break on Linux, so the
+// order is decided HERE and every driver gets the same one.
+//
+// Stable: mounts at the same depth keep their declared order.
+func sortMountsByDepth(mounts []sandbox.Mount) {
+	sort.SliceStable(mounts, func(i, j int) bool {
+		return pathDepth(mounts[i].Path) < pathDepth(mounts[j].Path)
+	})
+}
+
+// pathDepth counts the segments in a box path: /work → 1, /root/.claude → 2.
+func pathDepth(p string) int {
+	return len(strings.Split(strings.Trim(filepath.Clean(p), "/"), "/"))
+}
+
+// provisionNodes runs a recipe that has no image: it marks the project, cuts
+// whatever places the recipe declares, and prints them. There is no box, so
+// nothing is mounted and nothing is torn down — the places persist, and a later
+// recipe (or `dabs cast`) can put a box on one.
+func (r Real) provisionNodes(name string, rec recipe.Recipe, worktree string) error {
+	if worktree != "" {
+		return fmt.Errorf("recipe %q: has no image, so there is no box to cast onto a worktree", name)
+	}
+	project, err := r.ensureProjectNode(name)
+	if err != nil {
+		return err
+	}
+	made := 0
+	for _, s := range rec.Sources {
+		kind, origin, err := s.Kind()
+		if err != nil {
+			return fmt.Errorf("recipe %q: %w", name, err)
+		}
+		host, err := r.expandPath(origin)
+		if err != nil {
+			return fmt.Errorf("recipe %q: %w", name, err)
+		}
+		if host, err = r.absPath(host); err != nil {
+			return fmt.Errorf("recipe %q: %w", name, err)
+		}
+		switch kind {
+		case "worktree":
+			top, err := r.data.GitToplevel(host)
+			if err != nil {
+				return fmt.Errorf("recipe %q: worktree %s: %w", name, origin, err)
+			}
+			wt, branch, id, err := r.addWorktree(top, name, project)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(os.Stdout, "%s %s %s %s\n", tui.Success("worktree"), tui.Accent(id), tui.Muted("branch "+branch+" ·"), tui.Muted(wt))
+			made++
+		case "copy", "mount":
+			id, err := r.addWorkdir(host, name, project, kind == "copy")
+			if err != nil {
+				return err
+			}
+			dir, err := r.workdirData(id)
+			if err != nil {
+				return err
+			}
+			if kind == "copy" {
+				if err := r.data.CopyDir(host, dir); err != nil {
+					return fmt.Errorf("recipe %q: copy %s: %w", name, host, err)
+				}
+			}
+			fmt.Fprintf(os.Stdout, "%s %s %s\n", tui.Success("workdir"), tui.Accent(id), tui.Muted(dir))
+			made++
+		}
+	}
+	if made == 0 {
+		return fmt.Errorf("recipe %q: has no image and no source that makes a place — it would do nothing", name)
+	}
+	return nil
+}
+
+// workdirData is the directory a workdir node owns: its own copy of the code,
+// in the node's ephemeral space, so `down` asks before reaping it and you can
+// read it on the host.
+func (r Real) workdirData(id string) (string, error) {
+	eph, err := r.resolveNodeSpace(id, SpaceEphemeral)
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(eph, "work")
+	return dir, r.data.MkdirAll(dir, 0o755)
+}
+
+// mintBoxNode names the box's node before the box exists, and returns the three
+// space paths a recipe may name as $NODE_VOLUME / $NODE_EPHEMERAL / $NODE_TMP.
+// The id is minted first because a source may mount a space, and a mount needs a
+// path before the driver is called.
+func (r Real) mintBoxNode(recipeName string) (id string, vars map[string]string, err error) {
+	id, _ = mintNodeID(recipeName)
+	vars = map[string]string{}
+	for v, space := range map[string]string{
+		"NODE_VOLUME":    SpaceVolume,
+		"NODE_EPHEMERAL": SpaceEphemeral,
+		"NODE_TMP":       SpaceTmp,
+	} {
+		p, err := r.resolveNodeSpace(id, space)
+		if err != nil {
+			return "", nil, err
+		}
+		vars[v] = p
+	}
+	return id, vars, nil
+}
+
 // resolvedSource is a source after validation: its strategy (mount/worktree/
 // copy), its expanded host origin, and (for worktrees) the repo toplevel (empty
 // otherwise) — the exact inputs buildBox needs to realize the source. Bundling
@@ -157,14 +286,17 @@ type resolvedSource struct{ kind, origin, top string }
 // all fail HERE, before any image build or box touch. It returns one
 // resolvedSource per source, in source order. Shared by runRecipe and Up so both
 // validate identically.
-func (r Real) validateSources(recipeName string, sources []recipe.Source) ([]resolvedSource, error) {
+func (r Real) validateSources(recipeName string, sources []recipe.Source, vars map[string]string) ([]resolvedSource, error) {
 	resolved := make([]resolvedSource, len(sources))
 	for i, s := range sources {
 		kind, origin, err := s.Kind()
 		if err != nil {
 			return nil, fmt.Errorf("recipe %q: %w", recipeName, err)
 		}
-		host, err := r.expandPath(origin)
+		if s.NeedsBoxPath() {
+			return nil, fmt.Errorf("recipe %q: source %s:%s has no path — say where it lands in the box", recipeName, kind, origin)
+		}
+		host, err := r.expandPathWith(origin, vars)
 		if err != nil {
 			return nil, fmt.Errorf("recipe %q: %w", recipeName, err)
 		}
@@ -193,17 +325,16 @@ func (r Real) validateSources(recipeName string, sources []recipe.Source) ([]res
 			}
 			resolved[i].top = top
 		case "mount", "copy":
-			// The host path must exist — a mount/copy of a missing path is a
-			// mistake (e.g. `dabs recipe claude` before `dabs auth claude`),
-			// and gives a cryptic driver failure if passed through.
+			// The host path must exist. A mount or copy of a missing path is a
+			// typo, and passing it through gives a cryptic driver failure. A
+			// source that MEANS to create its origin says mkmount.
 			if _, err := r.data.Stat(host); errors.Is(err, fs.ErrNotExist) {
-				return nil, fmt.Errorf("recipe %q: %s source %s does not exist", recipeName, kind, host)
+				return nil, fmt.Errorf("recipe %q: %s source %s does not exist (use mkmount: to create it)", recipeName, kind, host)
 			} else if err != nil {
 				return nil, fmt.Errorf("recipe %q: %s source %s: %w", recipeName, kind, host, err)
 			}
-		case "perbox":
-			// A per-box dir has no shared host origin to validate — it is
-			// allocated fresh and empty at prep time (buildBox).
+		case "mkmount":
+			// Created at prep time (buildBox), so a missing origin is the point.
 		}
 	}
 	return resolved, nil
@@ -218,49 +349,71 @@ func (r Real) validateSources(recipeName string, sources []recipe.Source) ([]res
 // recipe says keep; Up leaves it up). On any failure after the box is up it
 // tears the half-built box down. Shared by runRecipe and Up so both mount
 // sources identically.
-func (r Real) buildBox(drv sandbox.Driver, recipeName string, rec recipe.Recipe, image string, sources []recipe.Source, resolved []resolvedSource) (instance string, kept []string, err error) {
+func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID string, rec recipe.Recipe, image string, sources []recipe.Source, resolved []resolvedSource) (instance string, kept []string, err error) {
+	// Every chain starts at the project — the directory this command ran from.
+	project, err := r.ensureProjectNode(recipeName)
+	if err != nil {
+		return "", nil, err
+	}
+	// The box stacks on the deepest directory node in the chain, or on the
+	// project when the recipe made none.
+	chainTip := project
+
 	// Turn declared sources into driver mounts + deferred copies (creating
 	// worktrees now that the image is ready).
 	var mounts []sandbox.Mount
-	var perbox []sandbox.Mount
 	var copies []copyOp
 	var cut []wtCut // fresh worktrees to journal once the box is up
 	for i, s := range sources {
 		rs := resolved[i]
 		switch rs.kind {
 		case "mount":
+			// A `.` source is the code: it marks a workdir node, the place this box's
+			// `.` resolved to. Other mounts (a login dir, a skill) are not places the
+			// chain is about.
+			if isDotSource(s) {
+				id, err := r.addWorkdir(rs.origin, recipeName, project, false)
+				if err != nil {
+					return "", nil, err
+				}
+				chainTip = id
+			}
 			mounts = append(mounts, sandbox.Mount{Host: rs.origin, Path: s.Path, RO: s.RO})
 		case "worktree":
-			wt, branch, id, err := r.addWorktree(rs.top, recipeName)
+			wt, branch, id, err := r.addWorktree(rs.top, recipeName, project)
 			if err != nil {
 				return "", nil, err
 			}
+			chainTip = id
 			mounts = append(mounts, sandbox.Mount{Host: wt, Path: s.Path})
 			kept = append(kept, fmt.Sprintf("%s (branch %s)", wt, branch))
 			// Journal the NODE's id, not a path basename — identity comes from the
 			// node, never from where its data happens to sit.
 			cut = append(cut, wtCut{name: id, path: wt})
 		case "copy":
+			if isDotSource(s) {
+				id, err := r.addWorkdir(rs.origin, recipeName, project, true)
+				if err != nil {
+					return "", nil, err
+				}
+				chainTip = id
+			}
 			// Mount the origin read-only at a staging path, then snapshot it into
 			// the box-owned destination after up — the box gets its own copy and
 			// the host is never written.
 			staging := fmt.Sprintf("/.dabs/copy/%d", i)
 			mounts = append(mounts, sandbox.Mount{Host: rs.origin, Path: staging, RO: true})
 			copies = append(copies, copyOp{src: staging, dest: s.Path})
-		case "perbox":
-			// A fresh, empty, box-private host dir (under ~/.dabs/boxes/<id>/<label>)
-			// mounted live at s.Path. Held aside and appended LAST so it lands on
-			// top of any earlier mount it nests over (e.g. Claude's projects/ over
-			// the shared vault).
-			host, err := r.perboxDir(rs.origin)
-			if err != nil {
-				return "", nil, err
+		case "mkmount":
+			// The origin is the recipe's to name and dabs's to create — 0700,
+			// because this is where a harness puts a credential.
+			if err := r.data.MkdirAll(rs.origin, 0o700); err != nil {
+				return "", nil, fmt.Errorf("recipe %q: mkmount %s: %w", recipeName, rs.origin, err)
 			}
-			perbox = append(perbox, sandbox.Mount{Host: host, Path: s.Path})
+			mounts = append(mounts, sandbox.Mount{Host: rs.origin, Path: s.Path, RO: s.RO})
 		}
 	}
-	// Perbox mounts overlay earlier mounts, so they must be applied after them.
-	mounts = append(mounts, perbox...)
+	sortMountsByDepth(mounts)
 
 	workdir := rec.Workdir
 	if workdir == "" {
@@ -268,6 +421,19 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName string, rec recipe.Recipe,
 	}
 	instance, err = drv.Up(sandbox.Spec{Name: image, Workdir: workdir, Env: rec.Env, Mounts: mounts})
 	if err != nil {
+		return "", nil, err
+	}
+
+	// Mark the box: the node was named before the box came up (its spaces had to
+	// exist to be mounted), so record which sandbox it turned out to be.
+	if err := r.writeNode(Node{
+		ID:       boxID,
+		Kind:     KindBox,
+		Parent:   chainTip,
+		Recipe:   recipeName,
+		Created:  stampNow(),
+		Instance: instance,
+	}); err != nil {
 		return "", nil, err
 	}
 
@@ -327,7 +493,7 @@ func (r Real) resolveRecipe(arg string) (recipe.Registry, string, error) {
 			return reg, "", fmt.Errorf("recipe: %s: %w", path, err)
 		}
 		// A recipe loaded from an explicit path resolves its inline build paths
-		// relative to the DABS.YAML's directory (as the old manifest did),
+		// relative to the DABS.YAML's directory,
 		// not the cwd — so `dabs build path/to/dir` works from anywhere.
 		rebaseImagePaths(&parsed, filepath.Dir(path))
 		rebaseSourcePaths(&parsed, filepath.Dir(path))
@@ -626,12 +792,27 @@ var envRef = regexp.MustCompile(`\$\{?(\w+)\}?`)
 // expandPath resolves a leading ~ and any $VAR/${VAR} in a host path. An unset
 // variable is an error, not a silent truncation to a shorter (wrong) path.
 func (r Real) expandPath(p string) (string, error) {
+	return r.expandPathWith(p, nil)
+}
+
+// expandPathWith expands a source path, resolving names in vars before the
+// environment. vars carries what dabs itself supplies (a node's spaces), so a
+// recipe can name them without them leaking into the box's environment.
+func (r Real) expandPathWith(p string, vars map[string]string) (string, error) {
 	for _, m := range envRef.FindAllStringSubmatch(p, -1) {
+		if _, ok := vars[m[1]]; ok {
+			continue
+		}
 		if _, ok := r.data.LookupEnv(m[1]); !ok {
 			return "", fmt.Errorf("unset variable %s in source path %q", m[0], p)
 		}
 	}
-	p = r.data.ExpandEnv(p)
+	p = os.Expand(p, func(k string) string {
+		if v, ok := vars[k]; ok {
+			return v
+		}
+		return r.data.Getenv(k)
+	})
 	if p == "~" || strings.HasPrefix(p, "~/") {
 		if home, err := r.data.HomeDir(); err == nil {
 			p = filepath.Join(home, strings.TrimPrefix(p, "~"))
@@ -640,24 +821,26 @@ func (r Real) expandPath(p string) (string, error) {
 	return p, nil
 }
 
-// addWorktree provisions a fresh worktree NODE: a directory dabs owns at
-// ~/.dabs/nodes/<repo>-<id>/, with the git worktree checked out into its data/
-// on a new branch dabs/<id> off HEAD, and a dabs-node.json recording the recipe
-// that made it. It returns the data path (what the box mounts) and the branch.
-// Requires at least one commit (a born HEAD).
-func (r Real) addWorktree(top, recipeName string) (path, branch, id string, err error) {
+// addWorktree provisions a fresh worktree NODE at ~/.dabs/nodes/<repo>-<id>/,
+// with the git worktree checked out into its ephemeral space on a new branch
+// dabs/<id> off HEAD. The checkout is EPHEMERAL: dabs cut it, so dabs may reap
+// it — but `down` asks first when it holds work. It returns the checkout path
+// (what the box mounts) and the branch. Requires at least one commit (a born
+// HEAD). parent is the node this one stacks on.
+func (r Real) addWorktree(top, recipeName, parent string) (path, branch, id string, err error) {
 	if !r.data.GitHasCommits(top) {
 		return "", "", "", fmt.Errorf("recipe: repo has no commits yet — make an initial commit first")
 	}
 	id, short := mintNodeID(filepath.Base(top))
 	branch = "dabs/" + short
 
-	path, err = r.resolveNodeData(id)
+	dir, err := r.resolveNodeSpace(id, SpaceEphemeral)
 	if err != nil {
 		return "", "", "", fmt.Errorf("recipe: %w", err)
 	}
-	// git worktree add creates data/ itself; make only the node dir above it.
-	if err := r.data.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	path = filepath.Join(dir, "worktree")
+	// git worktree add creates the checkout dir itself; make only the space above it.
+	if err := r.data.MkdirAll(dir, 0o755); err != nil {
 		return "", "", "", fmt.Errorf("recipe: node dir: %w", err)
 	}
 	if err := r.data.GitAddWorktree(top, branch, path); err != nil {
@@ -665,6 +848,8 @@ func (r Real) addWorktree(top, recipeName string) (path, branch, id string, err 
 	}
 	if err := r.writeNode(Node{
 		ID:       id,
+		Kind:     KindWorktree,
+		Parent:   parent,
 		Recipe:   recipeName,
 		Created:  stampNow(),
 		Worktree: &NodeWorktree{Branch: branch, Repo: top},
@@ -674,20 +859,79 @@ func (r Real) addWorktree(top, recipeName string) (path, branch, id string, err 
 	return path, branch, id, nil
 }
 
-// perboxDir allocates a fresh, empty host dir private to one box for a `perbox:`
-// source, at ~/.dabs/boxes/<id>/<label>, and creates it so the live bind mount
-// resolves. The label only names the dir; the box gets a brand-new empty slice
-// every up.
-func (r Real) perboxDir(label string) (string, error) {
-	home, err := r.data.HomeDir()
+// isDotSource reports whether a source names `.` — the code the recipe is about,
+// as opposed to a dir it happens to also need (a login vault, a skill).
+func isDotSource(s recipe.Source) bool {
+	_, origin, err := s.Kind()
+	return err == nil && origin == "."
+}
+
+// addWorkdir marks the host directory a recipe's `.` resolved to, and a box
+// stacks on it — so `dabs ls` shows which code a box is holding.
+//
+// fresh decides whether a run makes a NEW place or names an existing one, and it
+// follows what the source does with the bytes:
+//
+//   - copy: dabs makes a directory, so each run makes ANOTHER one — the same way
+//     each worktree run cuts another branch. Two runs over one directory give two
+//     independent copies, which is what lets them work in parallel.
+//   - mount: the place IS the host directory, live. Reaching it again is reaching
+//     the same place, so it is the same node.
+func (r Real) addWorkdir(dir, recipeName, parent string, fresh bool) (string, error) {
+	if !fresh {
+		nodes, err := r.listNodes()
+		if err != nil {
+			return "", err
+		}
+		for _, n := range nodes {
+			if n.Kind == KindWorkdir && n.Dir == dir {
+				return n.ID, nil
+			}
+		}
+	}
+	id, _ := mintNodeID(filepath.Base(dir))
+	return id, r.writeNode(Node{
+		ID:      id,
+		Kind:    KindWorkdir,
+		Parent:  parent,
+		Recipe:  recipeName,
+		Created: stampNow(),
+		Dir:     dir,
+	})
+}
+
+// ensureProjectNode marks the directory a command ran from — the project, the
+// root of every chain and what `.` falls back to. Its Dir is the user's: dabs
+// records it and never reaps it.
+//
+// It is created lazily, by commands that PROVISION something. A read-only
+// command (ls, recipes, worktrees) marks nothing, so ~/.dabs/nodes does not grow
+// a node for every directory anyone ever ran dabs in.
+func (r Real) ensureProjectNode(recipeName string) (string, error) {
+	cwd, err := r.data.Getwd()
 	if err != nil {
-		return "", fmt.Errorf("recipe: home: %w", err)
+		return "", err
 	}
-	dir := filepath.Join(home, ".dabs", "boxes", randHex(4), label)
-	if err := r.data.MkdirAll(dir, 0o755); err != nil {
-		return "", fmt.Errorf("recipe: per-box dir: %w", err)
+	nodes, err := r.listNodes()
+	if err != nil {
+		return "", err
 	}
-	return dir, nil
+	for _, n := range nodes {
+		if n.Kind == KindProject && n.Dir == cwd {
+			return n.ID, nil
+		}
+	}
+	id, _ := mintNodeID(filepath.Base(cwd))
+	if err := r.writeNode(Node{
+		ID:      id,
+		Kind:    KindProject,
+		Recipe:  recipeName,
+		Created: stampNow(),
+		Dir:     cwd,
+	}); err != nil {
+		return "", err
+	}
+	return id, nil
 }
 
 // castSources rewrites a recipe's sources to bind an existing dabs worktree
@@ -699,7 +943,7 @@ func (r Real) perboxDir(label string) (string, error) {
 //   - copy: .                 → snapshot the worktree (git stays blind in-box:
 //     the object store isn't copied — that's inherent to a copy).
 //
-// Sources that don't name `.` (the auth vault, etc.) pass through untouched.
+// Sources that don't name `.` (a login dir, a skill) pass through untouched.
 func (r Real) castSources(recipeName string, in []recipe.Source, worktree string) ([]recipe.Source, error) {
 	// The node record is the source of truth for what dabs provisioned — a
 	// worktree node has a `worktree` nest. Anything else isn't ours to cast on.
@@ -756,4 +1000,57 @@ func randHex(n int) string {
 	b := make([]byte, n)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+// buildImageIfMissing builds the image named imageName from the bundled recipe
+// (images/<provider>), unless the driver reports it is already built — so
+// repeated runs skip the redundant rebuild.
+func (r Real) buildImageIfMissing(drv sandbox.Driver, provider, imageName string) error {
+	built, err := drv.HasImage(imageName)
+	if err != nil {
+		return err
+	}
+	if built {
+		return nil
+	}
+	ctxDir, err := r.stageImage(provider)
+	if err != nil {
+		return err
+	}
+	defer r.data.RemoveAll(ctxDir)
+	return drv.Build(sandbox.BuildSpec{
+		Name:       imageName,
+		Dockerfile: filepath.Join(ctxDir, "Dockerfile"),
+		Context:    ctxDir,
+	})
+}
+
+// stageImage materializes a bundled image recipe into a temp directory the
+// driver can build from.
+func (r Real) stageImage(provider string) (string, error) {
+	sub := "images/" + provider
+	dir, err := r.data.MkdirTemp("", "dabs-image-"+provider+"-")
+	if err != nil {
+		return "", fmt.Errorf("image: stage: %w", err)
+	}
+	err = fs.WalkDir(r.images, sub, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(sub, p)
+		dst := filepath.Join(dir, rel)
+		if d.IsDir() {
+			return r.data.MkdirAll(dst, 0o755)
+		}
+		data, err := fs.ReadFile(r.images, p)
+		if err != nil {
+			return err
+		}
+		return r.data.WriteFile(dst, data, 0o644)
+	})
+	if err != nil {
+		r.data.RemoveAll(dir)
+		return "", fmt.Errorf("image: stage %s: %w", sub, err)
+	}
+	return dir, nil
 }

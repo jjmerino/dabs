@@ -24,7 +24,6 @@ type fakeActions struct {
 
 func (f *fakeActions) Build(p params.Build) error               { f.build = append(f.build, p); return f.err }
 func (f *fakeActions) Up(p params.Up) error                     { f.up = append(f.up, p); return f.err }
-func (f *fakeActions) Auth(params.Auth) error                   { return f.err }
 func (f *fakeActions) Recipe(p params.Recipe) error             { f.recipe = append(f.recipe, p); return f.err }
 func (f *fakeActions) Do(p params.Do) error                     { f.do = append(f.do, p); return f.err }
 func (f *fakeActions) Recipes(params.Recipes) error             { return f.err }

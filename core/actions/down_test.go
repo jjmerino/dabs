@@ -6,6 +6,7 @@ package actions_test
 // --multiple; an empty/blank name matches nothing.
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/jjmerino/dabs/core/params"
@@ -108,5 +109,108 @@ func TestDownDryDownsNothing(t *testing.T) {
 	}
 	if len(drv.downs) != 0 {
 		t.Fatalf("--dry must down NOTHING, downed %v", drv.downs)
+	}
+}
+
+// CONTRACT: `down` applies each node space's promise. tmp/ goes without asking,
+// volume/ is never touched, and a non-empty ephemeral/ is not deleted behind the
+// user's back — down refuses unless they consent (or --force). The space, not the
+// recipe, decides: convention, so `down` never has to interpret intent.
+func TestDownReapsTmpKeepsVolumeAndAsksBeforeEphemeral(t *testing.T) {
+	const inst, node = "img-inst", "r-abcd1234"
+	base := "/home/t/.dabs/nodes/" + node
+
+	newFixture := func(ephFiles []string) (*fakeData, *fakeDriver) {
+		fd := baseData()
+		fd.files = map[string][]byte{}
+		fd.dirs = map[string][]string{}
+		fd.files[base+"/dabs-node.json"] = []byte(
+			`{"id":"` + node + `","kind":"box","instance":"` + inst + `","recipe":"r"}`)
+		fd.dirs["/home/t/.dabs/nodes"] = []string{node}
+		fd.dirs[base+"/ephemeral"] = ephFiles
+		drv := &fakeDriver{infos: []sandbox.Info{{Name: inst, Status: "running"}}}
+		return fd, drv
+	}
+
+	t.Run("empty ephemeral: reaps tmp and ephemeral, never volume", func(t *testing.T) {
+		fd, drv := newFixture(nil)
+		if err := newReal("", fd, drv).Down(params.Down{Instance: inst, Force: true}); err != nil {
+			t.Fatalf("Down: %v", err)
+		}
+		if len(drv.downs) != 1 {
+			t.Fatalf("box not downed: %v", drv.downs)
+		}
+		wantGone := []string{base + "/tmp", base + "/ephemeral"}
+		for _, w := range wantGone {
+			found := false
+			for _, got := range fd.rmAll {
+				if got == w {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("down did not reap %s; removed=%v", w, fd.rmAll)
+			}
+		}
+		for _, got := range fd.rmAll {
+			if got == base+"/volume" {
+				t.Errorf("down deleted the volume space, which must survive: %v", fd.rmAll)
+			}
+		}
+	})
+
+	t.Run("non-empty ephemeral, refused: box stays up and nothing is deleted", func(t *testing.T) {
+		fd, drv := newFixture([]string{"worktree"})
+		r := newReal("", fd, drv).WithConfirm(func(string) bool { return false }) // the user says no
+		err := r.Down(params.Down{Instance: inst})
+		if err == nil {
+			t.Fatal("want an error when the user declines")
+		}
+		if len(drv.downs) != 0 {
+			t.Errorf("box was downed despite the refusal: %v", drv.downs)
+		}
+		for _, got := range fd.rmAll {
+			if got == base+"/ephemeral" {
+				t.Errorf("ephemeral deleted after a refusal: %v", fd.rmAll)
+			}
+		}
+	})
+}
+
+// CONTRACT: `ls` marks a worktree holding work with a `*`, and says so in the
+// heading. A tree of places with no box must not read as a tree of things that do
+// not matter — one of them may be an agent's afternoon, and `down`/`rm` would
+// take it. The mark asks the same question `dabs worktrees` answers with HAS WORK.
+func TestLsStarsWorktreesHoldingWork(t *testing.T) {
+	const dirtyID, cleanID = "wt-dirty01", "wt-clean1"
+	base := "/home/t/.dabs/nodes/"
+	fd := baseData()
+	fd.files = map[string][]byte{}
+	fd.dirs = map[string][]string{}
+	for _, id := range []string{dirtyID, cleanID} {
+		fd.files[base+id+"/dabs-node.json"] = []byte(
+			`{"id":"` + id + `","kind":"worktree","worktree":{"branch":"dabs/` + id + `","repo":"/repo"}}`)
+	}
+	fd.dirs["/home/t/.dabs/nodes"] = []string{dirtyID, cleanID}
+	// Only the checkout that exists is read; both resolve to ephemeral/worktree.
+	fd.states[base+dirtyID+"/ephemeral/worktree"] = wtState{branch: "dabs/" + dirtyID, dirty: true}
+	fd.states[base+cleanID+"/ephemeral/worktree"] = wtState{branch: "dabs/" + cleanID}
+
+	out := captureStdout(t, func() {
+		if err := newReal("", fd, &fakeDriver{}).Ls(params.Ls{}); err != nil {
+			t.Fatalf("Ls: %v", err)
+		}
+	})
+
+	for _, line := range strings.Split(out, "\n") {
+		switch {
+		case strings.Contains(line, dirtyID) && !strings.Contains(line, "*"):
+			t.Errorf("worktree holding work is not starred:\n%s", line)
+		case strings.Contains(line, cleanID) && strings.Contains(line, "*"):
+			t.Errorf("clean worktree is starred; the mark would mean nothing:\n%s", line)
+		}
+	}
+	if !strings.Contains(out, "has work") {
+		t.Errorf("the heading does not say what the * means:\n%s", out)
 	}
 }

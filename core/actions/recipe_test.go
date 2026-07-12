@@ -6,11 +6,13 @@ package actions_test
 // cause), not by mirroring the implementation, so they can actually fail.
 
 import (
+	"encoding/json"
 	"errors"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -80,6 +82,8 @@ type fakeData struct {
 	dirs      map[string][]string // ReadDir results
 	states    map[string]wtState  // GitState by worktree path
 	removed   []string            // recorded GitRemoveWorktree
+	rmAll     []string            // recorded RemoveAll
+	copies    []string            // recorded CopyDir
 	commondir map[string]string   // GitCommonDir: worktree path -> parent .git (present => a worktree)
 }
 
@@ -101,8 +105,29 @@ func (f *fakeData) WriteFile(p string, b []byte, _ fs.FileMode) error {
 		f.files = map[string][]byte{}
 	}
 	f.files[p] = append([]byte(nil), b...)
+	// A written node record makes its node listable, as it does on a real disk —
+	// otherwise the fake would let a node be written and never found again.
+	if strings.HasSuffix(p, "/"+nodeFileName) {
+		dir := filepath.Dir(p)
+		root := filepath.Dir(dir)
+		if f.dirs == nil {
+			f.dirs = map[string][]string{}
+		}
+		name := filepath.Base(dir)
+		for _, have := range f.dirs[root] {
+			if have == name {
+				return nil
+			}
+		}
+		f.dirs[root] = append(f.dirs[root], name)
+	}
 	return nil
 }
+
+// nodeFileName is the record actions writes for every node. The fake mirrors the
+// real layout so a node written can be listed.
+const nodeFileName = "dabs-node.json"
+
 func (f *fakeData) AppendFile(p string, b []byte, _ fs.FileMode) error {
 	if f.files == nil {
 		f.files = map[string][]byte{}
@@ -136,9 +161,13 @@ func (f *fakeData) MkdirAll(p string, _ fs.FileMode) error {
 }
 func (f *fakeData) MkdirTemp(string, string) (string, error) { return "/tmp/x", nil }
 func (f *fakeData) Getwd() (string, error)                   { return f.cwd, nil }
-func (f *fakeData) RemoveAll(string) error                   { return nil }
-func (f *fakeData) Getenv(k string) string                   { return f.env[k] }
-func (f *fakeData) LookupEnv(k string) (string, bool)        { v, ok := f.env[k]; return v, ok }
+func (f *fakeData) CopyDir(src, dst string) error {
+	f.copies = append(f.copies, src+" -> "+dst)
+	return nil
+}
+func (f *fakeData) RemoveAll(p string) error          { f.rmAll = append(f.rmAll, p); return nil }
+func (f *fakeData) Getenv(k string) string            { return f.env[k] }
+func (f *fakeData) LookupEnv(k string) (string, bool) { v, ok := f.env[k]; return v, ok }
 func (f *fakeData) ExpandEnv(s string) string {
 	return os.Expand(s, func(k string) string { return f.env[k] })
 }
@@ -193,7 +222,7 @@ func newReal(recipesYAML string, fd *fakeData, drv *fakeDriver, bundledImages ..
 }
 
 func baseData() *fakeData {
-	return &fakeData{home: "/home/t", cwd: "/cwd", env: map[string]string{}, exists: map[string]bool{}, isDir: map[string]bool{}, toplevel: map[string]error{}, noCommits: map[string]bool{}}
+	return &fakeData{home: "/home/t", cwd: "/cwd", env: map[string]string{}, exists: map[string]bool{}, isDir: map[string]bool{}, toplevel: map[string]error{}, noCommits: map[string]bool{}, states: map[string]wtState{}}
 }
 
 func onlyUp(t *testing.T, d *fakeDriver) sandbox.Spec {
@@ -587,12 +616,20 @@ func TestCastAttachesWorktreeAndGitDir(t *testing.T) {
 		{Host: wt, Path: "/work"},                   // the worktree, attached live
 		{Host: "/repo/.git", Path: "/repo/.git"},    // parent store, so git works in-box
 	}
+	// The SET of mounts is the contract; their order is not — actions order mounts
+	// parent-before-child, which is a separate contract with its own test.
 	if len(up.Mounts) != len(want) {
 		t.Fatalf("mounts = %+v, want %+v", up.Mounts, want)
 	}
-	for i := range want {
-		if up.Mounts[i] != want[i] {
-			t.Errorf("mount[%d] = %+v, want %+v", i, up.Mounts[i], want[i])
+	for _, w := range want {
+		found := false
+		for _, got := range up.Mounts {
+			if got == w {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("missing mount %+v; got %+v", w, up.Mounts)
 		}
 	}
 }
@@ -642,90 +679,6 @@ func TestCastMissingWorktreeErrors(t *testing.T) {
 }
 
 // --- tests: the generic perbox source -----------------------------------------
-
-// CONTRACT: a `perbox:` source yields a fresh, empty, box-private host mount
-// (under ~/.dabs/boxes/…/<label>) at its Path, created on the host, writable,
-// and — since it exists to overlay an earlier mount — applied AFTER any mount it
-// nests over, regardless of its position among the recipe's sources.
-func TestPerboxSourceIsPrivateAndAppliedLast(t *testing.T) {
-	// The perbox source is declared BEFORE the mount it nests over, to prove the
-	// engine still applies it LAST (overlay ordering is not source order).
-	y := `recipes:
-  r:
-    image: img
-    command: [run]
-    sources:
-      - mount: /home/t/vault
-        path: /cfg
-      - perbox: sessions
-        path: /cfg/sessions
-      - mount: /work
-        path: /work
-`
-	fd := baseData()
-	fd.exists["/home/t/vault"] = true
-	fd.exists["/work"] = true
-	drv := &fakeDriver{built: map[string]bool{"img": true}}
-	if err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "r"}); err != nil {
-		t.Fatalf("Recipe: %v", err)
-	}
-	up := onlyUp(t, drv)
-
-	// The perbox mount is applied LAST so it lands over the /cfg mount it nests in.
-	pb := up.Mounts[len(up.Mounts)-1]
-	if pb.Path != "/cfg/sessions" {
-		t.Fatalf("last mount = %+v, want the perbox mount at /cfg/sessions", pb)
-	}
-	// It is a fresh box-private host dir, not a shared origin.
-	if !strings.HasPrefix(pb.Host, "/home/t/.dabs/boxes/") || !strings.HasSuffix(pb.Host, "/sessions") {
-		t.Errorf("perbox host = %q, want a per-box dir under ~/.dabs/boxes/…/sessions", pb.Host)
-	}
-	if pb.RO {
-		t.Errorf("perbox mount is read-only; the box must be able to write it")
-	}
-	// The shared /cfg mount is untouched and precedes the overlay.
-	if up.Mounts[0] != (sandbox.Mount{Host: "/home/t/vault", Path: "/cfg"}) {
-		t.Errorf("first mount = %+v, want the shared /cfg mount intact", up.Mounts[0])
-	}
-	// The per-box dir is created on the host so the bind mount resolves.
-	made := false
-	for _, m := range fd.mkdirs {
-		if m == pb.Host {
-			made = true
-		}
-	}
-	if !made {
-		t.Errorf("per-box dir %q was not created on the host (mkdirs=%v)", pb.Host, fd.mkdirs)
-	}
-}
-
-// CONTRACT: a `perbox:` source is visible in the look-before-run summary like
-// every other source, so a user approves the mount that actually gets applied.
-func TestPerboxSourceShownInConfirm(t *testing.T) {
-	y := `recipes:
-  r:
-    image: img
-    command: [run]
-    sources:
-      - mount: /home/t/vault
-        path: /cfg
-      - perbox: sessions
-        path: /cfg/sessions
-`
-	fd := baseData()
-	fd.exists["/home/t/vault"] = true
-	drv := &fakeDriver{built: map[string]bool{"img": true}}
-	asked := ""
-	confirm := func(prompt string) bool { asked = prompt; return true }
-	// Appending a command triggers the look-before-run confirmation.
-	if err := newReal(y, fd, drv).WithConfirm(confirm).
-		Recipe(params.Recipe{Name: "r", Cmd: []string{"x"}}); err != nil {
-		t.Fatalf("Recipe: %v", err)
-	}
-	if !strings.Contains(asked, "perbox") || !strings.Contains(asked, "sessions → /cfg/sessions") {
-		t.Errorf("confirm summary omits the perbox source:\n%s", asked)
-	}
-}
 
 // --- tests: appended command + confirmation + `dabs do` -----------------------
 
@@ -1095,4 +1048,222 @@ recipes:
 	if len(up.Mounts) != 1 || up.Mounts[0].Host != "/proj/box/assets" {
 		t.Errorf("Up mounts = %+v, want the source anchored on the dabs.yaml dir (/proj/box/assets)", up.Mounts)
 	}
+}
+
+// CONTRACT: a mount NESTED inside another reaches the driver AFTER its parent,
+// however the recipe declared them. bwrap binds in argv order, so a parent
+// listed after its child masks the child — the box gets the parent's own content
+// at the child's path, with no error. Apple/docker resolve nesting themselves, so
+// a recipe authored there would break only on Linux. Actions decide the order.
+func TestNestedMountsReachDriverParentFirst(t *testing.T) {
+	// Declared deepest-first, and out of order, on purpose.
+	y := `recipes:
+  m:
+    image: img
+    command: [x]
+    sources:
+      - mount: /h/sessions
+        path: /root/.claude/projects/inner
+      - mount: /h/work
+        path: /work
+      - mount: /h/claude
+        path: /root/.claude
+      - mount: /h/proj
+        path: /root/.claude/projects
+`
+	fd := baseData()
+	for _, p := range []string{"/h/sessions", "/h/work", "/h/claude", "/h/proj"} {
+		fd.exists[p] = true
+	}
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	if err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "m"}); err != nil {
+		t.Fatalf("Recipe: %v", err)
+	}
+	got := onlyUp(t, drv).Mounts
+	seen := map[string]int{}
+	for i, m := range got {
+		for parent, pi := range seen {
+			if strings.HasPrefix(m.Path, parent+"/") && pi > i {
+				t.Errorf("mount %s at index %d comes before its parent %s at %d", m.Path, i, parent, pi)
+			}
+		}
+		seen[m.Path] = i
+	}
+	// A child must never precede a parent it nests in.
+	for i, m := range got {
+		for j := i + 1; j < len(got); j++ {
+			if strings.HasPrefix(m.Path, got[j].Path+"/") {
+				t.Errorf("driver order %v: %s (i=%d) nests in %s (j=%d) but comes first",
+					mountPaths(got), m.Path, i, got[j].Path, j)
+			}
+		}
+	}
+}
+
+func mountPaths(ms []sandbox.Mount) []string {
+	out := make([]string, len(ms))
+	for i, m := range ms {
+		out[i] = m.Path
+	}
+	return out
+}
+
+// CONTRACT: a mkmount source CREATES its host origin, and a mkmount into the
+// box node's volume gives that box a private, PERSISTING slice of an otherwise
+// shared tree — declared out of order, to prove ordering is not the mechanism.
+func TestMkmountCreatesOriginAndNestsOverSharedMount(t *testing.T) {
+	y := `recipes:
+  r:
+    image: img
+    command: [run]
+    sources:
+      - mkmount: $NODE_VOLUME/sessions
+        path: /cfg/sessions
+      - mount: /home/t/vault
+        path: /cfg
+`
+	fd := baseData()
+	fd.exists["/home/t/vault"] = true
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	if err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "r"}); err != nil {
+		t.Fatalf("Recipe: %v", err)
+	}
+	up := onlyUp(t, drv)
+
+	var sessions sandbox.Mount
+	for _, m := range up.Mounts {
+		if m.Path == "/cfg/sessions" {
+			sessions = m
+		}
+	}
+	if sessions.Host == "" {
+		t.Fatalf("no mount at /cfg/sessions: %+v", up.Mounts)
+	}
+	// $NODE_VOLUME resolved to this box node's volume space — which SURVIVES down.
+	if !strings.HasPrefix(sessions.Host, "/home/t/.dabs/nodes/") ||
+		!strings.HasSuffix(sessions.Host, "/volume/sessions") {
+		t.Errorf("mkmount host = %q, want the box node's volume space", sessions.Host)
+	}
+	// The engine created it: a mount whose origin is absent is a typo; a mkmount
+	// whose origin is absent is the whole point.
+	made := false
+	for _, d := range fd.mkdirs {
+		if d == sessions.Host {
+			made = true
+		}
+	}
+	if !made {
+		t.Errorf("mkmount did not create %q; mkdirs=%v", sessions.Host, fd.mkdirs)
+	}
+	// It nests over the shared /cfg mount regardless of declaration order.
+	for i, m := range up.Mounts {
+		if m.Path == "/cfg" {
+			for j, n := range up.Mounts {
+				if n.Path == "/cfg/sessions" && j < i {
+					t.Errorf("mkmount at /cfg/sessions (%d) precedes /cfg (%d): %v", j, i, mountPaths(up.Mounts))
+				}
+			}
+		}
+	}
+}
+
+// CONTRACT: a mount whose origin is missing is refused, and the error names the
+// source kind that means "create it" — so the fix is discoverable, not folklore.
+func TestMissingMountOriginPointsAtMkmount(t *testing.T) {
+	y := `recipes:
+  r:
+    image: img
+    command: [run]
+    sources:
+      - mount: /home/t/nope
+        path: /cfg
+`
+	fd := baseData()
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "r"})
+	if err == nil {
+		t.Fatal("want an error for a missing mount origin")
+	}
+	if !strings.Contains(err.Error(), "mkmount") {
+		t.Errorf("error %q does not point at mkmount:", err)
+	}
+	if len(drv.ups) != 0 {
+		t.Errorf("a box was booted despite the bad source: %+v", drv.ups)
+	}
+}
+
+// CONTRACT: a recipe whose `.` source is a COPY mints a NEW workdir node every
+// run — the same way a worktree recipe cuts a new branch every run — and it needs
+// NO GIT to do it. Two runs over one directory give two independent places, which
+// is what lets them be worked in parallel. A LIVE mount is the opposite: the place
+// IS the host directory, so reaching it again is the same node.
+//
+// The fake has no git at all (GitToplevel errors for every dir), so this cannot
+// pass by accident through a worktree.
+func TestCopyRecipeMintsAFreshWorkdirEveryRunWithoutGit(t *testing.T) {
+	fd := baseData()
+	fd.exists["/cwd"] = true
+	// No entry in fd.toplevel: every GitToplevel call errors. There is no repo.
+
+	copyY := `recipes:
+  d:
+    image: img
+    command: [x]
+    sources:
+      - copy: .
+        path: /work
+`
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	real := newReal(copyY, fd, drv)
+	for i := 0; i < 2; i++ {
+		if err := real.Recipe(params.Recipe{Name: "d"}); err != nil {
+			t.Fatalf("run %d: %v", i, err)
+		}
+	}
+	wds := workdirNodes(t, fd)
+	if len(wds) != 2 {
+		t.Fatalf("two copy runs made %d workdir nodes, want 2 (one place per run): %v", len(wds), wds)
+	}
+	if wds[0] == wds[1] {
+		t.Fatalf("both runs reused one workdir node %q; parallel runs would share a directory", wds[0])
+	}
+
+	// A LIVE mount names the host dir itself, so a second run is the same place.
+	fd2 := baseData()
+	fd2.exists["/cwd"] = true
+	mountY := `recipes:
+  m:
+    image: img
+    command: [x]
+    sources:
+      - mount: .
+        path: /work
+`
+	drv2 := &fakeDriver{built: map[string]bool{"img": true}}
+	real2 := newReal(mountY, fd2, drv2)
+	for i := 0; i < 2; i++ {
+		if err := real2.Recipe(params.Recipe{Name: "m"}); err != nil {
+			t.Fatalf("mount run %d: %v", i, err)
+		}
+	}
+	if got := workdirNodes(t, fd2); len(got) != 1 {
+		t.Errorf("two mount runs made %d workdir nodes, want 1 (the same place): %v", len(got), got)
+	}
+}
+
+// workdirNodes reads back the workdir nodes the engine wrote into the fake.
+func workdirNodes(t *testing.T, fd *fakeData) []string {
+	t.Helper()
+	var out []string
+	for path, b := range fd.files {
+		if !strings.HasSuffix(path, "/dabs-node.json") {
+			continue
+		}
+		var n struct{ ID, Kind string }
+		if json.Unmarshal(b, &n) == nil && n.Kind == "workdir" {
+			out = append(out, n.ID)
+		}
+	}
+	sort.Strings(out)
+	return out
 }

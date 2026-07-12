@@ -71,12 +71,12 @@ func TestRecipeWorktreeLogsUp(t *testing.T) {
 		t.Fatalf("up entry worktree/path wrong: %+v (created %v)", e, fd.worktrees)
 	}
 	// The journal keys on the NODE's id — NEVER on a path basename. Deriving it
-	// from the path records the data dir ("data") for every worktree, so liveness
-	// keys on a name no node has and every box reads as dead.
-	if e.Worktree == "data" {
-		t.Fatalf("journal keyed on the data dir instead of the node id: %+v", e)
+	// from the path records the checkout dir ("worktree") for every worktree, so
+	// liveness keys on a name no node has and every box reads as dead.
+	if e.Worktree == "worktree" {
+		t.Fatalf("journal keyed on the checkout dir instead of the node id: %+v", e)
 	}
-	if want := nodeBase + "/" + e.Worktree + "/data"; e.Path != want {
+	if want := nodeBase + "/" + e.Worktree + "/ephemeral/worktree"; e.Path != want {
 		t.Fatalf("journal name and path disagree: worktree=%q path=%q, want %q", e.Worktree, e.Path, want)
 	}
 }

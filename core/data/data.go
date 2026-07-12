@@ -24,6 +24,10 @@ type Data interface {
 	MkdirAll(path string, perm fs.FileMode) error
 	MkdirTemp(dir, pattern string) (string, error)
 	RemoveAll(path string) error
+	// CopyDir copies the contents of src into dst, which must exist. A node that
+	// owns a copy of the code needs it on the HOST, so a box can mount it and a
+	// human can read it.
+	CopyDir(src, dst string) error
 
 	// --- environment ---
 	Getenv(key string) string

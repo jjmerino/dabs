@@ -10,7 +10,7 @@ import (
 )
 
 // Worktrees inspects and reaps the worktree NODES dabs recipes provision under
-// ~/.dabs/nodes/<id>/ (the checkout lives in that node's data/). Recipes KEEP
+// ~/.dabs/nodes/<id>/ (the checkout lives in that node's ephemeral space). Recipes KEEP
 // worktrees so an agent's work is never lost; this is how you see what they did
 // and clean up — WITHOUT silently discarding unreviewed work: a worktree with
 // uncommitted changes or unmerged commits is refused unless --force (the

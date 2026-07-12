@@ -6,12 +6,12 @@
 // /.dockerenv present); anywhere else it exits without running. The box is the
 // isolation and must carry `dabs` on PATH. Inside, the boxes dabs creates are
 // exercised in place — dabs picks the platform's driver, the suite never does.
-// Per-run isolation is a fresh $HOME (its own ~/.dabs), removed on teardown,
-// plus unique "dabs-e2e-*" box names.
 //
-// Run:  inside a dabs box that has `dabs` on PATH (see run_e2e.sh).
-// Prebuilt mode (DABS_E2E_PREBUILT=<dir>): stage a base image instead of
-// building it, so no docker is needed inside the box.
+// Because the box is the isolation, the suite uses the box's own $HOME and its
+// own ~/.dabs: every run gets a fresh box and the box is reaped after, so there
+// is no isolated HOME to mint and nothing to clean up.
+//
+// Run:  ./run_e2e.sh  (running `go test` on your host will refuse to run).
 package e2e
 
 import (
@@ -26,7 +26,7 @@ import (
 )
 
 var (
-	home    string // isolated HOME for this run
+	home    string // the box's own HOME — the box is the isolation
 	baseDir string // this package dir: holds the base recipe dabs.yaml + Dockerfile
 )
 
@@ -46,39 +46,27 @@ func setupAndRun(m *testing.M) int {
 			"run ./run_e2e.sh (running `go test` directly won't work)")
 		return 1
 	}
-	var err error
-	home, err = os.MkdirTemp("", "dabs-e2e-home-")
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "setup:", err)
+	// The box IS the isolation, so the box's own $HOME is this run's $HOME: every
+	// run gets a fresh box, and the box is torn down after. Nothing to mint,
+	// nothing to clean up.
+	home = os.Getenv("HOME")
+	if home == "" {
+		fmt.Fprintln(os.Stderr, "setup: HOME is unset in the box")
 		return 1
 	}
-	defer os.RemoveAll(home) // teardown: isolated HOME and everything under it
-	os.Setenv("HOME", home)
-
-	// The base image the inner boxes come from is this package's own recipe
-	// (dabs.yaml, recipe "dabs-e2e") + Dockerfile; build it once with the source
-	// dabs and reuse it across tests.
+	var err error
 	baseDir, err = os.Getwd()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "setup:", err)
 		return 1
 	}
-	// Prebuilt mode (DABS_E2E_PREBUILT=<staged image dir>): copy a pre-staged
-	// base image into this run's isolated HOME instead of building it. This is
-	// what lets the suite run in a plain, UNPRIVILEGED container with no in-box
-	// docker (the build path needs docker; the bwrap run path does not).
-	if pre := os.Getenv("DABS_E2E_PREBUILT"); pre != "" {
-		dst := filepath.Join(home, ".dabs", "images", "dabs-e2e")
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-			fmt.Fprintln(os.Stderr, "setup:", err)
-			return 1
-		}
-		if out, err := exec.Command("cp", "-a", pre, dst).CombinedOutput(); err != nil {
-			fmt.Fprintf(os.Stderr, "setup: stage prebuilt image: %v\n%s\n", err, out)
-			return 1
-		}
-	} else if out, code := run("dabs build " + baseDir); code != 0 {
-		fmt.Fprintf(os.Stderr, "setup: dabs build base failed:\n%s\n", out)
+	// The base image the inner boxes come from is staged into the box by its
+	// Dockerfile (COPY --from), because `dabs build` needs docker and the box
+	// carries none. Fail loudly if it is missing rather than letting every test
+	// fail one by one on a cryptic "image not built".
+	if _, err := os.Stat(filepath.Join(home, ".dabs", "images", sandboxName)); err != nil {
+		fmt.Fprintf(os.Stderr, "setup: base image %q not staged in this box (%v)\n"+
+			"the box's Dockerfile stages it; rebuild the box: dabs build test/e2e/box\n", sandboxName, err)
 		return 1
 	}
 	return m.Run()
@@ -173,7 +161,7 @@ func writeRecipe(dir, name, dockerfile string) {
 }
 
 // clean reaps every "base" instance now and again at test end, so tests don't
-// see each other's boxes (they share the isolated HOME).
+// see each other's boxes (one box, one ~/.dabs).
 // clean reaps every box this suite made. The name is a PREFIX matching many
 // instances, so it needs --multiple (the explicit approval to act on more than
 // one) as well as --force (skip the prompt) — --force alone reaps nothing.
@@ -262,16 +250,9 @@ func TestUnknownCommand(t *testing.T) {
 
 // --- build -------------------------------------------------------------------
 
-func TestBuild(t *testing.T) {
-	if os.Getenv("DABS_E2E_PREBUILT") != "" {
-		t.Skip("prebuilt mode: docker build path is tested on the host, not in-box")
-	}
-	d := filepath.Join(home, "bt")
-	writeRecipe(d, "bt", "FROM alpine:3.20\nWORKDIR /work\n")
-	out, code := run("dabs build " + d)
-	wantExit(t, 0, code)
-	wantContains(t, out, "bt built")
-}
+// The `build` verb is not covered here: it shells out to docker, and this box has
+// none. It is exercised on the HOST by run_e2e.sh, which builds this very box
+// with it under `set -e`.
 
 // --- up / ls -----------------------------------------------------------------
 

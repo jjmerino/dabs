@@ -1,16 +1,18 @@
-# The recipe the e2e inner boxes come from. `dabs build test/e2e` builds its
-# image from the Dockerfile here (dabs picks the platform's driver); `dabs up
-# test/e2e` boots a detached box from it. Named "dabs-e2e" so the boxes are
-# obvious in `dabs ls` and the user recipes (installed into ~/.dabs/recipes.yaml
-# by the suite) can reuse the image by that bare name.
+# The recipe the e2e inner boxes come from. `dabs up test/e2e` boots a detached
+# box from it. Named "dabs-e2e" so the boxes are obvious in `dabs ls` and the
+# user recipes (installed into ~/.dabs/recipes.yaml by the suite) can reuse the
+# image by that bare name.
+#
+# The image is a BARE NAME, not a Dockerfile: the box the suite runs in stages it
+# in (see box/Dockerfile, stage `e2ebase`), because dabs builds images by shelling
+# out to docker and the box carries none. So this recipe boots an image that is
+# already present, and never builds one.
 #
 # No sources: `dabs up` must not shadow the image's /work (it bakes marker.txt
-# there); env + workdir mirror the old dabs.json manifest exactly.
+# there). The workdir and env below are the recipe's own.
 default: dabs-e2e
 recipes:
   dabs-e2e:
-    image:
-      dockerfile: Dockerfile
-      context: .
+    image: dabs-e2e
     workdir: /work
     env: { E2E: "yes" }

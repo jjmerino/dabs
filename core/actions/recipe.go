@@ -168,6 +168,19 @@ func (r Real) validateSources(recipeName string, sources []recipe.Source) ([]res
 		if err != nil {
 			return nil, fmt.Errorf("recipe %q: %w", recipeName, err)
 		}
+		// Drivers take exact, absolute host paths — a relative mount/copy origin
+		// (`.`, or `./stage`) is resolved HERE, against the cwd, so every driver
+		// gets the same path. Passing it through verbatim happens to work on some
+		// drivers and dies on others (docker: "mount path must be absolute").
+		// `perbox:` has no host origin (it is a label) and a `worktree:` origin
+		// never reaches a driver (git resolves it to an absolute toplevel below).
+		if kind == "mount" || kind == "copy" {
+			abs, err := r.absPath(host)
+			if err != nil {
+				return nil, fmt.Errorf("recipe %q: source %s: %w", recipeName, host, err)
+			}
+			host = abs
+		}
 		resolved[i] = resolvedSource{kind: kind, origin: host}
 		switch kind {
 		case "worktree":
@@ -317,6 +330,7 @@ func (r Real) resolveRecipe(arg string) (recipe.Registry, string, error) {
 		// relative to the DABS.YAML's directory (as the old manifest did),
 		// not the cwd — so `dabs build path/to/dir` works from anywhere.
 		rebaseImagePaths(&parsed, filepath.Dir(path))
+		rebaseSourcePaths(&parsed, filepath.Dir(path))
 		reg.Merge(parsed)
 		name := parsed.Default
 		if name == "" {
@@ -361,6 +375,35 @@ func rebaseImagePaths(reg *recipe.Registry, dir string) {
 			ctx = filepath.Join(dir, ctx)
 		}
 		rec.Image.Context = ctx
+		reg.Recipes[n] = rec
+	}
+}
+
+// rebaseSourcePaths anchors each recipe's RELATIVE source origins (mount/copy/
+// worktree) to dir, for a dabs.yaml loaded BY PATH — the same rule
+// rebaseImagePaths applies to its image, so `dabs up path/to/box` provisions the
+// same box from any cwd. Absolute origins, `~`/`$VAR` origins (expanded later),
+// and `perbox:` labels are left alone.
+//
+// Registry recipes (bundled, ~/.dabs/recipes.yaml, ./dabs.yaml) are NOT rebased:
+// their relative origins stay cwd-relative, which is what `mount: .` = "your
+// cwd, live" means. For a project ./dabs.yaml the two are the same directory.
+func rebaseSourcePaths(reg *recipe.Registry, dir string) {
+	rebase := func(p string) string {
+		if !isHostRelative(p) {
+			return p
+		}
+		return filepath.Join(dir, p)
+	}
+	for n, rec := range reg.Recipes {
+		srcs := make([]recipe.Source, len(rec.Sources))
+		copy(srcs, rec.Sources)
+		for i := range srcs {
+			srcs[i].Mount = rebase(srcs[i].Mount)
+			srcs[i].Copy = rebase(srcs[i].Copy)
+			srcs[i].Worktree = rebase(srcs[i].Worktree)
+		}
+		rec.Sources = srcs
 		reg.Recipes[n] = rec
 	}
 }
@@ -519,11 +562,11 @@ func (r Real) ensureImage(drv sandbox.Driver, recipeName string, img recipe.Imag
 		if ctx == "" {
 			ctx = filepath.Dir(img.Dockerfile)
 		}
-		dockerfile, err := filepath.Abs(img.Dockerfile)
+		dockerfile, err := r.absPath(img.Dockerfile)
 		if err != nil {
 			return "", err
 		}
-		ctxAbs, err := filepath.Abs(ctx)
+		ctxAbs, err := r.absPath(ctx)
 		if err != nil {
 			return "", err
 		}
@@ -555,6 +598,26 @@ func (r Real) ensureImage(drv sandbox.Driver, recipeName string, img recipe.Imag
 func (r Real) hasBundledImage(name string) bool {
 	_, err := fs.Stat(r.images, "images/"+name)
 	return err == nil
+}
+
+// absPath makes p absolute against the process working directory, read through
+// the data seam so a fake can control it.
+func (r Real) absPath(p string) (string, error) {
+	if filepath.IsAbs(p) {
+		return p, nil
+	}
+	wd, err := r.data.Getwd()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(wd, p), nil
+}
+
+// isHostRelative reports whether a source origin is a plain relative path — one
+// that must be anchored on a directory. The forms expandPath resolves on its own
+// (~ and $VAR) are not: this is the single place that knows which is which.
+func isHostRelative(p string) bool {
+	return p != "" && !filepath.IsAbs(p) && !strings.HasPrefix(p, "~") && !strings.HasPrefix(p, "$")
 }
 
 // envRef matches $VAR and ${VAR} references in a path.

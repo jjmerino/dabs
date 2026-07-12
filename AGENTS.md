@@ -6,6 +6,20 @@ host. Reach in with `dabs run <instance> <shell…>` (or `dabs exec <instance> -
 <cmd>` for an exact argv), or run a whole agent inside via a recipe
 (`dabs recipe claude`, defined in this repo's `dabs.yaml`).
 
+## Read `dabs.yaml` first
+
+Before you run or test anything with dabs in this repo, **read `./dabs.yaml`**.
+It decides what every bare command does. Nothing below is meaningful until you
+know what is in it:
+
+- **`default:`** is what `dabs build`, `dabs up`, `dabs recipe`, and `dabs do`
+  resolve to when you pass no name. It is NOT a shell by default. In this repo
+  it is `review` — a `claude -p` agent — so a bare `dabs do -c 'echo hi'`
+  appends your argv to Claude's, boots an agent, and prints nothing for minutes.
+  Want a shell? Name one: `dabs do` is not it; `dabs recipe sh -c 'echo hi'` is.
+- **Which recipes exist**, and what each one mounts, copies, and runs. `dabs
+  recipes` lists them; `dabs recipes --print` dumps the bundled ones.
+
 ## The loop
 
 1. **Build the box image** (once per Dockerfile change) — `build` resolves a
@@ -23,6 +37,11 @@ host. Reach in with `dabs run <instance> <shell…>` (or `dabs exec <instance> -
    ```bash
    dabs up [recipe|path]     # → myproj-a3f9c21d4e02 up
    ```
+
+   The instance is named after the recipe's **image**, not the recipe. Recipes
+   that share an image share a name prefix: `claude`, `fresh-claude`, and
+   `review` all boot a `claude-…` box, so `dabs ls` cannot tell you which recipe
+   made one.
 
 3. **Use it directly**, or **run an agent inside it — with a recipe.** Recipes
    do the plumbing: a recipe is a fully declarative box (image, what to
@@ -63,18 +82,23 @@ host. Reach in with `dabs run <instance> <shell…>` (or `dabs exec <instance> -
    `./dabs.yaml` (project)**, later winning. A project's `dabs.yaml` can add
    recipes and set a `default:`; `dabs recipe` with no name runs that default (no
    default set → it errors and lists the choices, so an agent must pick). The
-   same registry backs `dabs build`/`up`: a recipe now expresses everything the
-   old `dabs.json` manifest did (image, env, workdir, target), so there is no
-   separate manifest — `build`/`up` resolve a recipe just like `recipe`/`do`.
+   same registry backs `dabs build`/`up`: a recipe carries the image, env,
+   workdir, and target, so `build`/`up` resolve a recipe just like `recipe`/`do`.
 
    **Run a one-off command in a box — `dabs do <cmd…>`.** `dabs do` is the quick
-   "just run this in a sandbox": it uses the project `default:` recipe (or the
-   bundled `sh` box if there's no `dabs.yaml`/default), APPENDS your command to
-   that recipe's command, and runs it in a throwaway box. `dabs recipe <name>
-   <cmd…>` does the same for a named recipe. For the `sh` box that means
-   `dabs do -c 'echo hi'` → runs `sh -c 'echo hi'`. Because you're handing a box
-   an arbitrary command, dabs first prints the recipe and the exact command and
-   asks for a **y/N** confirmation before it builds or runs anything.
+   "just run this in a sandbox": it resolves the project `default:` recipe (or
+   the bundled `sh` box if there's no `dabs.yaml`/default), APPENDS your command
+   to that recipe's command, and runs it in a throwaway box. `dabs recipe <name>
+   <cmd…>` does the same for a named recipe. Because you're handing a box an
+   arbitrary command, dabs first prints the recipe and the exact command and asks
+   for a **y/N** confirmation before it builds or runs anything.
+
+   **`do` appends — it does not give you a shell.** What you get depends entirely
+   on the default recipe's own `command`. Against the bundled `sh` box,
+   `dabs do -c 'echo hi'` runs `sh -c 'echo hi'`. Against a recipe whose command
+   is `claude -p '…'` — like this repo's `review` default — the same argv is
+   appended to *Claude's* command line, which is almost never what you meant.
+   Read `dabs.yaml`, then pick the recipe explicitly.
 
    **Recipes provision; skills prompt.** A recipe describes how the box is
    provisioned (image, sources, command) and must NOT bake agent instructions
@@ -165,8 +189,7 @@ recipes:
 `dabs build [recipe|path]` builds a recipe's image; `dabs up [recipe|path]`
 boots a detached box from it (no command). Both take no arg (the registry
 `default:`), a recipe name, or a path to a `dabs.yaml` (or a dir holding one).
-There is no separate manifest: a recipe carries everything `dabs.json` used to
-(image, env, workdir, target).
+A recipe is the whole box spec — image, env, workdir, target, sources.
 
 ## Working on the codebase
 
@@ -186,30 +209,67 @@ system. Vendor tools lie: Apple's `container` is not Docker-flag-compatible;
 `exec -i` fails on non-TTY stdin; docker export drops resolv.conf. The Linux
 (bwrap) driver is exercised over ssh on a real host.
 
-**Test dabs WITH dabs — `dabs cast dabswt <worktree>`.** You do not need to
-install a branch's dabs on your host to try it. Cast the `dabswt` recipe onto a
-worktree: it builds `dabs` from that worktree inside a privileged, bubblewrap-
-carrying box and keeps the box alive. The built dabs runs sandboxed in the box
-while you (the agent) stay outside on the host, unsandboxed — then reach in:
+**Test dabs WITH dabs — `dabs recipe dabseption`.** You do not need to install a
+branch's dabs on your host to try it. The `dabseption` recipe builds `dabs` from
+`/work` inside a privileged, bubblewrap-carrying box and KEEPS the box. That dabs
+runs sandboxed in the box while you (the agent) stay outside on the host — then
+reach in:
 
 ```bash
-dabs cast dabswt <worktree>              # build the branch's dabs in a kept box
+dabs recipe dabseption                   # → box kept: dabseption-482e37bd203c
 dabs exec <instance> -- dabs recipes     # exercise its CLI, no host install
-dabs run  <instance> 'cd /work && git diff --stat && dabs worktrees ls'
+dabs run  <instance> 'dabs up sh'        # the dabs in the box boots its OWN box
 ```
 
-No worktree yet? Skip cast — plain `dabs recipe dabswt` cuts a fresh worktree
-off the current branch, builds dabs, and keeps box + worktree. So you can check
-out a branch, `dabs recipe dabswt`, switch back to main, and the box keeps
-testing that branch. Trade-off: without cast there is no parent `.git` mount, so
-git is blind in-box; use cast when a test needs in-box git.
+**The box boots nested boxes.** Its image stages a ready-built `shell` rootfs, so
+`dabs up sh` and `dabs do` work inside with no builder. Only `dabs build` cannot
+run in there — it shells out to `docker`, which the box does not carry — and
+nothing needs it to.
 
-This covers CLI behaviour, recipe resolution, cast/worktree/keep/down
-logic, git in-box, and error paths — the fast inner loop for changing dabs.
-It does NOT boot a fresh nested box: dabs builds images by shelling out to
-`docker`, which is not in the `dabswt` box, so `dabs do`/`up` inside fail at
-image build. Full nested boots stay the e2e suite's job (it pre-stages a base
-image); reach for `./run_e2e.sh` when you need a real nested sandbox.
+**Two recipes, one Dockerfile; they differ in ONE thing — what lands at `/work`:**
+
+| recipe | `/work` is | use it to |
+|---|---|---|
+| `dabseption` | the cwd, mounted live | test the code you have right now |
+| `dabseptionwt` | a FRESH worktree off the current branch | test a branch without disturbing the cwd |
+
+A Dockerfile-backed image is named after its RECIPE, so these build two image
+tags from the one Dockerfile — `dabs build dabseption` does not also ready
+`dabseptionwt` (the layer cache makes the second build cheap).
+
+`dabs cast dabseptionwt <worktree>` binds an EXISTING worktree instead, and also
+mounts its parent `.git` — so git works in-box. Plain `dabs recipe dabseptionwt`
+cuts a new worktree but does NOT mount the parent `.git`, so git is blind in-box;
+cast when a test needs in-box git.
+
+This covers CLI behaviour, recipe resolution, cast/worktree/keep/down logic, git
+in-box, nested boots, and error paths — the fast inner loop for changing dabs.
+`./run_e2e.sh` remains the full suite.
+
+**How a box boots its own boxes.** Three things, all declared in the recipe and
+its Dockerfile (`contrib/recipes/dabseption.Dockerfile`) — no host script, no
+pre-staging step, nothing to remember:
+
+1. **A privileged outer box** — `target: INTERNAL-docker-privileged-for-nested-sandboxing`,
+   so the nested bwrap driver can create user namespaces and mount.
+2. **Overlay-capable bubblewrap in the image** — built from source, non-setuid.
+   The distro package will not do.
+3. **An inner image staged by the Dockerfile** — `COPY --from=<stage> / <dest>/rootfs`
+   IS the export: the builder flattens a stage into a plain rootfs, which is
+   exactly what a dabs bwrap image is (a `rootfs/` dir plus an `image.json`
+   holding env and workdir — a `printf`, since you authored the stage and know
+   them). Nothing has to run `docker` inside the box.
+
+The trap, if you write your own such box: **dabs's state must not sit on
+overlayfs.** bwrap cannot stack an overlay on one, and `/root` in a docker box IS
+overlayfs — leaving `$HOME` there fails with `bwrap: Can't make overlay mount …
+Invalid argument`. The privileged target already runs the box with a non-overlay
+volume at `/tmp`, so set `ENV HOME=/tmp/h`. Docker seeds that volume from the
+image's own `/tmp`, which is what carries the staged image in. (Only the overlay
+*upperdir* — `instances/` — truly needs the non-overlay filesystem; the image
+rootfs may live on overlayfs.)
+
+None of this involves worktrees. Nesting and worktrees are independent knobs.
 
 **Layout**
 
@@ -246,6 +306,14 @@ core/sandbox/<kind>/   one driver per kind (apple, bwrap, server). Drivers
 - Self-contained: no references to private projects, machines, usernames, or
   home paths anywhere (code, comments, tests, commit messages). Example
   names are neutral (`demo-0`, `myproj`).
+- Comments describe the code AS IT IS in this commit. Never write about what
+  the code used to be, what it no longer does, what you considered and
+  rejected, or how it compares to the version before yours ("this does NOT
+  reimplement X", "we no longer support Y", "unlike the old Z"). The reader has
+  no access to the change that introduced the line, and a comment arguing that
+  the change was correct is addressed to a reviewer who is already gone. State
+  the constraint the code cannot show; say nothing else. That history belongs in
+  the commit message.
 - Commit messages say WHY, and for driver changes include what was run
   against the real system and what it printed.
 - Function names must be verbs.

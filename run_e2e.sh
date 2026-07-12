@@ -1,23 +1,22 @@
 #!/bin/bash
 # Run the e2e suite in its supported box: a privileged docker box (for the
-# nested bwrap driver) carrying an overlay-enabled bubblewrap. The suite's base
-# image is prebuilt on the host and staged in, so no docker runs in the box.
+# nested bwrap driver) carrying an overlay-enabled bubblewrap. The image the
+# suite's inner boxes boot is staged into the box by the box's own Dockerfile
+# (a `COPY --from` of a stage it authors), so nothing is staged on the host and
+# no docker runs in the box.
 set -euo pipefail
 
 cd "$(dirname "$0")"
-REPO="$PWD"
 DABS="$(mktemp -d)/dabs"
 go build -o "$DABS" .
 
-# Prebuild the suite's base-image rootfs on the host (mirrors bwrap.Build).
-stage="$REPO/.e2e-stage"
-rm -rf "$stage"; mkdir -p "$stage/rootfs"
-docker build -t dabs-e2e-base test/e2e >/dev/null
-cid="$(docker create dabs-e2e-base)"
-docker export "$cid" | tar -x --exclude='dev/*' -C "$stage/rootfs"
-docker inspect -f '{"env":{{json .Config.Env}},"workdir":{{json .Config.WorkingDir}}}' dabs-e2e-base > "$stage/image.json"
-docker rm "$cid" >/dev/null; docker rmi dabs-e2e-base >/dev/null 2>&1 || true
-
+# The e2e box builds FROM dabs-dabseption, so that image must exist first.
+#
+# These two builds are also where the `build` verb is exercised: they drive real
+# image builds through the driver, and `set -e` fails the run if either breaks.
+# The suite cannot cover `build` itself — it runs in the box, and the box has no
+# docker.
+"$DABS" build dabseption
 "$DABS" build test/e2e/box
 name="$("$DABS" up test/e2e/box | awk '{print $1; exit}')"
 trap '"$DABS" down "$name" >/dev/null 2>&1 || true' EXIT

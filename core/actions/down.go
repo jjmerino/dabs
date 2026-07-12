@@ -3,7 +3,6 @@ package actions
 import (
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/jjmerino/dabs/core/params"
 	"github.com/jjmerino/dabs/core/tui"
@@ -13,14 +12,12 @@ import (
 // live. All policy lives here, drivers only down exact names.
 //
 // Safety: a name is REQUIRED — an empty/blank name matches nothing (never
-// "all"). A name matching more than one instance is REFUSED unless --multiple
+// "all"); matches() refuses one for every verb, so Down inherits it. A name
+// matching more than one instance is REFUSED unless --multiple
 // is set: it lists the matches and reaps nothing, so a stray prefix can't wipe
 // several boxes at once. --force only skips the confirmation prompt; it does
 // NOT by itself authorize multi-match reaping. --dry previews the matches.
 func (r Real) Down(p params.Down) error {
-	if strings.TrimSpace(p.Instance) == "" {
-		return fmt.Errorf("a name is required (see dabs ls)")
-	}
 	matches, err := r.matches(p.Instance)
 	if err != nil {
 		return err

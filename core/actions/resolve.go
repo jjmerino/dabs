@@ -55,6 +55,13 @@ func lsTimeout(d sandbox.Driver, timeout time.Duration) ([]sandbox.Info, error) 
 // risks hanging on a slow server. Remote drivers are queried
 // concurrently, each bounded by remoteTimeout.
 func (r Real) matches(instance string) ([]match, error) {
+	// A name is REQUIRED: an empty/blank name is a prefix of EVERY instance, so
+	// without this it would "match" the whole fleet (reported as ambiguous, one
+	// `if` away from acting on all of them). Blank matches nothing, never all —
+	// for every verb that resolves a name, not just down.
+	if strings.TrimSpace(instance) == "" {
+		return nil, fmt.Errorf("a name is required (see dabs ls)")
+	}
 	var out []match
 
 	// Local first, synchronously — its exact match short-circuits the fleet.

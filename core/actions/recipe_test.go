@@ -10,6 +10,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -67,6 +68,7 @@ func (d *fakeDriver) Kind() string                { return "fake" }
 
 type fakeData struct {
 	home      string
+	cwd       string // Getwd: what relative paths resolve against
 	env       map[string]string
 	files     map[string][]byte // ReadFile
 	exists    map[string]bool   // Stat -> exists
@@ -133,6 +135,7 @@ func (f *fakeData) MkdirAll(p string, _ fs.FileMode) error {
 	return nil
 }
 func (f *fakeData) MkdirTemp(string, string) (string, error) { return "/tmp/x", nil }
+func (f *fakeData) Getwd() (string, error)                   { return f.cwd, nil }
 func (f *fakeData) RemoveAll(string) error                   { return nil }
 func (f *fakeData) Getenv(k string) string                   { return f.env[k] }
 func (f *fakeData) LookupEnv(k string) (string, bool)        { v, ok := f.env[k]; return v, ok }
@@ -190,7 +193,7 @@ func newReal(recipesYAML string, fd *fakeData, drv *fakeDriver, bundledImages ..
 }
 
 func baseData() *fakeData {
-	return &fakeData{home: "/home/t", env: map[string]string{}, exists: map[string]bool{}, isDir: map[string]bool{}, toplevel: map[string]error{}, noCommits: map[string]bool{}}
+	return &fakeData{home: "/home/t", cwd: "/cwd", env: map[string]string{}, exists: map[string]bool{}, isDir: map[string]bool{}, toplevel: map[string]error{}, noCommits: map[string]bool{}}
 }
 
 func onlyUp(t *testing.T, d *fakeDriver) sandbox.Spec {
@@ -1026,4 +1029,70 @@ func captureStdout(t *testing.T, fn func()) string {
 	wp.Close()
 	os.Stdout = old
 	return <-done
+}
+
+// CONTRACT: a RELATIVE source origin reaches the driver ABSOLUTE (anchored on
+// the cwd). A driver only ever takes exact paths — docker rejects a relative
+// bind ("mount path must be absolute"), so resolution must happen in actions.
+func TestRelativeSourceOriginReachesDriverAbsolute(t *testing.T) {
+	y := `recipes:
+  m:
+    image: img
+    command: [x]
+    sources:
+      - mount: .
+        path: /work
+      - copy: stage
+        path: /tmp/s
+`
+	const cwd = "/work/proj" // the fake's cwd: relative origins anchor here
+	fd := baseData()
+	fd.cwd = cwd
+	fd.exists[cwd] = true
+	fd.exists[filepath.Join(cwd, "stage")] = true
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	if err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "m"}); err != nil {
+		t.Fatalf("Recipe: %v", err)
+	}
+	up := onlyUp(t, drv)
+	for _, m := range up.Mounts {
+		if !filepath.IsAbs(m.Host) {
+			t.Errorf("driver got relative mount host %q; want absolute", m.Host)
+		}
+	}
+	if len(up.Mounts) != 2 || up.Mounts[0].Host != cwd {
+		t.Errorf("Up mounts = %+v, want `.` mounted as the cwd %s", up.Mounts, cwd)
+	}
+	// The copy source is staged read-only, then copied in-box.
+	if up.Mounts[1].Host != filepath.Join(cwd, "stage") {
+		t.Errorf("copy source host = %q, want %q", up.Mounts[1].Host, filepath.Join(cwd, "stage"))
+	}
+}
+
+// CONTRACT: a dabs.yaml loaded BY PATH anchors its relative source origins on
+// its OWN directory (as it already does for its image dockerfile/context), so
+// `dabs up path/to/box` provisions the same box from any cwd.
+func TestUpFromDabsYamlPathRebasesSourcePaths(t *testing.T) {
+	y := `default: base
+recipes:
+  base:
+    image: img
+    command: [x]
+    sources:
+      - copy: assets
+        path: /tmp/stage
+`
+	fd := baseData()
+	path := "/proj/box/dabs.yaml"
+	fd.exists[path] = true
+	fd.exists["/proj/box/assets"] = true
+	fd.files = map[string][]byte{path: []byte(y)}
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	if err := newReal("", fd, drv).Up(params.Up{Name: path}); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	up := onlyUp(t, drv)
+	if len(up.Mounts) != 1 || up.Mounts[0].Host != "/proj/box/assets" {
+		t.Errorf("Up mounts = %+v, want the source anchored on the dabs.yaml dir (/proj/box/assets)", up.Mounts)
+	}
 }

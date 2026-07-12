@@ -18,16 +18,16 @@ import (
 //	└─ dabs-a3f9c21d    worktree   branch dabs/a3f9c21d
 //	   └─ claude-7c2d   box        claude-b1af95… · running
 //
-// A box's state comes from the driver; every other line comes from the node
-// records. So a node whose box the driver has forgotten still shows — as gone,
-// which is the fact worth seeing.
+// A box's state comes from the driver that holds it — including a driver a recipe
+// `target:` sent it to, whose name is shown beside the status. Every other line
+// comes from the node records, so a node whose box no driver holds still shows,
+// as gone: what ran and from where is the question a node answers.
 //
-// Boxes on a server list under their own heading: a remote is a place too, just
-// not this one. While a server is queried (an ssh round-trip) a spinner runs on
-// stderr.
+// While a server is queried (an ssh round-trip) a spinner runs on stderr.
 func (r Real) Ls(params.Ls) error {
-	state := map[string]string{} // local instance -> status, from the driver
-	var remote []string
+	// Every driver, not just the local one: a recipe with a `target:` boots its box
+	// elsewhere, and a box the tree cannot find is a box the tree calls gone.
+	state := map[string]boxState{}
 	for _, key := range r.order {
 		drv := r.drivers[key]
 		var stop func()
@@ -44,11 +44,7 @@ func (r Real) Ls(params.Ls) error {
 			continue
 		}
 		for _, in := range infos {
-			if key == "local" {
-				state[in.Name] = in.Status
-				continue
-			}
-			remote = append(remote, fmt.Sprintf("%-24s %s  %s", in.Name, tui.Status(in.Status), tui.Muted(key)))
+			state[in.Name] = boxState{status: in.Status, where: key}
 		}
 	}
 
@@ -56,7 +52,7 @@ func (r Real) Ls(params.Ls) error {
 	if err != nil {
 		return err
 	}
-	if len(nodes) == 0 && len(state) == 0 && len(remote) == 0 {
+	if len(nodes) == 0 && len(state) == 0 {
 		fmt.Fprintln(os.Stdout, tui.Muted("nothing here yet"))
 		return nil
 	}
@@ -72,9 +68,14 @@ func (r Real) Ls(params.Ls) error {
 	}
 	var loose []string
 	for inst, st := range state {
-		if !claimed[inst] {
-			loose = append(loose, fmt.Sprintf("%-24s %s", tui.Accent(inst), tui.Status(st)))
+		if claimed[inst] {
+			continue
 		}
+		line := fmt.Sprintf("%-26s %s", tui.Accent(inst), tui.Status(st.status))
+		if st.where != "local" {
+			line += "  " + tui.Muted("%s", st.where)
+		}
+		loose = append(loose, line)
 	}
 	sort.Strings(loose)
 	if len(loose) > 0 {
@@ -83,18 +84,17 @@ func (r Real) Ls(params.Ls) error {
 			fmt.Fprintln(os.Stdout, tui.Indent(l, 2))
 		}
 	}
-	if len(remote) > 0 {
-		fmt.Fprintln(os.Stdout, tui.Heading("elsewhere in the fleet"))
-		for _, l := range remote {
-			fmt.Fprintln(os.Stdout, tui.Indent(l, 2))
-		}
-	}
 	return nil
 }
 
+// boxState is what a driver says about a box right now, and which driver said it.
+// A box booted through a recipe `target:` lives on another driver, so where it is
+// is part of what it is.
+type boxState struct{ status, where string }
+
 // printNodeForest writes every root and its descendants. A root is a node whose
 // parent is not present — a project, or a node whose parent was reaped.
-func printNodeForest(nodes []Node, state map[string]string) {
+func printNodeForest(nodes []Node, state map[string]boxState) {
 	byID := make(map[string]Node, len(nodes))
 	for _, n := range nodes {
 		byID[n.ID] = n
@@ -165,7 +165,7 @@ func printNodeForest(nodes []Node, state map[string]string) {
 
 // nodeDetail says what a node is right now: where a project points, which branch
 // a worktree carries, whether a box is still running.
-func nodeDetail(n Node, state map[string]string) string {
+func nodeDetail(n Node, state map[string]boxState) string {
 	switch n.Kind {
 	case KindProject, KindWorkdir:
 		return tui.Muted("%s", tilde(n.Dir))
@@ -178,7 +178,11 @@ func nodeDetail(n Node, state map[string]string) string {
 		if !up {
 			return tui.Muted("%s · gone", n.Instance)
 		}
-		return fmt.Sprintf("%s %s", tui.Muted("%s ·", n.Instance), tui.Status(st))
+		line := fmt.Sprintf("%s %s", tui.Muted("%s ·", n.Instance), tui.Status(st.status))
+		if st.where != "local" {
+			line += "  " + tui.Muted("%s", st.where)
+		}
+		return line
 	}
 	return tui.Muted("%s", n.Recipe)
 }

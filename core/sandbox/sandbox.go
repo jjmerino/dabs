@@ -75,3 +75,23 @@ type Driver interface {
 	// same tag it stamps on Info.Driver, reachable without any instances.
 	Kind() string
 }
+
+// Image is one built image in a driver's local store: its name (the recipe
+// image name, without any driver-internal prefix) and size in bytes (0 when the
+// driver cannot report it cheaply).
+type Image struct {
+	Name string
+	Size int64
+}
+
+// ImageStore is an OPTIONAL driver capability: a driver that keeps a reapable
+// local image store implements it so `dabs images` can list what a build left
+// behind and `dabs images prune` can reclaim it. A driver without a local store
+// (e.g. a remote server) simply does not implement it, and the action skips it.
+type ImageStore interface {
+	// Images lists the images this driver has built and still holds.
+	Images() ([]Image, error)
+	// RemoveImage deletes one image by the name Images reported. Removing an
+	// absent image is not an error.
+	RemoveImage(name string) error
+}

@@ -161,3 +161,37 @@ func (Driver) HasImage(name string) (bool, error) {
 }
 
 func (Driver) Kind() string { return "docker" }
+
+// Images lists the images dabs built under docker — the tags carrying dabs's
+// prefix, reported under their recipe image name. Size is left 0 (docker's
+// listing reports a human string, not bytes); a prune reaps by name.
+func (Driver) Images() ([]sandbox.Image, error) {
+	out, err := exec.Command("docker", "images", "--format", "{{.Repository}}").Output()
+	if err != nil {
+		return nil, fmt.Errorf("docker: images: %w", err)
+	}
+	seen := map[string]bool{}
+	var imgs []sandbox.Image
+	for _, repo := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if !strings.HasPrefix(repo, prefix) || seen[repo] {
+			continue
+		}
+		seen[repo] = true
+		imgs = append(imgs, sandbox.Image{Name: strings.TrimPrefix(repo, prefix)})
+	}
+	return imgs, nil
+}
+
+// RemoveImage deletes one dabs image tag. A missing image is not an error;
+// an image still used by a container is (docker refuses it) so the caller can
+// report it rather than reap silently.
+func (Driver) RemoveImage(name string) error {
+	out, err := exec.Command("docker", "rmi", imageName(name)).CombinedOutput()
+	if err != nil {
+		if strings.Contains(string(out), "No such image") {
+			return nil
+		}
+		return fmt.Errorf("docker: remove image %s: %s", imageName(name), strings.TrimSpace(string(out)))
+	}
+	return nil
+}

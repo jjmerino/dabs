@@ -10,6 +10,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -135,6 +136,13 @@ func (Driver) Run(instance string, cmd []string) error {
 	c.Stdout = os.Stdout
 	c.Stderr = os.Stderr
 	if err := c.Run(); err != nil {
+		// A non-zero EXIT is the box command's own failure, not dabs's: return it
+		// bare so the caller propagates the code and prints no dabs-error line.
+		// Anything else (the vendor CLI could not spawn the exec) is a driver failure.
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			return ee
+		}
 		return fmt.Errorf("apple: exec in %s: %w", ctn, err)
 	}
 	return nil
@@ -162,6 +170,12 @@ func (Driver) Exec(instance string, cmd []string) (string, error) {
 	args = append(args, cmd...)
 	out, err := exec.Command("container", args...).CombinedOutput()
 	if err != nil {
+		// A non-zero EXIT is the box command's own failure: return it bare so the
+		// caller propagates the code. Only a real driver failure is wrapped.
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			return string(out), ee
+		}
 		return string(out), fmt.Errorf("apple: exec in %s: %v: %s", found.ID, err, strings.TrimSpace(string(out)))
 	}
 	return string(out), nil
@@ -234,3 +248,36 @@ func remove(ctn string) {
 
 // Kind identifies this driver.
 func (Driver) Kind() string { return "apple" }
+
+// Images lists the images dabs built under this driver — the `container` image
+// tags carrying dabs's prefix, reported under their recipe image name. Size is
+// left 0: `container` does not report it in the listing, and a prune reaps by
+// name regardless.
+func (Driver) Images() ([]sandbox.Image, error) {
+	out, err := exec.Command("container", "image", "ls").Output()
+	if err != nil {
+		return nil, fmt.Errorf("apple: image ls: %w", err)
+	}
+	seen := map[string]bool{}
+	var imgs []sandbox.Image
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		name := strings.Fields(line)
+		if len(name) == 0 || !strings.HasPrefix(name[0], prefix) || seen[name[0]] {
+			continue
+		}
+		seen[name[0]] = true
+		imgs = append(imgs, sandbox.Image{Name: strings.TrimPrefix(name[0], prefix)})
+	}
+	return imgs, nil
+}
+
+// RemoveImage deletes one dabs image tag. A missing image is not an error.
+func (Driver) RemoveImage(name string) error {
+	if err := exec.Command("container", "image", "rm", imageName(name)).Run(); err != nil {
+		if exec.Command("container", "image", "inspect", imageName(name)).Run() != nil {
+			return nil // already gone
+		}
+		return fmt.Errorf("apple: remove image %s: %w", imageName(name), err)
+	}
+	return nil
+}

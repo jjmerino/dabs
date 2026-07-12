@@ -126,7 +126,7 @@ then point a manifest at it:
 
 ```bash
 dabs servers add homelab            # host defaults to the name; or: add homelab user@10.0.0.5
-dabs servers ls                     # name  strategy destination
+dabs servers ls                     # NAME  VIA  DESTINATION
 #   local     apple this machine
 #   homelab   ssh homelab
 dabs servers rm homelab             # unregister (remote sandboxes untouched)
@@ -169,14 +169,17 @@ inside the box:
 
 Host paths may use `~` and `$VAR`. dabs also supplies the box's three node
 spaces to source paths — `$NODE_VOLUME` (survives `down`), `$NODE_EPHEMERAL`
-(`down` asks first), `$NODE_TMP` (`down` reaps quietly) — so a box can keep a
-private, persistent slice of an otherwise shared tree:
+(`down` asks first), `$NODE_TMP` (`down` reaps quietly) — plus the `$PARENT_*`
+family naming the same spaces of the box's parent place. Use `$PARENT_VOLUME`
+for what a box wants back on the NEXT `up`: a fresh box gets an empty
+`$NODE_VOLUME`, but its parent place persists, so a box can keep a private slice
+that reloads next time:
 
 ```yaml
 sources:
-  - mkmount: ~/.dabs/shared/claude          # a login dir every box shares
+  - mkmount: ~/.dabs/shared/claude           # a login dir every box shares
     path: /root/.claude
-  - mkmount: $NODE_VOLUME/claude/projects   # this box's sessions, kept across `down`
+  - mkmount: $PARENT_VOLUME/claude/projects  # this place's sessions; reload next box, kept across `down`
     path: /root/.claude/projects
 ```
 

@@ -27,6 +27,7 @@ var Commands = map[string]Command{
 	"down":      {(*CLI).runDown},
 	"ls":        {(*CLI).runLs},
 	"rm":        {(*CLI).runRm},
+	"images":    {(*CLI).runImages},
 	"servers":   {(*CLI).runServers},
 }
 
@@ -50,6 +51,7 @@ var commandDocs = map[string]cmdDoc{
 	"down":      {"stop a box; its node is archived, not removed (--multiple for several matches)", "down [--force] [--dry] [--multiple] <instance>"},
 	"ls":        {"list what dabs owns, as a tree, live (--all: include archived nodes)", "ls [--all]"},
 	"rm":        {"remove a node (a place or a box) and what it holds: rm <node> [-y] [--volume] [--force]", "rm <node> [-y] [--volume] [--force]"},
+	"images":    {"list built box images, or reclaim them: images [prune] (they rebuild on the next build)", "images [prune]"},
 	"servers":   {"manage registered servers: servers [ls] | add <name> [host] | rm <name>", "servers [ls | add <name> [host] | rm <name>]"},
 }
 
@@ -188,6 +190,21 @@ func (c *CLI) runRm(args []string) error {
 		return err
 	}
 	return c.actions.Rm(p)
+}
+
+func (c *CLI) runImages(args []string) error {
+	if wantsHelp(args) {
+		return HelpRequestedError{helpText("images", nil)}
+	}
+	p := params.Images{}
+	switch {
+	case len(args) == 0:
+	case len(args) == 1 && args[0] == "prune":
+		p.Prune = true
+	default:
+		return BadArgsError{Cmd: "images", Reason: "usage: images [prune]"}
+	}
+	return c.actions.Images(p)
 }
 
 func (c *CLI) runServers(args []string) error {

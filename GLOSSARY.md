@@ -34,9 +34,9 @@ multiple boxes from the same recipe. The name you pass to `run`/`exec`/`down`.
 The environment abstraction as a whole — the isolation mechanism, and the term
 for the box as seen by the driver/contract layer. Same object as *box*/*instance*,
 named from the implementation's point of view.
-*Used in:* `cli/commands.go:30` (`ls` help: "list sandboxes"),
+*Used in:* `cli/commands.go:30` (`ls` help: "list what dabs owns, as a tree"),
 `core/sandbox/sandbox.go:1-8,24,42` (package + `Spec`/`BuildSpec` docs),
-`core/actions/ls.go:11` ("Ls lists sandboxes"), `README.md:3,42,75,96`.
+`core/actions/ls.go:11` (`Ls` renders the node tree), `README.md:3,42,75,96`.
 
 ### environment
 Informal synonym used in prose for what a box provides (a machine's worth of
@@ -94,13 +94,17 @@ lists the known recipes and what each mounts.
 *Used in:* `cli/commands.go:21,24,41-53,90-101`, `core/actions/recipe.go`.
 
 ### down
-Stop and remove instances by name; `--force` downs all matches, `--dry` previews.
+Stop a box and ARCHIVE its node — the box is removed but its node is kept as the
+record of what ran and from where. `--multiple` acts on all matches (a name
+matching several is otherwise refused), `--dry` previews, `--force` skips the
+prompt.
 *Used in:* `cli/commands.go:29`, `core/actions/down.go:11-15`,
 `core/sandbox/sandbox.go:53` (`Driver.Down`).
 
 ### ls
-List existing boxes across the fleet, grouped by fleet member. Empty members
-print `(no instances)`.
+List what dabs owns as a node tree, grouped by fleet member; `--all` also shows
+archived nodes. An empty fleet member prints `(nothing running)` and a tree with
+no live box prints under `no box`.
 *Used in:* `cli/commands.go:30`, `core/actions/ls.go:11-13,40`,
 `core/sandbox/sandbox.go:55` (`Driver.Ls`).
 
@@ -228,6 +232,15 @@ exported into the box's environment.
 *Used in:* `core/actions/recipe.go` (`mintBoxNode`, `expandPathWith`),
 `core/recipe/recipe.go:79-85`.
 
+### $PARENT_VOLUME / $PARENT_EPHEMERAL / $PARENT_TMP
+The same three spaces of the box's PARENT place (the project/workdir/worktree the
+box stands on) rather than the box's own node. A fresh `up` mints a new box node
+with an empty `$NODE_VOLUME`, but the parent place persists — so `$PARENT_VOLUME`
+is where a box keeps what it wants back on the next `up` (the shipped `claude`
+recipe stores sessions there so they reload). Substituted in source paths ONLY.
+*Used in:* `core/actions/recipe.go` (`spaceVars`, `expandPathWith`), `dabs.yaml`
+(`claude`/`claudewt`/`scratch` recipes).
+
 ---
 
 ## Drivers, fleet, servers
@@ -299,9 +312,9 @@ specific id is meant).
 ### 2. `ps` vs `ls` — the discovery gap
 
 Naive users reached for `dabs ps` (the muscle-memory verb, cf. `docker ps`)
-before discovering `dabs ls`. Not a naming *conflict* but a discoverability miss.
-*Proposal for review:* accept `ps` as an alias for `ls` (no code change made
-here). `ls` is defined at `cli/commands.go:30`.
+before discovering `dabs ls`. `ps` is an accepted alias for `ls` (see the alias
+map in `cli/cli.go`), so the muscle-memory verb works; it is just absent from
+`dabs --help`. `ls` is defined at `cli/commands.go:30`.
 
 ### 3. "box image" vs "sandbox image"
 

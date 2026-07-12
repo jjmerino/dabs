@@ -16,6 +16,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -266,6 +267,13 @@ func (d Driver) Run(instance string, cmd []string) error {
 	c.Stdout = os.Stdout
 	c.Stderr = os.Stderr
 	if err := c.Run(); err != nil {
+		// A non-zero EXIT is the box command's own failure, not dabs's: return it
+		// bare so the caller propagates the code and prints no dabs-error line.
+		// Everything else (bwrap could not spawn, no rootfs) is a driver failure.
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			return ee
+		}
 		return fmt.Errorf("bwrap: run in %s: %w", instance, err)
 	}
 	return nil
@@ -292,6 +300,12 @@ func (d Driver) Exec(instance string, cmd []string) (string, error) {
 	defer unlock()
 	out, err := c.CombinedOutput()
 	if err != nil {
+		// A non-zero EXIT is the box command's own failure: return it bare so the
+		// caller propagates the code. Only a real driver failure is wrapped.
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			return string(out), ee
+		}
 		return string(out), fmt.Errorf("bwrap: exec in %s: %v: %s", instance, err, strings.TrimSpace(string(out)))
 	}
 	return string(out), nil
@@ -373,3 +387,47 @@ func (d Driver) HasImage(name string) (bool, error) {
 
 // Kind identifies this driver.
 func (Driver) Kind() string { return "bwrap" }
+
+// Images lists the built image rootfs trees under <root>/images. Each is a
+// directory a Build produced; its size is the whole tree, since that is what a
+// prune reclaims.
+func (d Driver) Images() ([]sandbox.Image, error) {
+	entries, err := os.ReadDir(filepath.Join(d.root, "images"))
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("bwrap: images: %w", err)
+	}
+	var out []sandbox.Image
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		out = append(out, sandbox.Image{Name: e.Name(), Size: dirSize(filepath.Join(d.root, "images", e.Name()))})
+	}
+	return out, nil
+}
+
+// RemoveImage deletes one built image tree. A missing image is not an error.
+func (d Driver) RemoveImage(name string) error {
+	if err := os.RemoveAll(d.imageDir(name)); err != nil {
+		return fmt.Errorf("bwrap: remove image %s: %w", name, err)
+	}
+	return nil
+}
+
+// dirSize sums the bytes of a tree, best-effort (an unreadable entry counts 0).
+func dirSize(dir string) int64 {
+	var total int64
+	filepath.WalkDir(dir, func(_ string, e os.DirEntry, err error) error {
+		if err != nil || e.IsDir() {
+			return nil
+		}
+		if info, err := e.Info(); err == nil {
+			total += info.Size()
+		}
+		return nil
+	})
+	return total
+}

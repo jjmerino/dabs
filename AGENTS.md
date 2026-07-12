@@ -76,7 +76,7 @@ know what is in it:
        sources:
          - mkmount: ~/.dabs/shared/claude       # the login dir, shared by every box that names it
            path: /root/.claude
-         - mkmount: $NODE_VOLUME/claude/projects # this box's sessions; they survive `down`
+         - mkmount: $PARENT_VOLUME/claude/projects # this place's sessions; reload on the next box, survive `down`
            path: /root/.claude/projects
          - mount: .                             # your cwd, live — edits persist on the host
            path: /work
@@ -125,15 +125,20 @@ know what is in it:
    space, not the recipe). A source path may name the box node's spaces:
 
    ```
-   $NODE_VOLUME      survives `down`       — sessions, caches
+   $NODE_VOLUME      survives `down`       — this box's caches
    $NODE_EPHEMERAL   `down` asks first     — work you would miss
    $NODE_TMP         `down` reaps quietly  — scratch
    ```
 
-   dabs substitutes them into source paths only; they are not environment
-   variables inside the box. An `mkmount:` into `$NODE_VOLUME` nested over a
-   shared mount gives one box its own persistent slice of an otherwise shared
-   tree — that is how the `claude` recipe keeps its sessions across a `down`.
+   The `$PARENT_*` family names the same three spaces of the box's PARENT place
+   (the project/workdir/worktree it stands on) instead of the box's own node.
+   Use `$PARENT_VOLUME` for what a box wants back on the NEXT `up`: a fresh box
+   is a fresh node with an empty `$NODE_VOLUME`, but its parent place persists,
+   so sessions written to `$PARENT_VOLUME` reload next time. Both families
+   substitute into source paths only; they are not environment variables inside
+   the box. An `mkmount:` into `$PARENT_VOLUME` nested over a shared mount gives
+   one box its own persistent slice of an otherwise shared tree — that is how the
+   `claude` recipe keeps its sessions across re-ups and a `down`.
 
    **Recipes provision; skills prompt.** A recipe describes how the box is
    provisioned (image, sources, command) and must NOT bake agent instructions

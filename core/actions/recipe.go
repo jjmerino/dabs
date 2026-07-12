@@ -65,15 +65,32 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 	if err != nil {
 		return err
 	}
+	boxless := rec.Image.Name == "" && rec.Image.Dockerfile == ""
+	if err := r.checkSources(name, rec.Sources, boxless); err != nil {
+		return err
+	}
 	command := append(append([]string{}, rec.Command...), extra...)
 	// A recipe with no image is a recipe for a PLACE, not a box: it provisions its
 	// nodes (a worktree, a directory) and stops. Nodes do not need a box; a box
 	// mounts what a node owns.
-	if rec.Image.Name == "" && rec.Image.Dockerfile == "" {
+	if boxless {
 		return r.provisionNodes(name, rec, worktree)
 	}
-	if len(command) == 0 {
+	// An empty recipe command has nothing to run, and appended argv cannot supply
+	// one: it is appended to the recipe's command, so with no command it would
+	// reach the driver as bare options (bwrap: Unknown option). The recipe's own
+	// command is what defines the run.
+	if len(rec.Command) == 0 {
 		return fmt.Errorf("recipe %q: no command to run", name)
+	}
+	// A worktree argument resolves by unambiguous prefix, git-style, like every
+	// other name dabs takes — done before castSources binds it.
+	if worktree != "" {
+		full, werr := r.resolveWorktreeArg(worktree)
+		if werr != nil {
+			return werr
+		}
+		worktree = full
 	}
 	// Look before running: `dabs do` ALWAYS confirms — it exists to run an
 	// arbitrary command in a box, so it must never launch unprompted, even with
@@ -361,6 +378,12 @@ func (r Real) provisionPlaces(recipeName string, sources []recipe.Source, castWo
 			if aerr != nil {
 				return "", "", nil, nil, nil, fmt.Errorf("recipe %q: %w", recipeName, aerr)
 			}
+			// A copy whose destination is inside its own source makes cp recurse
+			// into itself (dest/dest/dest…) until the path is too long — reject it
+			// before a single byte is copied.
+			if pathInside(at, host) {
+				return "", "", nil, nil, nil, fmt.Errorf("recipe %q: copy destination %s is inside the copy source %s — it would recurse into itself", recipeName, at, host)
+			}
 			if err := r.data.MkdirAll(at, 0o755); err != nil {
 				return "", "", nil, nil, nil, err
 			}
@@ -522,6 +545,12 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID, tip string, rec re
 	workdir := rec.Workdir
 	if workdir == "" {
 		workdir = "/work"
+	}
+	// A recipe's env is passed to the driver as-is, and setting PATH there REPLACES
+	// the image PATH rather than extending it — so even the recipe's own command
+	// may stop resolving. Warn (stderr, never stdout) so the box still comes up.
+	if _, ok := rec.Env["PATH"]; ok {
+		fmt.Fprintln(os.Stderr, tui.Warn("recipe %q sets PATH in env, which REPLACES the image PATH — commands in the box may not resolve", recipeName))
 	}
 	instance, err = drv.Up(sandbox.Spec{Name: image, Workdir: workdir, Env: rec.Env, Mounts: mounts})
 	if err != nil {
@@ -1005,6 +1034,13 @@ func (r Real) ensureProjectNode(recipeName string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	// dabs's own storage is not a project. Running from inside ~/.dabs would mark
+	// dabs's node store as a project whose chain re-renders its own tree.
+	if inside, err := r.insideDabsStore(cwd); err != nil {
+		return "", err
+	} else if inside {
+		return "", fmt.Errorf("refusing to provision inside dabs's own storage (%s) — run dabs from your project, not under ~/.dabs", cwd)
+	}
 	nodes, err := r.listNodes()
 	if err != nil {
 		return "", err
@@ -1086,6 +1122,133 @@ func (r Real) castSources(recipeName string, in []recipe.Source, worktree string
 		return nil, fmt.Errorf("cast: recipe %q has no `.` source to bind the worktree to", recipeName)
 	}
 	return out, nil
+}
+
+// resolveWorktreeArg resolves a `dabs cast` worktree argument to a full node id
+// by unambiguous prefix, git-style — the same rule every other name dabs takes.
+// An exact id wins outright; a unique prefix resolves; an ambiguous prefix lists
+// the matches; nothing matching is a plain "no worktree".
+func (r Real) resolveWorktreeArg(arg string) (string, error) {
+	nodes, err := r.listWorktreeNodes()
+	if err != nil {
+		return "", err
+	}
+	var pref []string
+	for _, n := range nodes {
+		if n.ID == arg {
+			return arg, nil
+		}
+		if strings.HasPrefix(n.ID, arg) {
+			pref = append(pref, n.ID)
+		}
+	}
+	switch len(pref) {
+	case 0:
+		return "", fmt.Errorf("cast: no worktree %q (see: dabs worktrees ls)", arg)
+	case 1:
+		return pref[0], nil
+	default:
+		sort.Strings(pref)
+		return "", fmt.Errorf("cast: %q is ambiguous: %s (see: dabs worktrees ls)", arg, strings.Join(pref, ", "))
+	}
+}
+
+// checkSources rejects source specs that dabs cannot safely realize, BEFORE any
+// side effect (no place cut, no image built, no box up). Two contracts:
+//
+//   - a box PATH (where a source lands inside the box) is a literal absolute path:
+//     it carries no variable ($NODE_*/$PARENT_* resolve only in source ORIGINS),
+//     is absolute (a relative path is silently rooted at /), and holds no `..`
+//     segment (which would escape the declared workdir).
+//   - a RELATIVE source ORIGIN stays within the project: a `..` that escapes the
+//     cwd would provision a place dabs cannot track or reap. Absolute origins are
+//     the user's explicit choice and pass.
+//
+// A recipe with exactly one `.` source stands on one place; more than one would
+// cut several chain tips a single box cannot all parent.
+func (r Real) checkSources(recipeName string, sources []recipe.Source, boxless bool) error {
+	dots := 0
+	for _, s := range sources {
+		kind, origin, err := s.Kind()
+		if err != nil {
+			// A malformed source is reported by validateSources (and shown in the
+			// look-before-run summary); leave its message to that path.
+			continue
+		}
+		if origin == "." {
+			dots++
+		}
+		if isHostRelative(origin) && escapesRoot(origin) {
+			return fmt.Errorf("recipe %q: source %s:%s escapes the project root with `..` — dabs cannot track or reap a place outside it", recipeName, kind, origin)
+		}
+		if boxless {
+			continue // a boxless recipe makes places; a place has no box path
+		}
+		if err := checkBoxPath(recipeName, kind, origin, s.Path); err != nil {
+			return err
+		}
+	}
+	if dots > 1 {
+		return fmt.Errorf("recipe %q: more than one `.` source — a box stands on one place", recipeName)
+	}
+	return nil
+}
+
+// checkBoxPath validates where a source lands inside the box. An empty path is
+// left to validateSources (which frames it as "say where it lands").
+func checkBoxPath(recipeName, kind, origin, boxPath string) error {
+	if boxPath == "" {
+		return nil
+	}
+	if strings.Contains(boxPath, "$") {
+		return fmt.Errorf("recipe %q: box path %q for %s:%s uses a variable — $NODE_*/$PARENT_* resolve in source origins, not box paths", recipeName, boxPath, kind, origin)
+	}
+	if !filepath.IsAbs(boxPath) {
+		return fmt.Errorf("recipe %q: box path %q for %s:%s is not absolute — a relative box path is silently rooted at /", recipeName, boxPath, kind, origin)
+	}
+	if hasDotDot(boxPath) {
+		return fmt.Errorf("recipe %q: box path %q for %s:%s uses `..` to escape the workdir", recipeName, boxPath, kind, origin)
+	}
+	return nil
+}
+
+// escapesRoot reports whether a relative path climbs above its anchor with `..`.
+func escapesRoot(rel string) bool {
+	c := filepath.Clean(rel)
+	return c == ".." || strings.HasPrefix(c, "../")
+}
+
+// hasDotDot reports whether any segment of a path is `..`.
+func hasDotDot(p string) bool {
+	for _, seg := range strings.Split(p, "/") {
+		if seg == ".." {
+			return true
+		}
+	}
+	return false
+}
+
+// pathInside reports whether child is parent itself or nested under it.
+func pathInside(child, parent string) bool {
+	rel, err := filepath.Rel(parent, child)
+	if err != nil {
+		return false
+	}
+	return rel == "." || !strings.HasPrefix(rel, "..")
+}
+
+// insideDabsStore reports whether dir is ~/.dabs or anything under it — dabs's
+// own storage, which must never be marked as a project.
+func (r Real) insideDabsStore(dir string) (bool, error) {
+	home, err := r.data.HomeDir()
+	if err != nil {
+		return false, err
+	}
+	rel, err := filepath.Rel(filepath.Join(home, ".dabs"), dir)
+	if err != nil {
+		return false, nil
+	}
+	return rel == "." || !strings.HasPrefix(rel, ".."), nil
 }
 
 // randHex returns 2n hex chars of cryptographic randomness for naming.

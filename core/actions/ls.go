@@ -91,6 +91,7 @@ func (r Real) Ls(p params.Ls) error {
 	}
 	live := map[string][]Node{} // driver key -> the nodes in its chains
 	var placed = map[string]bool{}
+	livePlaced := map[string]bool{} // node id -> shown under some driver heading
 	for _, n := range nodes {
 		if n.Kind != KindBox {
 			continue
@@ -100,6 +101,7 @@ func (r Real) Ls(p params.Ls) error {
 			continue
 		}
 		for _, a := range chainOf(n, byID) {
+			livePlaced[a.ID] = true
 			if !placed[st.where+"\x00"+a.ID] {
 				placed[st.where+"\x00"+a.ID] = true
 				live[st.where] = append(live[st.where], a)
@@ -131,8 +133,13 @@ func (r Real) Ls(p params.Ls) error {
 			continue // already shown under the driver running it
 		}
 		// Carry the chain, so an idle box still hangs off the place it ran in
-		// rather than floating as a root of its own.
+		// rather than floating as a root of its own — but an ancestor already
+		// shown under a driver heading (a chain with both a live and a gone box)
+		// is not repeated here.
 		for _, a := range chainOf(n, byID) {
+			if livePlaced[a.ID] {
+				continue
+			}
 			if !seen[a.ID] {
 				seen[a.ID] = true
 				idle = append(idle, a)

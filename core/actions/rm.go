@@ -22,17 +22,34 @@ func (r Real) Rm(p params.Rm) error {
 	if err != nil {
 		return err
 	}
-	target, err := findNode(p.Node, nodes)
+	targets, err := rmMatches(p.Node, nodes, p.Multiple)
 	if err != nil {
 		return err
 	}
+	if len(targets) == 0 {
+		// A no-match reap is not an error, the same as `down`: naming a node that
+		// isn't there leaves nothing to do, so a cleanup script can rely on the exit
+		// status either way.
+		fmt.Fprintln(os.Stdout, tui.Muted("no node %s", p.Node))
+		return nil
+	}
 
-	// A node stood on is a node in use — everything above it goes with it, so say
-	// so before anything is touched.
-	doomed := append([]Node{target}, descendantsOf(target, nodes)...)
+	// A node stood on is a node in use — everything above it goes with it. Gather
+	// the whole set across every match, deduped and nearest-first, before anything
+	// is touched, so a refusal loses nothing.
+	var doomed []Node
+	seen := map[string]bool{}
+	for _, t := range targets {
+		for _, n := range append([]Node{t}, descendantsOf(t, nodes)...) {
+			if !seen[n.ID] {
+				seen[n.ID] = true
+				doomed = append(doomed, n)
+			}
+		}
+	}
 	if len(doomed) > 1 && !p.Yes {
 		var b strings.Builder
-		fmt.Fprintf(&b, "%s is stood on. Removing it removes:\n", tui.Accent(target.ID))
+		fmt.Fprintf(&b, "Removing %s reaps:\n", tui.Accent(p.Node))
 		for _, n := range doomed {
 			fmt.Fprintf(&b, "  %s %s\n", string(n.Kind), n.ID)
 		}
@@ -40,10 +57,10 @@ func (r Real) Rm(p params.Rm) error {
 		// a pipe forever. Say what it would take, and take nothing.
 		if !tui.Interactive() {
 			fmt.Fprint(os.Stdout, b.String())
-			return fmt.Errorf("rm %s: kept — pass -y to remove it and what stands on it", target.ID)
+			return fmt.Errorf("rm %s: kept — pass -y to remove it and what stands on it", p.Node)
 		}
 		if !r.confirm(b.String() + "Remove them?") {
-			return fmt.Errorf("rm %s: kept", target.ID)
+			return fmt.Errorf("rm %s: kept", p.Node)
 		}
 	}
 
@@ -197,29 +214,34 @@ func (r Real) consentToEphemeral(n Node) bool {
 		tui.Accent(n.ID), tui.Muted("%s", dir)))
 }
 
-// findNode resolves a node by unambiguous prefix, git-style, like every other
-// name dabs takes. A blank name matches nothing, never everything.
-func findNode(name string, nodes []Node) (Node, error) {
+// rmMatches resolves the nodes a name reaps, git-style: a blank name matches
+// nothing (never everything), an exact id is that one node even when it prefixes
+// others, and a prefix matching several nodes is REFUSED unless multiple is set —
+// mirroring how `down` guards a multi-match. A no-match returns no nodes and no
+// error; the caller reports it and stops, so a reap of a name that isn't there is
+// idempotent rather than a failure.
+func rmMatches(name string, nodes []Node, multiple bool) ([]Node, error) {
 	if strings.TrimSpace(name) == "" {
-		return Node{}, fmt.Errorf("a name is required (see dabs ls)")
+		return nil, fmt.Errorf("a name is required (see dabs ls)")
 	}
 	var hits []Node
 	for _, n := range nodes {
+		if n.ID == name {
+			return []Node{n}, nil
+		}
 		if strings.HasPrefix(n.ID, name) {
 			hits = append(hits, n)
 		}
 	}
-	switch len(hits) {
-	case 0:
-		return Node{}, fmt.Errorf("no node %q (see dabs ls)", name)
-	case 1:
-		return hits[0], nil
+	if len(hits) > 1 && !multiple {
+		var ids []string
+		for _, h := range hits {
+			ids = append(ids, h.ID)
+		}
+		fmt.Fprintln(os.Stdout, tui.Warn("%s matches %d nodes: %s", name, len(hits), strings.Join(ids, ", ")))
+		return nil, fmt.Errorf("%q matches %d nodes; pass --multiple to rm all of them", name, len(hits))
 	}
-	var names []string
-	for _, h := range hits {
-		names = append(names, h.ID)
-	}
-	return Node{}, fmt.Errorf("%q is ambiguous: %s (see dabs ls)", name, strings.Join(names, ", "))
+	return hits, nil
 }
 
 // descendantsOf returns every node standing on n, nearest first.

@@ -29,6 +29,13 @@ func (r Real) Build(p params.Build) error {
 	if _, err := r.ensureImage(drv, name, rec.Image); err != nil {
 		return err
 	}
-	fmt.Fprintln(os.Stdout, tui.Success("%s built", tui.Accent(name)))
+	// A recipe with an inline Dockerfile is what `build` actually builds. A
+	// bare-name image has no Dockerfile to build — say so honestly rather than
+	// claiming a build that did not happen.
+	if rec.Image.Dockerfile != "" {
+		fmt.Fprintln(os.Stdout, tui.Success("%s built", tui.Accent(name)))
+	} else {
+		fmt.Fprintln(os.Stdout, tui.Success("using image %s (nothing to build)", tui.Accent(rec.Image.Name)))
+	}
 	return nil
 }

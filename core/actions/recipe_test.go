@@ -222,7 +222,7 @@ func newReal(recipesYAML string, fd *fakeData, drv *fakeDriver, bundledImages ..
 }
 
 func baseData() *fakeData {
-	return &fakeData{home: "/home/t", cwd: "/cwd", env: map[string]string{}, exists: map[string]bool{}, isDir: map[string]bool{}, toplevel: map[string]error{}, noCommits: map[string]bool{}}
+	return &fakeData{home: "/home/t", cwd: "/cwd", env: map[string]string{}, exists: map[string]bool{}, isDir: map[string]bool{}, toplevel: map[string]error{}, noCommits: map[string]bool{}, states: map[string]wtState{}}
 }
 
 func onlyUp(t *testing.T, d *fakeDriver) sandbox.Spec {

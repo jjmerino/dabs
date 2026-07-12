@@ -54,6 +54,7 @@ func (r Real) Ls(params.Ls) error {
 	if err != nil {
 		return err
 	}
+	work := r.worktreeWork(nodes)
 	if len(nodes) == 0 && len(state) == 0 {
 		fmt.Fprintln(os.Stdout, tui.Muted("nothing here yet"))
 		return nil
@@ -95,7 +96,7 @@ func (r Real) Ls(params.Ls) error {
 			fmt.Fprintln(os.Stdout, tui.Indent(tui.Muted("(nothing running)"), 2))
 			continue
 		}
-		printNodeForest(live[key], state, 2)
+		printNodeForest(live[key], state, work, 2)
 	}
 
 	// Everything dabs marked that is not running anywhere: the places, and the
@@ -117,8 +118,12 @@ func (r Real) Ls(params.Ls) error {
 		}
 	}
 	if len(idle) > 0 {
-		fmt.Fprintln(os.Stdout, tui.Heading("nothing running here"))
-		printNodeForest(idle, state, 2)
+		head := "no box running"
+		if anyWork(idle, work) {
+			head += tui.Muted("   * has work you have not reviewed — dabs worktrees diff <name>")
+		}
+		fmt.Fprintln(os.Stdout, tui.Heading(head))
+		printNodeForest(idle, state, work, 2)
 	}
 
 	// A box a driver holds that no node claims — booted by an older dabs, or by
@@ -204,6 +209,39 @@ func anyLiveInChain(n Node, nodes []Node, byID map[string]Node, state map[string
 	return false
 }
 
+// worktreeWork marks the worktree nodes holding something a reap would destroy:
+// uncommitted changes, or commits no other branch has. It is the same question
+// `dabs worktrees` answers with HAS WORK — asked here so a tree of places cannot
+// read as a tree of things that do not matter.
+func (r Real) worktreeWork(nodes []Node) map[string]bool {
+	work := map[string]bool{}
+	for _, n := range nodes {
+		if n.Kind != KindWorktree {
+			continue
+		}
+		path, err := r.resolveNodeData(n.ID)
+		if err != nil {
+			continue
+		}
+		_, dirty, ahead, err := r.data.GitState(path)
+		if err != nil {
+			continue
+		}
+		work[n.ID] = dirty || ahead > 0
+	}
+	return work
+}
+
+// anyWork reports whether any node listed holds unreviewed work.
+func anyWork(nodes []Node, work map[string]bool) bool {
+	for _, n := range nodes {
+		if work[n.ID] {
+			return true
+		}
+	}
+	return false
+}
+
 // boxState is what a driver says about a box right now, and which driver said it.
 // A box booted through a recipe `target:` lives on another driver, so where it is
 // is part of what it is.
@@ -211,7 +249,7 @@ type boxState struct{ status, where string }
 
 // printNodeForest writes every root and its descendants. A root is a node whose
 // parent is not present — a project, or a node whose parent was reaped.
-func printNodeForest(nodes []Node, state map[string]boxState, indent int) {
+func printNodeForest(nodes []Node, state map[string]boxState, work map[string]bool, indent int) {
 	byID := make(map[string]Node, len(nodes))
 	for _, n := range nodes {
 		byID[n.ID] = n
@@ -260,7 +298,7 @@ func printNodeForest(nodes []Node, state map[string]boxState, indent int) {
 		}
 		label := prefix + stem + n.ID
 		pad := strings.Repeat(" ", maxInt(1, width+2-len([]rune(label))))
-		fmt.Fprintf(os.Stdout, "%s%s%s%-9s %s\n", strings.Repeat(" ", indent), label, pad, string(n.Kind), nodeDetail(n, state))
+		fmt.Fprintf(os.Stdout, "%s%s%s%-9s %s\n", strings.Repeat(" ", indent), label, pad, string(n.Kind), nodeDetail(n, state, work))
 
 		next := prefix
 		if depth > 0 {
@@ -282,12 +320,17 @@ func printNodeForest(nodes []Node, state map[string]boxState, indent int) {
 
 // nodeDetail says what a node is right now: where a project points, which branch
 // a worktree carries, whether a box is still running.
-func nodeDetail(n Node, state map[string]boxState) string {
+func nodeDetail(n Node, state map[string]boxState, work map[string]bool) string {
 	switch n.Kind {
 	case KindProject, KindWorkdir:
 		return tui.Muted("%s", tilde(n.Dir))
 	case KindWorktree:
 		if n.Worktree != nil {
+			if work[n.ID] {
+				// A worktree holding work is the one line here that can cost you
+				// something, so it is the one line that is not muted.
+				return tui.Accent("* branch " + n.Worktree.Branch)
+			}
 			return tui.Muted("branch %s", n.Worktree.Branch)
 		}
 	case KindBox:

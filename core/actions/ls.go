@@ -24,7 +24,7 @@ import (
 // as gone: what ran and from where is the question a node answers.
 //
 // While a server is queried (an ssh round-trip) a spinner runs on stderr.
-func (r Real) Ls(params.Ls) error {
+func (r Real) Ls(p params.Ls) error {
 	// Every driver, not just the local one: a recipe with a `target:` boots its box
 	// elsewhere, and a box the tree cannot find is a box the tree calls gone.
 	state := map[string]boxState{}
@@ -50,15 +50,37 @@ func (r Real) Ls(params.Ls) error {
 		}
 	}
 
-	nodes, err := r.listNodes()
+	all, err := r.listNodes()
 	if err != nil {
 		return err
+	}
+	// An ARCHIVED node is a box no driver holds any more. It is kept — what ran,
+	// and from where, is the question a node exists to answer — but it is not what
+	// you are looking at when you type `ls`, and it never goes away, so by default
+	// it is not shown. Its SPACES are already gone: `down` reaps them.
+	nodes := make([]Node, 0, len(all))
+	archived := 0
+	for _, n := range all {
+		if n.Kind == KindBox {
+			if _, live := state[n.Instance]; !live {
+				archived++
+				if !p.All {
+					continue
+				}
+			}
+		}
+		nodes = append(nodes, n)
 	}
 	work := r.worktreeWork(nodes)
 	if len(nodes) == 0 && len(state) == 0 {
 		fmt.Fprintln(os.Stdout, tui.Muted("nothing here yet"))
 		return nil
 	}
+	defer func() {
+		if archived > 0 && !p.All {
+			fmt.Fprintln(os.Stdout, tui.Muted("\n%d archived (dabs ls --all)", archived))
+		}
+	}()
 
 	// A box says where it runs, so its whole chain belongs under that heading —
 	// the tree says WHAT, the heading says WHERE. A chain with a box on two
@@ -118,7 +140,7 @@ func (r Real) Ls(params.Ls) error {
 		}
 	}
 	if len(idle) > 0 {
-		head := "no box running"
+		head := "no box"
 		if anyWork(idle, work) {
 			head += tui.Muted("   * has work you have not reviewed — dabs worktrees diff <name>")
 		}

@@ -47,7 +47,12 @@ type Down struct {
 }
 
 // Ls are the inputs to the ls action.
-type Ls struct{}
+type Ls struct {
+	// All also lists ARCHIVED nodes — boxes no driver holds any more. They are
+	// kept as the record of what ran and from where; `ls` hides them because what
+	// you almost always want to know is what is live.
+	All bool
+}
 
 // ServersList are the inputs to listing registered servers.
 type ServersList struct{}

@@ -162,6 +162,7 @@ func parseDown(args []string) (params.Down, error) {
 func parseLs(args []string) (params.Ls, error) {
 	var p params.Ls
 	fs := newFlagSet("ls")
+	fs.BoolVar(&p.All, "all", false, "also list archived nodes (boxes no driver holds any more)")
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
 			return p, HelpRequestedError{helpText("ls", fs)}

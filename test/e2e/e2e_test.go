@@ -26,7 +26,7 @@ import (
 )
 
 var (
-	home    string // isolated HOME for this run
+	home    string // the box's own HOME — the box is the isolation
 	baseDir string // this package dir: holds the base recipe dabs.yaml + Dockerfile
 )
 
@@ -161,7 +161,7 @@ func writeRecipe(dir, name, dockerfile string) {
 }
 
 // clean reaps every "base" instance now and again at test end, so tests don't
-// see each other's boxes (they share the isolated HOME).
+// see each other's boxes (one box, one ~/.dabs).
 // clean reaps every box this suite made. The name is a PREFIX matching many
 // instances, so it needs --multiple (the explicit approval to act on more than
 // one) as well as --force (skip the prompt) — --force alone reaps nothing.
@@ -250,19 +250,11 @@ func TestUnknownCommand(t *testing.T) {
 
 // --- build -------------------------------------------------------------------
 
-func TestBuild(t *testing.T) {
-	// `dabs build` shells out to docker, which the box does not carry (and does
-	// not need: its base image is staged in by the Dockerfile). The build path is
-	// exercised on the host — run_e2e.sh builds the box itself with it.
-	if _, err := exec.LookPath("docker"); err != nil {
-		t.Skip("no docker in the box: the build verb is exercised on the host")
-	}
-	d := filepath.Join(home, "bt")
-	writeRecipe(d, "bt", "FROM alpine:3.20\nWORKDIR /work\n")
-	out, code := run("dabs build " + d)
-	wantExit(t, 0, code)
-	wantContains(t, out, "bt built")
-}
+// There is no TestBuild. `dabs build` shells out to docker; the suite runs only
+// inside the box, and the box carries no docker — a test here could only ever
+// skip, and a green skipping test reads as coverage it does not have. The build
+// verb is exercised for real on the HOST, by run_e2e.sh: it runs
+// `dabs build test/e2e/box` to make this very box, under `set -e`.
 
 // --- up / ls -----------------------------------------------------------------
 

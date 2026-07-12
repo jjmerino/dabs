@@ -31,7 +31,7 @@ func TestBlankInstanceNameMatchesNothingOnEveryVerb(t *testing.T) {
 			if strings.Contains(err.Error(), "ambiguous") {
 				t.Errorf("%s with name %q: blank must match NOTHING, got %v", label, name, err)
 			}
-			if len(drv.runs) != 0 || len(drv.downs) != 0 {
+			if len(drv.runs) != 0 || len(drv.downs) != 0 || len(drv.execs) != 0 {
 				t.Errorf("%s with name %q: touched boxes (runs=%v downs=%v)", label, name, drv.runs, drv.downs)
 			}
 		}

@@ -226,12 +226,16 @@ dabs run  <instance> 'dabs up sh'        # the dabs in the box boots its OWN box
 run in there — it shells out to `docker`, which the box does not carry — and
 nothing needs it to.
 
-**Two recipes, one image; they differ in ONE thing — what lands at `/work`:**
+**Two recipes, one Dockerfile; they differ in ONE thing — what lands at `/work`:**
 
 | recipe | `/work` is | use it to |
 |---|---|---|
 | `dabseption` | the cwd, mounted live | test the code you have right now |
 | `dabseptionwt` | a FRESH worktree off the current branch | test a branch without disturbing the cwd |
+
+A Dockerfile-backed image is named after its RECIPE, so these build two image
+tags from the one Dockerfile — `dabs build dabseption` does not also ready
+`dabseptionwt` (the layer cache makes the second build cheap).
 
 `dabs cast dabseptionwt <worktree>` binds an EXISTING worktree instead, and also
 mounts its parent `.git` — so git works in-box. Plain `dabs recipe dabseptionwt`

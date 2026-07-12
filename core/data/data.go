@@ -27,6 +27,10 @@ type Data interface {
 
 	// --- environment ---
 	Getenv(key string) string
+	// Getwd is the process working directory. Actions resolve relative paths
+	// against it (filepath.Abs reads it behind your back), so it belongs on the
+	// seam like every other environment read — otherwise a fake cannot control it.
+	Getwd() (string, error)
 	// LookupEnv reports a variable's value and whether it is SET (distinct from
 	// set-but-empty), so a path expansion can tell "$UNSET" from "$EMPTY".
 	LookupEnv(key string) (string, bool)

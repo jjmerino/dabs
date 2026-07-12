@@ -175,7 +175,7 @@ func (r Real) validateSources(recipeName string, sources []recipe.Source) ([]res
 		// `perbox:` has no host origin (it is a label) and a `worktree:` origin
 		// never reaches a driver (git resolves it to an absolute toplevel below).
 		if kind == "mount" || kind == "copy" {
-			abs, err := filepath.Abs(host)
+			abs, err := r.absPath(host)
 			if err != nil {
 				return nil, fmt.Errorf("recipe %q: source %s: %w", recipeName, host, err)
 			}
@@ -390,7 +390,7 @@ func rebaseImagePaths(reg *recipe.Registry, dir string) {
 // cwd, live" means. For a project ./dabs.yaml the two are the same directory.
 func rebaseSourcePaths(reg *recipe.Registry, dir string) {
 	rebase := func(p string) string {
-		if p == "" || filepath.IsAbs(p) || strings.HasPrefix(p, "~") || strings.HasPrefix(p, "$") {
+		if !isHostRelative(p) {
 			return p
 		}
 		return filepath.Join(dir, p)
@@ -562,11 +562,11 @@ func (r Real) ensureImage(drv sandbox.Driver, recipeName string, img recipe.Imag
 		if ctx == "" {
 			ctx = filepath.Dir(img.Dockerfile)
 		}
-		dockerfile, err := filepath.Abs(img.Dockerfile)
+		dockerfile, err := r.absPath(img.Dockerfile)
 		if err != nil {
 			return "", err
 		}
-		ctxAbs, err := filepath.Abs(ctx)
+		ctxAbs, err := r.absPath(ctx)
 		if err != nil {
 			return "", err
 		}
@@ -598,6 +598,28 @@ func (r Real) ensureImage(drv sandbox.Driver, recipeName string, img recipe.Imag
 func (r Real) hasBundledImage(name string) bool {
 	_, err := fs.Stat(r.images, "images/"+name)
 	return err == nil
+}
+
+// absPath makes p absolute against the process working directory, read through
+// the data seam (filepath.Abs would reach os.Getwd() directly, leaving actions
+// untestable against a fake).
+func (r Real) absPath(p string) (string, error) {
+	if filepath.IsAbs(p) {
+		return p, nil
+	}
+	wd, err := r.data.Getwd()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(wd, p), nil
+}
+
+// isHostRelative reports whether a source origin is a plain relative path — one
+// that must be anchored on a directory to be usable. It is the single place that
+// knows which origin forms expandPath will resolve on its own (~ and $VAR), so
+// rebasing and expansion cannot drift apart.
+func isHostRelative(p string) bool {
+	return p != "" && !filepath.IsAbs(p) && !strings.HasPrefix(p, "~") && !strings.HasPrefix(p, "$")
 }
 
 // envRef matches $VAR and ${VAR} references in a path.

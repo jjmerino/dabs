@@ -1,8 +1,14 @@
 # Recipes for working ON dabs — run in a disposable box with `dabs recipe <name>`.
-# This is how we test and review dabs itself; reusable by any maintainer.
+# This is how we test dabs itself; reusable by any maintainer.
 # Recipes resolve bundled → ~/.dabs/recipes.yaml → this file (this file wins).
-# Both need `dabs auth claude` once; the login is MOUNTED into the box, never copied.
-default: review
+# The Claude boxes need `dabs auth claude` once; the login is MOUNTED into the
+# box, never copied.
+#
+# No `default:` on purpose. A default is what a bare `dabs do <cmd>` APPENDS your
+# command to, and every recipe here is either an agent or a build box — none is a
+# shell, so any of them would make `dabs do` do something you did not ask for.
+# With no default, `dabs do` falls back to the bundled `sh` box (a real shell) and
+# `dabs recipe`/`build`/`up` with no name list the choices instead of guessing.
 
 recipes:
 
@@ -110,7 +116,10 @@ recipes:
   # They differ in ONE thing — what lands at /work:
   #   dabseption    the cwd, mounted live  → test the code you have right now
   #   dabseptionwt  a FRESH worktree       → test a branch without touching the cwd
-  # Everything else (image, privileged target, keep, command) is shared.
+  # Everything else is shared: one Dockerfile, same target, keep, command. (Two
+  # image TAGS, though — a Dockerfile-backed image is named after its recipe, so
+  # `dabs build dabseption` does not also ready dabseptionwt. Layer cache makes
+  # the second build cheap.)
   #
   # The box is PRIVILEGED (target below) and carries bubblewrap, so the built
   # dabs boots its driver fleet and runs for real — full CLI, recipe resolution,
@@ -145,49 +154,6 @@ recipes:
     sources:
       - worktree: .                       # cast rewrites this: attach <worktree> live + mount its parent .git
         path: /work
-
-  # Agents: use when you want a thorough, sandboxed code review of the current
-  # branch vs `main` before merging. Opus reviews inside a throwaway COPY of the
-  # repo — it runs `git diff main...HEAD`, reads the code, builds it, and runs the
-  # tests to verify — then streams a ranked, evidence-backed review to your
-  # terminal. Capture it with:  dabs recipe review | tee review.md
-  #
-  # The review instructions live in a skill (skills/review-dabs) — the recipe only
-  # provisions the box and points the agent at it. The skill is MOUNTED into the
-  # box's project skills dir (where Claude Code looks), and Claude runs it.
-  review:
-    description: sandboxed Opus review of this branch vs main
-    image: claude                         # bundled image: Claude Code + git
-    env: { CLAUDE_CONFIG_DIR: /root/.claude }
-    command: [sh, -c, "cd /work && exec claude -p 'Use the review-dabs skill.' --model claude-opus-4-8 --allowedTools Bash Read Grep Glob Skill"]
-    sources:
-      - mount: ~/.dabs/auth/claude        # your Claude login — mounted, never copied
-        path: /root/.claude
-      - copy: .                           # throwaway copy of the repo (with .git) to diff, build, test
-        path: /work
-      - mount: skills/review-dabs             # the review skill — mounted where Claude Code discovers project skills
-        path: /work/.claude/skills/review-dabs
-        ro: true
-
-  # Agents: like `review`, but CAST onto an EXISTING worktree instead of copying
-  # the cwd:  dabs cast review-wt <worktree>  (worktree name from: dabs worktrees).
-  # Uses a live `worktree:` source so cast attaches that worktree AND mounts its
-  # parent .git — the reviewer gets working git in-box (git diff main...HEAD)
-  # rather than the git-blind copy a `copy:`-based recipe would give when cast.
-  # Read-only tools; the review must not modify the live worktree's source.
-  review-wt:
-    description: review cast onto an existing worktree, with in-box git
-    image: claude
-    env: { CLAUDE_CONFIG_DIR: /root/.claude }
-    command: [sh, -c, "cd /work && exec claude -p 'Use the review-dabs skill.' --model claude-opus-4-8 --allowedTools Bash Read Grep Glob Skill"]
-    sources:
-      - mount: ~/.dabs/auth/claude
-        path: /root/.claude
-      - worktree: .                       # cast rewrites this to: attach <worktree> live + mount its parent .git
-        path: /work
-      - mount: skills/review-dabs
-        path: /work/.claude/skills/review-dabs
-        ro: true
 
   # Agents: use when you changed dabs's CLI, help text, errors, or recipes and
   # want to know whether a brand-new user can still figure it out. Drops a naive

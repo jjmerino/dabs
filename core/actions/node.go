@@ -34,7 +34,11 @@ type Node struct {
 	// ran from; for a workdir the host directory `.` resolved to. Empty for a box
 	// (a box marks a sandbox, not a directory) and for a worktree (dabs made its
 	// checkout, which lives in the node's own ephemeral space).
-	Dir      string        `json:"dir,omitempty"`
+	Dir string `json:"dir,omitempty"`
+	// Instance is the driver's name for a box node's sandbox. A node id is minted
+	// before the box is up (its spaces must exist to be mounted), so the two names
+	// are distinct and the node records the link.
+	Instance string        `json:"instance,omitempty"`
 	Worktree *NodeWorktree `json:"worktree,omitempty"` // kind-specific fields
 }
 

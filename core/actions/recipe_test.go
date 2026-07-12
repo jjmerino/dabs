@@ -651,90 +651,6 @@ func TestCastMissingWorktreeErrors(t *testing.T) {
 
 // --- tests: the generic perbox source -----------------------------------------
 
-// CONTRACT: a `perbox:` source yields a fresh, empty, box-private host mount
-// (under ~/.dabs/boxes/…/<label>) at its Path, created on the host, writable,
-// and — since it exists to overlay an earlier mount — applied AFTER any mount it
-// nests over, regardless of its position among the recipe's sources.
-func TestPerboxSourceIsPrivateAndAppliedLast(t *testing.T) {
-	// The perbox source is declared BEFORE the mount it nests over, to prove the
-	// engine still applies it LAST (overlay ordering is not source order).
-	y := `recipes:
-  r:
-    image: img
-    command: [run]
-    sources:
-      - mount: /home/t/vault
-        path: /cfg
-      - perbox: sessions
-        path: /cfg/sessions
-      - mount: /work
-        path: /work
-`
-	fd := baseData()
-	fd.exists["/home/t/vault"] = true
-	fd.exists["/work"] = true
-	drv := &fakeDriver{built: map[string]bool{"img": true}}
-	if err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "r"}); err != nil {
-		t.Fatalf("Recipe: %v", err)
-	}
-	up := onlyUp(t, drv)
-
-	// The perbox mount is applied LAST so it lands over the /cfg mount it nests in.
-	pb := up.Mounts[len(up.Mounts)-1]
-	if pb.Path != "/cfg/sessions" {
-		t.Fatalf("last mount = %+v, want the perbox mount at /cfg/sessions", pb)
-	}
-	// It is a fresh box-private host dir, not a shared origin.
-	if !strings.HasPrefix(pb.Host, "/home/t/.dabs/boxes/") || !strings.HasSuffix(pb.Host, "/sessions") {
-		t.Errorf("perbox host = %q, want a per-box dir under ~/.dabs/boxes/…/sessions", pb.Host)
-	}
-	if pb.RO {
-		t.Errorf("perbox mount is read-only; the box must be able to write it")
-	}
-	// The shared /cfg mount is untouched and precedes the overlay.
-	if up.Mounts[0] != (sandbox.Mount{Host: "/home/t/vault", Path: "/cfg"}) {
-		t.Errorf("first mount = %+v, want the shared /cfg mount intact", up.Mounts[0])
-	}
-	// The per-box dir is created on the host so the bind mount resolves.
-	made := false
-	for _, m := range fd.mkdirs {
-		if m == pb.Host {
-			made = true
-		}
-	}
-	if !made {
-		t.Errorf("per-box dir %q was not created on the host (mkdirs=%v)", pb.Host, fd.mkdirs)
-	}
-}
-
-// CONTRACT: a `perbox:` source is visible in the look-before-run summary like
-// every other source, so a user approves the mount that actually gets applied.
-func TestPerboxSourceShownInConfirm(t *testing.T) {
-	y := `recipes:
-  r:
-    image: img
-    command: [run]
-    sources:
-      - mount: /home/t/vault
-        path: /cfg
-      - perbox: sessions
-        path: /cfg/sessions
-`
-	fd := baseData()
-	fd.exists["/home/t/vault"] = true
-	drv := &fakeDriver{built: map[string]bool{"img": true}}
-	asked := ""
-	confirm := func(prompt string) bool { asked = prompt; return true }
-	// Appending a command triggers the look-before-run confirmation.
-	if err := newReal(y, fd, drv).WithConfirm(confirm).
-		Recipe(params.Recipe{Name: "r", Cmd: []string{"x"}}); err != nil {
-		t.Fatalf("Recipe: %v", err)
-	}
-	if !strings.Contains(asked, "perbox") || !strings.Contains(asked, "sessions → /cfg/sessions") {
-		t.Errorf("confirm summary omits the perbox source:\n%s", asked)
-	}
-}
-
 // --- tests: appended command + confirmation + `dabs do` -----------------------
 
 const appendRecipe = `recipes:
@@ -1161,4 +1077,88 @@ func mountPaths(ms []sandbox.Mount) []string {
 		out[i] = m.Path
 	}
 	return out
+}
+
+// CONTRACT: a mkmount source CREATES its host origin, and a mkmount into the
+// box node's volume gives that box a private, PERSISTING slice of an otherwise
+// shared tree — declared out of order, to prove ordering is not the mechanism.
+func TestMkmountCreatesOriginAndNestsOverSharedMount(t *testing.T) {
+	y := `recipes:
+  r:
+    image: img
+    command: [run]
+    sources:
+      - mkmount: $NODE_VOLUME/sessions
+        path: /cfg/sessions
+      - mount: /home/t/vault
+        path: /cfg
+`
+	fd := baseData()
+	fd.exists["/home/t/vault"] = true
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	if err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "r"}); err != nil {
+		t.Fatalf("Recipe: %v", err)
+	}
+	up := onlyUp(t, drv)
+
+	var sessions sandbox.Mount
+	for _, m := range up.Mounts {
+		if m.Path == "/cfg/sessions" {
+			sessions = m
+		}
+	}
+	if sessions.Host == "" {
+		t.Fatalf("no mount at /cfg/sessions: %+v", up.Mounts)
+	}
+	// $NODE_VOLUME resolved to this box node's volume space — which SURVIVES down.
+	if !strings.HasPrefix(sessions.Host, "/home/t/.dabs/nodes/") ||
+		!strings.HasSuffix(sessions.Host, "/volume/sessions") {
+		t.Errorf("mkmount host = %q, want the box node's volume space", sessions.Host)
+	}
+	// The engine created it: a mount whose origin is absent is a typo; a mkmount
+	// whose origin is absent is the whole point.
+	made := false
+	for _, d := range fd.mkdirs {
+		if d == sessions.Host {
+			made = true
+		}
+	}
+	if !made {
+		t.Errorf("mkmount did not create %q; mkdirs=%v", sessions.Host, fd.mkdirs)
+	}
+	// It nests over the shared /cfg mount regardless of declaration order.
+	for i, m := range up.Mounts {
+		if m.Path == "/cfg" {
+			for j, n := range up.Mounts {
+				if n.Path == "/cfg/sessions" && j < i {
+					t.Errorf("mkmount at /cfg/sessions (%d) precedes /cfg (%d): %v", j, i, mountPaths(up.Mounts))
+				}
+			}
+		}
+	}
+}
+
+// CONTRACT: a mount whose origin is missing is refused, and the error names the
+// source kind that means "create it" — so the fix is discoverable, not folklore.
+func TestMissingMountOriginPointsAtMkmount(t *testing.T) {
+	y := `recipes:
+  r:
+    image: img
+    command: [run]
+    sources:
+      - mount: /home/t/nope
+        path: /cfg
+`
+	fd := baseData()
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "r"})
+	if err == nil {
+		t.Fatal("want an error for a missing mount origin")
+	}
+	if !strings.Contains(err.Error(), "mkmount") {
+		t.Errorf("error %q does not point at mkmount:", err)
+	}
+	if len(drv.ups) != 0 {
+		t.Errorf("a box was booted despite the bad source: %+v", drv.ups)
+	}
 }

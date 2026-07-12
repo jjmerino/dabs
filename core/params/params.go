@@ -66,12 +66,6 @@ type ServersRemove struct {
 	Name string
 }
 
-// Auth are the inputs to the auth action: log a harness into a persistent host
-// vault so future sandboxes mount it and start already-authenticated.
-type Auth struct {
-	Provider string // "claude"
-}
-
 // Recipe are the inputs to running a named recipe (a fully declarative box:
 // image, sources, env, command).
 type Recipe struct {
@@ -111,7 +105,6 @@ type Worktrees struct {
 type Actions interface {
 	Build(Build) error
 	Up(Up) error
-	Auth(Auth) error
 	Recipe(Recipe) error
 	Do(Do) error
 	Recipes(Recipes) error

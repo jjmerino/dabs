@@ -1,8 +1,8 @@
 # Recipes for working ON dabs — run in a disposable box with `dabs recipe <name>`.
 # This is how we test dabs itself; reusable by any maintainer.
 # Recipes resolve bundled → ~/.dabs/recipes.yaml → this file (this file wins).
-# The Claude boxes need `dabs auth claude` once; the login is MOUNTED into the
-# box, never copied.
+# The Claude boxes share one login dir, MOUNTED (never copied): the first box to
+# run creates it, you /login inside once, and every later box is already logged in.
 #
 # No `default:` on purpose. A default is what a bare `dabs do <cmd>` APPENDS your
 # command to, and every recipe here is either an agent or a build box — none is a
@@ -12,10 +12,10 @@
 
 recipes:
 
-  # dabs recipe claude — a fresh Claude Code box over the current repo, already
-  # logged in from `dabs auth claude`. dabs itself ships only the generic `sh`
-  # recipe; this Claude box is project-specific (it mounts YOUR auth vault), so
-  # it lives here. This is the whole definition: no mounts are hidden in code.
+  # dabs recipe claude — a fresh Claude Code box over the current repo, logged in
+  # from the shared login dir below. dabs itself ships only the generic `sh`
+  # recipe; this Claude box is project-specific (it mounts YOUR login dir), so it
+  # lives here. This is the whole definition: no mounts are hidden in code.
   claude:
     description: fresh Claude Code box over the current repo, logged in
     image: claude                         # reuse ~/.dabs/images/claude
@@ -28,22 +28,23 @@ recipes:
       # file outside the mount — and is lost with the box, forcing re-onboarding.
       CLAUDE_CONFIG_DIR: /root/.claude
     sources:
-      # The login/config vault from `dabs auth claude` — a LIVE mount, so a token
-      # refresh inside the box writes straight back to the host and outlives it.
+      # Claude's login and config, SHARED by every box that names this path — a
+      # live mount, so a token refresh inside a box writes straight back to the
+      # host and outlives it. mkmount, so the first box to run creates it empty:
+      # Claude then reports "not logged in", you /login once, and every later box
+      # is logged in. There is no separate login step.
+      #
       # The `claude` image BANS the agent's own tools (Read/Bash) from reading
       # this dir — Claude Code still authenticates from it internally, but a
-      # curious or compromised agent cannot cat/read .credentials.json out. The
-      # ban is baked into the image (managed settings + a PreToolUse hook), so it
-      # applies to every recipe that mounts the vault into a `claude` box.
-      - mount: ~/.dabs/auth/claude
+      # curious or compromised agent cannot cat .credentials.json out. The ban is
+      # baked into the image, so it holds for every recipe that mounts it.
+      - mkmount: ~/.dabs/shared/claude
         path: /root/.claude
-      # Per-box session history: a fresh, empty, box-private dir nested over the
-      # vault's projects/ (Claude Code's transcripts, keyed by cwd). Every box
-      # runs with cwd=/work off the shared vault, so without this their sessions
-      # pile into the same projects/-work/ and `claude --continue` in one box
-      # resurfaces another's. Credentials and settings still come from the shared
-      # vault above; only the session history is private to this box.
-      - perbox: projects
+      # Session transcripts, nested over the shared dir above. They live in this
+      # BOX NODE's volume, so they survive `down` and load again next time — and
+      # they are this box's, so a second box on the same code does not resurface
+      # them through `claude --continue`.
+      - mkmount: $NODE_VOLUME/claude/projects
         path: /root/.claude/projects
       # The code — your current directory, mounted live so the agent's edits
       # persist on the host and you review them with normal git. Swap `mount:`
@@ -51,12 +52,11 @@ recipes:
       - mount: .
         path: /work
 
-  # dabs recipe fresh-claude — a DETACHED, logged-OUT Claude Code box. Unlike
-  # `claude` above, it mounts NOTHING from the ~/.dabs/auth/claude vault: the box
-  # boots with an empty /root/.claude, so `claude` reports "Not logged in" and
-  # forces a fresh `/login`. That login — and everything else the box writes —
-  # is box-local and dies with the box; it NEVER touches your real vault or leaks
-  # your session history/config to (or from) the host.
+  # dabs recipe fresh-claude — a DETACHED, logged-OUT Claude Code box. It mounts
+  # NOTHING from ~/.dabs/shared/claude: the box boots with an empty /root/.claude,
+  # so `claude` reports "Not logged in" and forces a fresh `/login`. That login —
+  # and everything else the box writes — is box-local and dies with the box; it
+  # never touches your shared login dir or leaks your session history to the host.
   #
   # Agents: use when you want an isolated agent with throwaway/fresh auth — e.g.
   # reviewing UNTRUSTED code, where you must not expose your real Claude session.
@@ -70,7 +70,7 @@ recipes:
       CLAUDE_CONFIG_DIR: /root/.claude
     sources:
       # ONLY the code — a fresh git branch off HEAD, mounted live. Deliberately
-      # NO ~/.dabs/auth/claude mount: that is what keeps this box logged out.
+      # NO shared-login mount: that is what keeps this box logged out.
       - worktree: .
         path: /work
 
@@ -96,12 +96,11 @@ recipes:
     env:
       CLAUDE_CONFIG_DIR: /root/.claude
     sources:
-      - mount: ~/.dabs/auth/claude
+      - mkmount: ~/.dabs/shared/claude
         path: /root/.claude
-      # Per-box session history, nested over the shared vault's projects/ — see
-      # the `claude` recipe above. Keeps each worktree box's transcripts private
-      # while credentials/settings stay shared.
-      - perbox: projects
+      # Session transcripts in this box node's volume — see the `claude` recipe.
+      # Persist across `down`, private to this box.
+      - mkmount: $NODE_VOLUME/claude/projects
         path: /root/.claude/projects
       - worktree: .
         path: /work
@@ -170,7 +169,7 @@ recipes:
     env: { CLAUDE_CONFIG_DIR: /root/.claude }
     command: [sh, -c, "cd /work && go build -o /usr/local/bin/dabs . && exec claude -p 'Use the dumb-user skill.' --model claude-haiku-4-5 --allowedTools Bash Write Read Edit Skill"]
     sources:
-      - mount: ~/.dabs/auth/claude
+      - mkmount: ~/.dabs/shared/claude
         path: /root/.claude
       - copy: .                           # the agent builds dabs from this copy and tries it
         path: /work

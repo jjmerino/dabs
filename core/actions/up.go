@@ -27,10 +27,16 @@ func (r Real) Up(p params.Up) error {
 	if err != nil {
 		return err
 	}
+	// Name the box's node first: a source may mount one of its spaces, so the
+	// paths must exist as values before anything is validated or built.
+	boxID, vars, err := r.mintBoxNode(name)
+	if err != nil {
+		return err
+	}
 	// Validate sources before any side effect, then resolve the image WITHOUT
 	// building the recipe's own Dockerfile: `up` boots an image a prior
 	// `dabs build` produced (it may run where no builder exists).
-	resolved, err := r.validateSources(name, rec.Sources)
+	resolved, err := r.validateSources(name, rec.Sources, vars)
 	if err != nil {
 		return err
 	}
@@ -38,7 +44,7 @@ func (r Real) Up(p params.Up) error {
 	if err != nil {
 		return err
 	}
-	instance, kept, err := r.buildBox(drv, name, rec, image, rec.Sources, resolved)
+	instance, kept, err := r.buildBox(drv, name, boxID, rec, image, rec.Sources, resolved)
 	if err != nil {
 		return err
 	}

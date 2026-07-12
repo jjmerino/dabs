@@ -94,10 +94,17 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 		return err
 	}
 
+	// Name the box's node first: a source may mount one of its spaces, so the
+	// paths must exist as values before anything is validated or built.
+	boxID, vars, err := r.mintBoxNode(name)
+	if err != nil {
+		return err
+	}
+
 	// Validate every source BEFORE any side effect, so a bad recipe, a non-git
 	// dir, a repo with no commits, or a missing source path all fail without
 	// building an image or touching the box.
-	resolved, err := r.validateSources(name, sources)
+	resolved, err := r.validateSources(name, sources, vars)
 	if err != nil {
 		return err
 	}
@@ -107,7 +114,7 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 		return err
 	}
 
-	instance, kept, err := r.buildBox(drv, name, rec, image, sources, resolved)
+	instance, kept, err := r.buildBox(drv, name, boxID, rec, image, sources, resolved)
 	if err != nil {
 		return err
 	}
@@ -168,6 +175,27 @@ func pathDepth(p string) int {
 	return len(strings.Split(strings.Trim(filepath.Clean(p), "/"), "/"))
 }
 
+// mintBoxNode names the box's node before the box exists, and returns the three
+// space paths a recipe may name as $NODE_VOLUME / $NODE_EPHEMERAL / $NODE_TMP.
+// The id is minted first because a source may mount a space, and a mount needs a
+// path before the driver is called.
+func (r Real) mintBoxNode(recipeName string) (id string, vars map[string]string, err error) {
+	id, _ = mintNodeID(recipeName)
+	vars = map[string]string{}
+	for v, space := range map[string]string{
+		"NODE_VOLUME":    SpaceVolume,
+		"NODE_EPHEMERAL": SpaceEphemeral,
+		"NODE_TMP":       SpaceTmp,
+	} {
+		p, err := r.resolveNodeSpace(id, space)
+		if err != nil {
+			return "", nil, err
+		}
+		vars[v] = p
+	}
+	return id, vars, nil
+}
+
 // resolvedSource is a source after validation: its strategy (mount/worktree/
 // copy), its expanded host origin, and (for worktrees) the repo toplevel (empty
 // otherwise) — the exact inputs buildBox needs to realize the source. Bundling
@@ -179,14 +207,14 @@ type resolvedSource struct{ kind, origin, top string }
 // all fail HERE, before any image build or box touch. It returns one
 // resolvedSource per source, in source order. Shared by runRecipe and Up so both
 // validate identically.
-func (r Real) validateSources(recipeName string, sources []recipe.Source) ([]resolvedSource, error) {
+func (r Real) validateSources(recipeName string, sources []recipe.Source, vars map[string]string) ([]resolvedSource, error) {
 	resolved := make([]resolvedSource, len(sources))
 	for i, s := range sources {
 		kind, origin, err := s.Kind()
 		if err != nil {
 			return nil, fmt.Errorf("recipe %q: %w", recipeName, err)
 		}
-		host, err := r.expandPath(origin)
+		host, err := r.expandPathWith(origin, vars)
 		if err != nil {
 			return nil, fmt.Errorf("recipe %q: %w", recipeName, err)
 		}
@@ -215,17 +243,16 @@ func (r Real) validateSources(recipeName string, sources []recipe.Source) ([]res
 			}
 			resolved[i].top = top
 		case "mount", "copy":
-			// The host path must exist — a mount/copy of a missing path is a
-			// mistake (e.g. `dabs recipe claude` before `dabs auth claude`),
-			// and gives a cryptic driver failure if passed through.
+			// The host path must exist. A mount or copy of a missing path is a
+			// typo, and passing it through gives a cryptic driver failure. A
+			// source that MEANS to create its origin says mkmount.
 			if _, err := r.data.Stat(host); errors.Is(err, fs.ErrNotExist) {
-				return nil, fmt.Errorf("recipe %q: %s source %s does not exist", recipeName, kind, host)
+				return nil, fmt.Errorf("recipe %q: %s source %s does not exist (use mkmount: to create it)", recipeName, kind, host)
 			} else if err != nil {
 				return nil, fmt.Errorf("recipe %q: %s source %s: %w", recipeName, kind, host, err)
 			}
-		case "perbox":
-			// A per-box dir has no shared host origin to validate — it is
-			// allocated fresh and empty at prep time (buildBox).
+		case "mkmount":
+			// Created at prep time (buildBox), so a missing origin is the point.
 		}
 	}
 	return resolved, nil
@@ -240,7 +267,7 @@ func (r Real) validateSources(recipeName string, sources []recipe.Source) ([]res
 // recipe says keep; Up leaves it up). On any failure after the box is up it
 // tears the half-built box down. Shared by runRecipe and Up so both mount
 // sources identically.
-func (r Real) buildBox(drv sandbox.Driver, recipeName string, rec recipe.Recipe, image string, sources []recipe.Source, resolved []resolvedSource) (instance string, kept []string, err error) {
+func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID string, rec recipe.Recipe, image string, sources []recipe.Source, resolved []resolvedSource) (instance string, kept []string, err error) {
 	// Every chain starts at the project — the directory this command ran from.
 	project, err := r.ensureProjectNode(recipeName)
 	if err != nil {
@@ -278,14 +305,13 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName string, rec recipe.Recipe,
 			staging := fmt.Sprintf("/.dabs/copy/%d", i)
 			mounts = append(mounts, sandbox.Mount{Host: rs.origin, Path: staging, RO: true})
 			copies = append(copies, copyOp{src: staging, dest: s.Path})
-		case "perbox":
-			// A fresh, empty, box-private host dir (under ~/.dabs/boxes/<id>/<label>)
-			// mounted live at s.Path.
-			host, err := r.perboxDir(rs.origin)
-			if err != nil {
-				return "", nil, err
+		case "mkmount":
+			// The origin is the recipe's to name and dabs's to create — 0700,
+			// because this is where a harness puts a credential.
+			if err := r.data.MkdirAll(rs.origin, 0o700); err != nil {
+				return "", nil, fmt.Errorf("recipe %q: mkmount %s: %w", recipeName, rs.origin, err)
 			}
-			mounts = append(mounts, sandbox.Mount{Host: host, Path: s.Path})
+			mounts = append(mounts, sandbox.Mount{Host: rs.origin, Path: s.Path, RO: s.RO})
 		}
 	}
 	sortMountsByDepth(mounts)
@@ -299,14 +325,15 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName string, rec recipe.Recipe,
 		return "", nil, err
 	}
 
-	// Mark the box. Its node is named for the instance, so `dabs ls` and the node
-	// tree agree, and it stacks on whatever the recipe put the code in.
+	// Mark the box: the node was named before the box came up (its spaces had to
+	// exist to be mounted), so record which sandbox it turned out to be.
 	if err := r.writeNode(Node{
-		ID:      instance,
-		Kind:    KindBox,
-		Parent:  chainTip,
-		Recipe:  recipeName,
-		Created: stampNow(),
+		ID:       boxID,
+		Kind:     KindBox,
+		Parent:   chainTip,
+		Recipe:   recipeName,
+		Created:  stampNow(),
+		Instance: instance,
 	}); err != nil {
 		return "", nil, err
 	}
@@ -666,12 +693,27 @@ var envRef = regexp.MustCompile(`\$\{?(\w+)\}?`)
 // expandPath resolves a leading ~ and any $VAR/${VAR} in a host path. An unset
 // variable is an error, not a silent truncation to a shorter (wrong) path.
 func (r Real) expandPath(p string) (string, error) {
+	return r.expandPathWith(p, nil)
+}
+
+// expandPathWith expands a source path, resolving names in vars before the
+// environment. vars carries what dabs itself supplies (a node's spaces), so a
+// recipe can name them without them leaking into the box's environment.
+func (r Real) expandPathWith(p string, vars map[string]string) (string, error) {
 	for _, m := range envRef.FindAllStringSubmatch(p, -1) {
+		if _, ok := vars[m[1]]; ok {
+			continue
+		}
 		if _, ok := r.data.LookupEnv(m[1]); !ok {
 			return "", fmt.Errorf("unset variable %s in source path %q", m[0], p)
 		}
 	}
-	p = r.data.ExpandEnv(p)
+	p = os.Expand(p, func(k string) string {
+		if v, ok := vars[k]; ok {
+			return v
+		}
+		return r.data.Getenv(k)
+	})
 	if p == "~" || strings.HasPrefix(p, "~/") {
 		if home, err := r.data.HomeDir(); err == nil {
 			p = filepath.Join(home, strings.TrimPrefix(p, "~"))
@@ -752,22 +794,6 @@ func (r Real) ensureProjectNode(recipeName string) (string, error) {
 	return id, nil
 }
 
-// perboxDir allocates a fresh, empty host dir private to one box for a `perbox:`
-// source, at ~/.dabs/boxes/<id>/<label>, and creates it so the live bind mount
-// resolves. The label only names the dir; the box gets a brand-new empty slice
-// every up.
-func (r Real) perboxDir(label string) (string, error) {
-	home, err := r.data.HomeDir()
-	if err != nil {
-		return "", fmt.Errorf("recipe: home: %w", err)
-	}
-	dir := filepath.Join(home, ".dabs", "boxes", randHex(4), label)
-	if err := r.data.MkdirAll(dir, 0o755); err != nil {
-		return "", fmt.Errorf("recipe: per-box dir: %w", err)
-	}
-	return dir, nil
-}
-
 // castSources rewrites a recipe's sources to bind an existing dabs worktree
 // (by name, under ~/.dabs/worktrees/<name>) to the recipe's `.` origin:
 //   - worktree: . / mount: .  → mount the worktree live, PLUS mount its parent
@@ -834,4 +860,57 @@ func randHex(n int) string {
 	b := make([]byte, n)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+// buildImageIfMissing builds the image named imageName from the bundled recipe
+// (images/<provider>), unless the driver reports it is already built — so
+// repeated runs skip the redundant rebuild.
+func (r Real) buildImageIfMissing(drv sandbox.Driver, provider, imageName string) error {
+	built, err := drv.HasImage(imageName)
+	if err != nil {
+		return err
+	}
+	if built {
+		return nil
+	}
+	ctxDir, err := r.stageImage(provider)
+	if err != nil {
+		return err
+	}
+	defer r.data.RemoveAll(ctxDir)
+	return drv.Build(sandbox.BuildSpec{
+		Name:       imageName,
+		Dockerfile: filepath.Join(ctxDir, "Dockerfile"),
+		Context:    ctxDir,
+	})
+}
+
+// stageImage materializes a bundled image recipe into a temp directory the
+// driver can build from.
+func (r Real) stageImage(provider string) (string, error) {
+	sub := "images/" + provider
+	dir, err := r.data.MkdirTemp("", "dabs-image-"+provider+"-")
+	if err != nil {
+		return "", fmt.Errorf("image: stage: %w", err)
+	}
+	err = fs.WalkDir(r.images, sub, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(sub, p)
+		dst := filepath.Join(dir, rel)
+		if d.IsDir() {
+			return r.data.MkdirAll(dst, 0o755)
+		}
+		data, err := fs.ReadFile(r.images, p)
+		if err != nil {
+			return err
+		}
+		return r.data.WriteFile(dst, data, 0o644)
+	})
+	if err != nil {
+		r.data.RemoveAll(dir)
+		return "", fmt.Errorf("image: stage %s: %w", sub, err)
+	}
+	return dir, nil
 }

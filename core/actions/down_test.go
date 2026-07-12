@@ -110,3 +110,68 @@ func TestDownDryDownsNothing(t *testing.T) {
 		t.Fatalf("--dry must down NOTHING, downed %v", drv.downs)
 	}
 }
+
+// CONTRACT: `down` applies each node space's promise. tmp/ goes without asking,
+// volume/ is never touched, and a non-empty ephemeral/ is not deleted behind the
+// user's back — down refuses unless they consent (or --force). The space, not the
+// recipe, decides: convention, so `down` never has to interpret intent.
+func TestDownReapsTmpKeepsVolumeAndAsksBeforeEphemeral(t *testing.T) {
+	const inst, node = "img-inst", "r-abcd1234"
+	base := "/home/t/.dabs/nodes/" + node
+
+	newFixture := func(ephFiles []string) (*fakeData, *fakeDriver) {
+		fd := baseData()
+		fd.files = map[string][]byte{}
+		fd.dirs = map[string][]string{}
+		fd.files[base+"/dabs-node.json"] = []byte(
+			`{"id":"` + node + `","kind":"box","instance":"` + inst + `","recipe":"r"}`)
+		fd.dirs["/home/t/.dabs/nodes"] = []string{node}
+		fd.dirs[base+"/ephemeral"] = ephFiles
+		drv := &fakeDriver{infos: []sandbox.Info{{Name: inst, Status: "running"}}}
+		return fd, drv
+	}
+
+	t.Run("empty ephemeral: reaps tmp and ephemeral, never volume", func(t *testing.T) {
+		fd, drv := newFixture(nil)
+		if err := newReal("", fd, drv).Down(params.Down{Instance: inst, Force: true}); err != nil {
+			t.Fatalf("Down: %v", err)
+		}
+		if len(drv.downs) != 1 {
+			t.Fatalf("box not downed: %v", drv.downs)
+		}
+		wantGone := []string{base + "/tmp", base + "/ephemeral"}
+		for _, w := range wantGone {
+			found := false
+			for _, got := range fd.rmAll {
+				if got == w {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("down did not reap %s; removed=%v", w, fd.rmAll)
+			}
+		}
+		for _, got := range fd.rmAll {
+			if got == base+"/volume" {
+				t.Errorf("down deleted the volume space, which must survive: %v", fd.rmAll)
+			}
+		}
+	})
+
+	t.Run("non-empty ephemeral, refused: box stays up and nothing is deleted", func(t *testing.T) {
+		fd, drv := newFixture([]string{"worktree"})
+		r := newReal("", fd, drv).WithConfirm(func(string) bool { return false }) // the user says no
+		err := r.Down(params.Down{Instance: inst})
+		if err == nil {
+			t.Fatal("want an error when the user declines")
+		}
+		if len(drv.downs) != 0 {
+			t.Errorf("box was downed despite the refusal: %v", drv.downs)
+		}
+		for _, got := range fd.rmAll {
+			if got == base+"/ephemeral" {
+				t.Errorf("ephemeral deleted after a refusal: %v", fd.rmAll)
+			}
+		}
+	})
+}

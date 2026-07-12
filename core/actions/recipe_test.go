@@ -80,6 +80,7 @@ type fakeData struct {
 	dirs      map[string][]string // ReadDir results
 	states    map[string]wtState  // GitState by worktree path
 	removed   []string            // recorded GitRemoveWorktree
+	rmAll     []string            // recorded RemoveAll
 	commondir map[string]string   // GitCommonDir: worktree path -> parent .git (present => a worktree)
 }
 
@@ -136,7 +137,7 @@ func (f *fakeData) MkdirAll(p string, _ fs.FileMode) error {
 }
 func (f *fakeData) MkdirTemp(string, string) (string, error) { return "/tmp/x", nil }
 func (f *fakeData) Getwd() (string, error)                   { return f.cwd, nil }
-func (f *fakeData) RemoveAll(string) error                   { return nil }
+func (f *fakeData) RemoveAll(p string) error                 { f.rmAll = append(f.rmAll, p); return nil }
 func (f *fakeData) Getenv(k string) string                   { return f.env[k] }
 func (f *fakeData) LookupEnv(k string) (string, bool)        { v, ok := f.env[k]; return v, ok }
 func (f *fakeData) ExpandEnv(s string) string {

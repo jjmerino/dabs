@@ -44,7 +44,7 @@ recipes:
       # BOX NODE's volume, so they survive `down` and load again next time — and
       # they are this box's, so a second box on the same code does not resurface
       # them through `claude --continue`.
-      - mkmount: $NODE_VOLUME/claude/projects
+      - mkmount: $PARENT_VOLUME/claude/projects
         path: /root/.claude/projects
       # The code — your current directory, mounted live so the agent's edits
       # persist on the host and you review them with normal git. Swap `mount:`
@@ -100,7 +100,7 @@ recipes:
         path: /root/.claude
       # Session transcripts in this box node's volume — see the `claude` recipe.
       # Persist across `down`, private to this box.
-      - mkmount: $NODE_VOLUME/claude/projects
+      - mkmount: $PARENT_VOLUME/claude/projects
         path: /root/.claude/projects
       - worktree: .
         path: /work
@@ -193,7 +193,7 @@ recipes:
     sources:
       - copy: .                           # a snapshot: the box owns it, the host is untouched
         path: /work
-      - mkmount: $NODE_VOLUME/out         # anything you want back after `down`
+      - mkmount: $PARENT_VOLUME/out       # anything you want back after `down`
         path: /out
 
   # dabs recipe wt — a recipe with NO image: it cuts a worktree and stops. A place
@@ -203,6 +203,7 @@ recipes:
     description: cut a worktree, no box
     sources:
       - worktree: .
+        at: $NODE_EPHEMERAL/worktree      # where the checkout lands: down asks before reaping it
 
   # dabs recipe dir — the same, without git: a directory node holding its own copy
   # of the cwd, in the node's ephemeral space (so `down` asks before reaping it,
@@ -212,3 +213,4 @@ recipes:
     description: copy the cwd into a directory node, no box
     sources:
       - copy: .
+        at: $NODE_EPHEMERAL/work          # where the copy lands: down asks before reaping it

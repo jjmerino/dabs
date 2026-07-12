@@ -286,7 +286,11 @@ func TestLsAfterReapShowsNoLiveBox(t *testing.T) {
 	if isLive(out, i) {
 		t.Fatalf("%s still live after down:\n%s", i, out)
 	}
-	wantContains(t, out, i) // its node remains: what ran, and from where
+	// Its node is ARCHIVED: kept as the record of what ran and from where, but not
+	// shown by default — `ls` answers what is live.
+	wantNotContains(t, out, i)
+	all, _ := run("dabs ls --all")
+	wantContains(t, all, i)
 }
 
 // isLive reports whether ls shows this instance as anything other than gone. The
@@ -651,7 +655,7 @@ func TestRecipeNewWorktree(t *testing.T) {
 
 	out, code := runIn(repo, "dabs recipe claude-new-worktree")
 	wantExit(t, 0, code)
-	wantContains(t, out, "worktree kept")
+	wantContains(t, out, "kept:")
 
 	// The box's write landed in a KEPT worktree, not the original repo.
 	if _, err := os.Stat(filepath.Join(repo, "from-box.txt")); err == nil {
@@ -835,7 +839,7 @@ func TestWorktreeBoxLifecycleLog(t *testing.T) {
 	// Bring up a worktree-backed box detached (up runs no command, keeps the box).
 	out, code := runIn(repo, "dabs up claude-new-worktree")
 	wantExit(t, 0, code)
-	wantContains(t, out, "worktree kept")
+	wantContains(t, out, "kept:")
 	inst := instanceFrom(t, out)
 	t.Cleanup(func() { run("dabs down " + inst + " --force") })
 

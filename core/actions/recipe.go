@@ -100,17 +100,17 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 		return err
 	}
 
-	// Name the box's node first: a source may mount one of its spaces, so the
-	// paths must exist as values before anything is validated or built.
-	boxID, vars, err := r.mintBoxNode(name)
+	// Cut the PLACE first: a box names its parent's spaces ($PARENT_VOLUME), and a
+	// parent must exist to be named.
+	_, tip, hosts, kept, cut, err := r.provisionPlaces(name, sources, worktree)
 	if err != nil {
 		return err
 	}
-
-	// Validate every source BEFORE any side effect, so a bad recipe, a non-git
-	// dir, a repo with no commits, or a missing source path all fail without
-	// building an image or touching the box.
-	resolved, err := r.validateSources(name, sources, vars)
+	boxID, vars, err := r.mintBoxNode(name, tip)
+	if err != nil {
+		return err
+	}
+	resolved, err := r.validateSources(name, sources, vars, hosts)
 	if err != nil {
 		return err
 	}
@@ -120,7 +120,7 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 		return err
 	}
 
-	instance, kept, err := r.buildBox(drv, name, boxID, rec, image, sources, resolved)
+	instance, err := r.buildBox(drv, name, boxID, tip, rec, image, sources, resolved, cut)
 	if err != nil {
 		return err
 	}
@@ -142,7 +142,7 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 	}
 
 	for _, k := range kept {
-		fmt.Fprintf(os.Stdout, "%s worktree %s %s box\n", tui.Dot(), k, tui.Arrow())
+		fmt.Fprintf(os.Stdout, "%s %s %s box\n", tui.Dot(), k, tui.Arrow())
 	}
 	// Say what is about to run. A command that prints nothing until it finishes
 	// (an agent thinking, a long build) is indistinguishable from a hang without
@@ -152,7 +152,7 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 		return fmt.Errorf("recipe %q: %w", name, err)
 	}
 	for _, k := range kept {
-		fmt.Fprintln(os.Stdout, "\n"+tui.Success("worktree kept: %s", k))
+		fmt.Fprintln(os.Stdout, "\n"+tui.Success("kept: %s", k))
 	}
 	if rec.Keep {
 		fmt.Fprintf(os.Stdout, "\nbox kept: %s (dabs down %s to delete it)\n", instance, instance)
@@ -258,21 +258,164 @@ func (r Real) workdirData(id string) (string, error) {
 // space paths a recipe may name as $NODE_VOLUME / $NODE_EPHEMERAL / $NODE_TMP.
 // The id is minted first because a source may mount a space, and a mount needs a
 // path before the driver is called.
-func (r Real) mintBoxNode(recipeName string) (id string, vars map[string]string, err error) {
+func (r Real) mintBoxNode(recipeName, parent string) (id string, vars map[string]string, err error) {
 	id, _ = mintNodeID(recipeName)
-	vars = map[string]string{}
+	vars, err = r.spaceVars(id, "NODE")
+	if err != nil {
+		return "", nil, err
+	}
+	// $PARENT_* is the PLACE this box runs in — its worktree, its directory, or
+	// the project. A place is re-entered by every later box, so what a box wants
+	// back next time (an agent's sessions) belongs there, not in its own spaces:
+	// a box node is minted fresh every run and never returns.
+	pv, err := r.spaceVars(parent, "PARENT")
+	if err != nil {
+		return "", nil, err
+	}
+	for k, v := range pv {
+		vars[k] = v
+	}
+	return id, vars, nil
+}
+
+// spaceVars names a node's three spaces under a prefix, for source paths.
+func (r Real) spaceVars(id, prefix string) (map[string]string, error) {
+	vars := map[string]string{}
 	for v, space := range map[string]string{
-		"NODE_VOLUME":    SpaceVolume,
-		"NODE_EPHEMERAL": SpaceEphemeral,
-		"NODE_TMP":       SpaceTmp,
+		"_VOLUME":    SpaceVolume,
+		"_EPHEMERAL": SpaceEphemeral,
+		"_TMP":       SpaceTmp,
 	} {
 		p, err := r.resolveNodeSpace(id, space)
 		if err != nil {
-			return "", nil, err
+			return nil, err
 		}
-		vars[v] = p
+		vars[prefix+v] = p
 	}
-	return id, vars, nil
+	return vars, nil
+}
+
+// provisionPlaces cuts whatever PLACE a recipe declares — a worktree, a directory
+// holding its own copy — and returns the chain tip a box will stack on, plus the
+// host path each `.` source resolved to.
+//
+// It runs BEFORE the box node is named, because a box names its parent's spaces
+// ($PARENT_VOLUME) and a parent must exist to be named.
+//
+// `at:` says where a provisioned place puts its bytes on the host, in the new
+// node's own spaces — so the recipe, not this function, decides what `down` may
+// reap.
+func (r Real) provisionPlaces(recipeName string, sources []recipe.Source, castWorktree string) (project, tip string, hosts map[int]string, kept []string, cut []wtCut, err error) {
+	project, err = r.ensureProjectNode(recipeName)
+	if err != nil {
+		return "", "", nil, nil, nil, err
+	}
+	tip, hosts = project, map[int]string{}
+	if castWorktree != "" {
+		// cast binds an EXISTING place; castSources already rewrote the `.` source
+		// to mount it, so there is nothing to provision and the tip is that node.
+		return project, castWorktree, hosts, nil, nil, nil
+	}
+	for i, s := range sources {
+		kind, origin, kerr := s.Kind()
+		if kerr != nil {
+			return "", "", nil, nil, nil, fmt.Errorf("recipe %q: %w", recipeName, kerr)
+		}
+		if !isDotSource(s) {
+			continue
+		}
+		host, herr := r.expandPath(origin)
+		if herr != nil {
+			return "", "", nil, nil, nil, fmt.Errorf("recipe %q: %w", recipeName, herr)
+		}
+		if host, herr = r.absPath(host); herr != nil {
+			return "", "", nil, nil, nil, fmt.Errorf("recipe %q: %w", recipeName, herr)
+		}
+		switch kind {
+		case "worktree":
+			top, terr := r.data.GitToplevel(host)
+			if terr != nil {
+				return "", "", nil, nil, nil, fmt.Errorf("recipe %q: worktree %s: %w", recipeName, origin, terr)
+			}
+			id, short := mintNodeID(filepath.Base(top))
+			at, aerr := r.placeAt(s, id, "worktree")
+			if aerr != nil {
+				return "", "", nil, nil, nil, fmt.Errorf("recipe %q: %w", recipeName, aerr)
+			}
+			branch := "dabs/" + short
+			if err := r.cutWorktree(top, branch, at, id, recipeName, project); err != nil {
+				return "", "", nil, nil, nil, err
+			}
+			tip, hosts[i] = id, at
+			kept = append(kept, fmt.Sprintf("worktree %s (branch %s)", at, branch))
+			cut = append(cut, wtCut{name: id, path: at})
+		case "copy":
+			// A copy makes a directory, so every run makes ANOTHER one — the way
+			// every worktree run cuts another branch. That is what lets two runs
+			// over one directory be worked in parallel.
+			id, err := r.addWorkdir(host, recipeName, project, true)
+			if err != nil {
+				return "", "", nil, nil, nil, err
+			}
+			at, aerr := r.placeAt(s, id, "work")
+			if aerr != nil {
+				return "", "", nil, nil, nil, fmt.Errorf("recipe %q: %w", recipeName, aerr)
+			}
+			if err := r.data.MkdirAll(at, 0o755); err != nil {
+				return "", "", nil, nil, nil, err
+			}
+			if err := r.data.CopyDir(host, at); err != nil {
+				return "", "", nil, nil, nil, fmt.Errorf("recipe %q: copy %s: %w", recipeName, host, err)
+			}
+			tip, hosts[i] = id, at
+			kept = append(kept, "workdir "+at)
+		case "mount":
+			// A live mount does not provision anything: the place IS the host
+			// directory, so reaching it again is the same node.
+			id, err := r.addWorkdir(host, recipeName, project, false)
+			if err != nil {
+				return "", "", nil, nil, nil, err
+			}
+			tip, hosts[i] = id, host
+		}
+	}
+	return project, tip, hosts, kept, cut, nil
+}
+
+// placeAt resolves a provisioning source's `at:` — where it puts its bytes in the
+// NEW node's spaces. Unset, it is that node's ephemeral space: dabs made it, so
+// dabs may reap it, but `down` asks first because that is where work lives.
+func (r Real) placeAt(s recipe.Source, id, leaf string) (string, error) {
+	vars, err := r.spaceVars(id, "NODE")
+	if err != nil {
+		return "", err
+	}
+	if s.At == "" {
+		return filepath.Join(vars["NODE_EPHEMERAL"], leaf), nil
+	}
+	return r.expandPathWith(s.At, vars)
+}
+
+// cutWorktree checks out a new branch off HEAD into at, and records the node.
+func (r Real) cutWorktree(top, branch, at, id, recipeName, parent string) error {
+	if !r.data.GitHasCommits(top) {
+		return fmt.Errorf("recipe: repo has no commits yet — make an initial commit first")
+	}
+	if err := r.data.MkdirAll(filepath.Dir(at), 0o755); err != nil {
+		return fmt.Errorf("recipe: node dir: %w", err)
+	}
+	if err := r.data.GitAddWorktree(top, branch, at); err != nil {
+		return fmt.Errorf("recipe: %w", err)
+	}
+	return r.writeNode(Node{
+		ID:       id,
+		Kind:     KindWorktree,
+		Parent:   parent,
+		Recipe:   recipeName,
+		Created:  stampNow(),
+		Dir:      at,
+		Worktree: &NodeWorktree{Branch: branch, Repo: top},
+	})
 }
 
 // resolvedSource is a source after validation: its strategy (mount/worktree/
@@ -286,7 +429,7 @@ type resolvedSource struct{ kind, origin, top string }
 // all fail HERE, before any image build or box touch. It returns one
 // resolvedSource per source, in source order. Shared by runRecipe and Up so both
 // validate identically.
-func (r Real) validateSources(recipeName string, sources []recipe.Source, vars map[string]string) ([]resolvedSource, error) {
+func (r Real) validateSources(recipeName string, sources []recipe.Source, vars map[string]string, hosts map[int]string) ([]resolvedSource, error) {
 	resolved := make([]resolvedSource, len(sources))
 	for i, s := range sources {
 		kind, origin, err := s.Kind()
@@ -295,6 +438,11 @@ func (r Real) validateSources(recipeName string, sources []recipe.Source, vars m
 		}
 		if s.NeedsBoxPath() {
 			return nil, fmt.Errorf("recipe %q: source %s:%s has no path — say where it lands in the box", recipeName, kind, origin)
+		}
+		// A `.` source was already provisioned into a place; its host is that place.
+		if h, ok := hosts[i]; ok {
+			resolved[i] = resolvedSource{kind: kind, origin: h}
+			continue
 		}
 		host, err := r.expandPathWith(origin, vars)
 		if err != nil {
@@ -349,66 +497,22 @@ func (r Real) validateSources(recipeName string, sources []recipe.Source, vars m
 // recipe says keep; Up leaves it up). On any failure after the box is up it
 // tears the half-built box down. Shared by runRecipe and Up so both mount
 // sources identically.
-func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID string, rec recipe.Recipe, image string, sources []recipe.Source, resolved []resolvedSource) (instance string, kept []string, err error) {
-	// Every chain starts at the project — the directory this command ran from.
-	project, err := r.ensureProjectNode(recipeName)
-	if err != nil {
-		return "", nil, err
-	}
-	// The box stacks on the deepest directory node in the chain, or on the
-	// project when the recipe made none.
-	chainTip := project
-
-	// Turn declared sources into driver mounts + deferred copies (creating
-	// worktrees now that the image is ready).
+func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID, tip string, rec recipe.Recipe, image string, sources []recipe.Source, resolved []resolvedSource, cut []wtCut) (instance string, err error) {
+	// Places are already cut (provisionPlaces): a `.` source's origin is the
+	// directory that place owns. What is left is turning every source into a mount.
 	var mounts []sandbox.Mount
-	var copies []copyOp
-	var cut []wtCut // fresh worktrees to journal once the box is up
 	for i, s := range sources {
 		rs := resolved[i]
 		switch rs.kind {
-		case "mount":
-			// A `.` source is the code: it marks a workdir node, the place this box's
-			// `.` resolved to. Other mounts (a login dir, a skill) are not places the
-			// chain is about.
-			if isDotSource(s) {
-				id, err := r.addWorkdir(rs.origin, recipeName, project, false)
-				if err != nil {
-					return "", nil, err
-				}
-				chainTip = id
-			}
+		case "mount", "worktree", "copy":
+			// worktree and copy own a directory on the host; a `.` mount IS the host
+			// directory. All three are one thing to a driver: a live bind.
 			mounts = append(mounts, sandbox.Mount{Host: rs.origin, Path: s.Path, RO: s.RO})
-		case "worktree":
-			wt, branch, id, err := r.addWorktree(rs.top, recipeName, project)
-			if err != nil {
-				return "", nil, err
-			}
-			chainTip = id
-			mounts = append(mounts, sandbox.Mount{Host: wt, Path: s.Path})
-			kept = append(kept, fmt.Sprintf("%s (branch %s)", wt, branch))
-			// Journal the NODE's id, not a path basename — identity comes from the
-			// node, never from where its data happens to sit.
-			cut = append(cut, wtCut{name: id, path: wt})
-		case "copy":
-			if isDotSource(s) {
-				id, err := r.addWorkdir(rs.origin, recipeName, project, true)
-				if err != nil {
-					return "", nil, err
-				}
-				chainTip = id
-			}
-			// Mount the origin read-only at a staging path, then snapshot it into
-			// the box-owned destination after up — the box gets its own copy and
-			// the host is never written.
-			staging := fmt.Sprintf("/.dabs/copy/%d", i)
-			mounts = append(mounts, sandbox.Mount{Host: rs.origin, Path: staging, RO: true})
-			copies = append(copies, copyOp{src: staging, dest: s.Path})
 		case "mkmount":
 			// The origin is the recipe's to name and dabs's to create — 0700,
 			// because this is where a harness puts a credential.
 			if err := r.data.MkdirAll(rs.origin, 0o700); err != nil {
-				return "", nil, fmt.Errorf("recipe %q: mkmount %s: %w", recipeName, rs.origin, err)
+				return "", fmt.Errorf("recipe %q: mkmount %s: %w", recipeName, rs.origin, err)
 			}
 			mounts = append(mounts, sandbox.Mount{Host: rs.origin, Path: s.Path, RO: s.RO})
 		}
@@ -421,7 +525,7 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID string, rec recipe.
 	}
 	instance, err = drv.Up(sandbox.Spec{Name: image, Workdir: workdir, Env: rec.Env, Mounts: mounts})
 	if err != nil {
-		return "", nil, err
+		return "", err
 	}
 
 	// Mark the box: the node was named before the box came up (its spaces had to
@@ -429,12 +533,12 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID string, rec recipe.
 	if err := r.writeNode(Node{
 		ID:       boxID,
 		Kind:     KindBox,
-		Parent:   chainTip,
+		Parent:   tip,
 		Recipe:   recipeName,
 		Created:  stampNow(),
 		Instance: instance,
 	}); err != nil {
-		return "", nil, err
+		return "", err
 	}
 
 	// The box exists now, so its instance can be journalled against each fresh
@@ -443,18 +547,7 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID string, rec recipe.
 		r.logWorktreeUp(instance, c.name, c.path, recipeName)
 	}
 
-	for _, c := range copies {
-		// argv, not a shell string — a dest with a quote/space can't break it.
-		if out, err := drv.Exec(instance, []string{"mkdir", "-p", c.dest}); err != nil {
-			r.teardown(drv, instance) // don't leave a half-built box behind — and balance any journaled `up`
-			return "", nil, fmt.Errorf("recipe %q: mkdir %s: %w: %s", recipeName, c.dest, err, out)
-		}
-		if out, err := drv.Exec(instance, []string{"cp", "-a", c.src + "/.", c.dest}); err != nil {
-			r.teardown(drv, instance)
-			return "", nil, fmt.Errorf("recipe %q: copy into %s: %w: %s", recipeName, c.dest, err, out)
-		}
-	}
-	return instance, kept, nil
+	return instance, nil
 }
 
 // resolveRecipe picks the recipe that `dabs build`/`dabs up` act on and returns

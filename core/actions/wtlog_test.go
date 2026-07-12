@@ -53,7 +53,7 @@ func TestRecipeWorktreeLogsUp(t *testing.T) {
         path: /work
 `
 	fd := baseData()
-	fd.toplevel["."] = nil
+	fd.toplevel["/cwd"] = nil
 	drv := &fakeDriver{built: map[string]bool{"img": true}}
 	if err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "w"}); err != nil {
 		t.Fatalf("Recipe: %v", err)
@@ -155,7 +155,7 @@ func TestNonKeepWorktreeRecipeBalancesJournal(t *testing.T) {
         path: /work
 `
 	fd := baseData()
-	fd.toplevel["."] = nil
+	fd.toplevel["/cwd"] = nil
 	drv := &fakeDriver{built: map[string]bool{"img": true}}
 	if err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "w"}); err != nil {
 		t.Fatalf("Recipe: %v", err)

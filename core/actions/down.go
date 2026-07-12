@@ -51,10 +51,15 @@ func (r Real) Down(p params.Down) error {
 	return nil
 }
 
-// reapBoxSpaces applies each space's promise to the box node behind an instance:
-// tmp/ goes silently, ephemeral/ goes only with consent when it holds something,
-// and volume/ stays. The node record stays too — it is the marker of what ran and
-// from where.
+// reapBoxSpaces empties the box node behind an instance. ALL THREE spaces go: a
+// box node is minted fresh every run and never re-entered, so nothing left in one
+// can ever be reached again. What a box wants back next time belongs in its
+// PLACE's spaces ($PARENT_VOLUME), which no box reaps.
+//
+// tmp/ and volume/ go silently. ephemeral/ goes only with consent when it holds
+// something — that is the space a recipe names for bytes worth a question.
+//
+// The node record stays: it is the marker of what ran and from where.
 //
 // The space decides, not the recipe, so `down` never has to interpret intent.
 //
@@ -68,12 +73,14 @@ func (r Real) reapBoxSpaces(instance string, force bool) error {
 	if !ok {
 		return nil
 	}
-	tmp, err := r.resolveNodeSpace(n.ID, SpaceTmp)
-	if err != nil {
-		return err
-	}
-	if err := r.data.RemoveAll(tmp); err != nil {
-		return fmt.Errorf("down: %s: %w", tmp, err)
+	for _, space := range []string{SpaceTmp, SpaceVolume} {
+		dir, err := r.resolveNodeSpace(n.ID, space)
+		if err != nil {
+			return err
+		}
+		if err := r.data.RemoveAll(dir); err != nil {
+			return fmt.Errorf("down: %s: %w", dir, err)
+		}
 	}
 
 	eph, err := r.resolveNodeSpace(n.ID, SpaceEphemeral)

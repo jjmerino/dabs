@@ -88,8 +88,13 @@ type Source struct {
 	Mkmount  string `json:"mkmount,omitempty"`
 	Worktree string `json:"worktree,omitempty"`
 	Copy     string `json:"copy,omitempty"`
-	Path     string `json:"path"`         // absolute destination inside the box
-	RO       bool   `json:"ro,omitempty"` // for mount: read-only
+	// At is where a source that PROVISIONS something puts it on the host — a
+	// worktree's checkout, a copy's directory. It names one of the new node's own
+	// spaces ($NODE_EPHEMERAL/worktree), so the recipe says where the bytes land
+	// and what `down` will do to them, rather than dabs knowing in secret.
+	At   string `json:"at,omitempty"`
+	Path string `json:"path"`         // absolute destination inside the box
+	RO   bool   `json:"ro,omitempty"` // for mount: read-only
 }
 
 // Kind returns which source strategy this entry uses, plus its host origin. An

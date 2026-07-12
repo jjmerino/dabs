@@ -112,11 +112,12 @@ func TestDownDryDownsNothing(t *testing.T) {
 	}
 }
 
-// CONTRACT: `down` applies each node space's promise. tmp/ goes without asking,
-// volume/ is never touched, and a non-empty ephemeral/ is not deleted behind the
-// user's back — down refuses unless they consent (or --force). The space, not the
-// recipe, decides: convention, so `down` never has to interpret intent.
-func TestDownReapsTmpKeepsVolumeAndAsksBeforeEphemeral(t *testing.T) {
+// CONTRACT: `down` empties the box node. All three spaces go — a box node is
+// minted fresh every run and never re-entered, so nothing left in one could ever
+// be found again; what a box wants back next time belongs in its PLACE's spaces,
+// which no box reaps. tmp/ and volume/ go silently; a non-empty ephemeral/ is not
+// deleted behind the user's back.
+func TestDownEmptiesTheBoxAndAsksBeforeEphemeral(t *testing.T) {
 	const inst, node = "img-inst", "r-abcd1234"
 	base := "/home/t/.dabs/nodes/" + node
 
@@ -132,7 +133,7 @@ func TestDownReapsTmpKeepsVolumeAndAsksBeforeEphemeral(t *testing.T) {
 		return fd, drv
 	}
 
-	t.Run("empty ephemeral: reaps tmp and ephemeral, never volume", func(t *testing.T) {
+	t.Run("empty ephemeral: every space of the box is reaped", func(t *testing.T) {
 		fd, drv := newFixture(nil)
 		if err := newReal("", fd, drv).Down(params.Down{Instance: inst, Force: true}); err != nil {
 			t.Fatalf("Down: %v", err)
@@ -140,7 +141,7 @@ func TestDownReapsTmpKeepsVolumeAndAsksBeforeEphemeral(t *testing.T) {
 		if len(drv.downs) != 1 {
 			t.Fatalf("box not downed: %v", drv.downs)
 		}
-		wantGone := []string{base + "/tmp", base + "/ephemeral"}
+		wantGone := []string{base + "/tmp", base + "/volume", base + "/ephemeral"}
 		for _, w := range wantGone {
 			found := false
 			for _, got := range fd.rmAll {
@@ -150,11 +151,6 @@ func TestDownReapsTmpKeepsVolumeAndAsksBeforeEphemeral(t *testing.T) {
 			}
 			if !found {
 				t.Errorf("down did not reap %s; removed=%v", w, fd.rmAll)
-			}
-		}
-		for _, got := range fd.rmAll {
-			if got == base+"/volume" {
-				t.Errorf("down deleted the volume space, which must survive: %v", fd.rmAll)
 			}
 		}
 	})

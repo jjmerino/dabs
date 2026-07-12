@@ -31,6 +31,7 @@ func (f *fakeActions) Worktrees(params.Worktrees) error         { return f.err }
 func (f *fakeActions) Exec(p params.Exec) error                 { f.exec = append(f.exec, p); return f.err }
 func (f *fakeActions) Run(p params.Run) error                   { f.run = append(f.run, p); return f.err }
 func (f *fakeActions) Down(p params.Down) error                 { f.down = append(f.down, p); return f.err }
+func (f *fakeActions) Rm(params.Rm) error                       { return f.err }
 func (f *fakeActions) Ls(p params.Ls) error                     { f.ls = append(f.ls, p); return f.err }
 func (f *fakeActions) ServersList(params.ServersList) error     { return f.err }
 func (f *fakeActions) ServersAdd(params.ServersAdd) error       { return f.err }

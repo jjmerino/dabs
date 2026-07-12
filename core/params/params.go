@@ -54,6 +54,17 @@ type Ls struct {
 	All bool
 }
 
+// Rm are the inputs to removing a node: a place dabs made, or a box.
+//
+// Yes consents to reaping the ephemeral space (the one that may hold work).
+// Volume additionally consents to the volume — what a place keeps ON PURPOSE,
+// so it is never taken without being asked for by name.
+type Rm struct {
+	Node   string
+	Yes    bool
+	Volume bool
+}
+
 // ServersList are the inputs to listing registered servers.
 type ServersList struct{}
 
@@ -118,6 +129,7 @@ type Actions interface {
 	Run(Run) error
 	Down(Down) error
 	Ls(Ls) error
+	Rm(Rm) error
 	ServersList(ServersList) error
 	ServersAdd(ServersAdd) error
 	ServersRemove(ServersRemove) error

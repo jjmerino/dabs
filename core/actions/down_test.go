@@ -133,7 +133,7 @@ func TestDownEmptiesTheBoxAndAsksBeforeEphemeral(t *testing.T) {
 		return fd, drv
 	}
 
-	t.Run("empty ephemeral: every space of the box is reaped", func(t *testing.T) {
+	t.Run("consented: tmp and ephemeral go, the volume is kept", func(t *testing.T) {
 		fd, drv := newFixture(nil)
 		if err := newReal("", fd, drv).Down(params.Down{Instance: inst, Force: true}); err != nil {
 			t.Fatalf("Down: %v", err)
@@ -141,7 +141,7 @@ func TestDownEmptiesTheBoxAndAsksBeforeEphemeral(t *testing.T) {
 		if len(drv.downs) != 1 {
 			t.Fatalf("box not downed: %v", drv.downs)
 		}
-		wantGone := []string{base + "/tmp", base + "/volume", base + "/ephemeral"}
+		wantGone := []string{base + "/tmp", base + "/ephemeral"}
 		for _, w := range wantGone {
 			found := false
 			for _, got := range fd.rmAll {
@@ -155,19 +155,21 @@ func TestDownEmptiesTheBoxAndAsksBeforeEphemeral(t *testing.T) {
 		}
 	})
 
-	t.Run("non-empty ephemeral, refused: box stays up and nothing is deleted", func(t *testing.T) {
-		fd, drv := newFixture([]string{"worktree"})
-		r := newReal("", fd, drv).WithConfirm(func(string) bool { return false }) // the user says no
-		err := r.Down(params.Down{Instance: inst})
-		if err == nil {
-			t.Fatal("want an error when the user declines")
+	t.Run("non-empty ephemeral, declined: the box goes down, the files stay", func(t *testing.T) {
+		fd, drv := newFixture([]string{"work"})
+		r := newReal("", fd, drv).WithConfirm(func(string) bool { return false }) // no consent
+		if err := r.Down(params.Down{Instance: inst}); err != nil {
+			t.Fatalf("Down: %v", err)
 		}
-		if len(drv.downs) != 0 {
-			t.Errorf("box was downed despite the refusal: %v", drv.downs)
+		// The box is what `down` is for; it goes either way.
+		if len(drv.downs) != 1 {
+			t.Errorf("box not downed: %v", drv.downs)
 		}
+		// The files are not. Silence is not consent — a non-interactive caller must
+		// never lose an agent's work by default.
 		for _, got := range fd.rmAll {
 			if got == base+"/ephemeral" {
-				t.Errorf("ephemeral deleted after a refusal: %v", fd.rmAll)
+				t.Errorf("ephemeral reaped without consent: %v", fd.rmAll)
 			}
 		}
 	})

@@ -26,6 +26,7 @@ var Commands = map[string]Command{
 	"run":       {(*CLI).runRun},
 	"down":      {(*CLI).runDown},
 	"ls":        {(*CLI).runLs},
+	"rm":        {(*CLI).runRm},
 	"servers":   {(*CLI).runServers},
 }
 
@@ -48,6 +49,7 @@ var commandDocs = map[string]cmdDoc{
 	"run":       {"run a shell command inside an instance (args joined into one `sh -c` line — use `exec` for exact argv): run <instance> <shell…>", "run <instance> <shell…>"},
 	"down":      {"stop + remove an instance by name (--multiple to act on several matches)", "down [--force] [--dry] [--multiple] <instance>"},
 	"ls":        {"list what dabs owns, live (--all: include archived nodes)", "ls [--all]"},
+	"rm":        {"remove a node and what it holds: rm <node> [-y] [--volume]", "rm <node> [-y] [--volume]"},
 	"servers":   {"manage registered servers: servers [ls] | add <name> [host] | rm <name>", "servers [ls | add <name> [host] | rm <name>]"},
 }
 
@@ -178,6 +180,14 @@ func (c *CLI) runLs(args []string) error {
 		return err
 	}
 	return c.actions.Ls(p)
+}
+
+func (c *CLI) runRm(args []string) error {
+	p, err := parseRm(args)
+	if err != nil {
+		return err
+	}
+	return c.actions.Rm(p)
 }
 
 func (c *CLI) runServers(args []string) error {

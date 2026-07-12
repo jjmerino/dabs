@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/jjmerino/dabs/core/params"
@@ -146,6 +147,27 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 	return nil
 }
 
+// sortMountsByDepth orders mounts parent-before-child by box path, so a mount
+// NESTED inside another lands on top of it instead of under it.
+//
+// Drivers do not agree on this. bwrap binds in argv order, so a parent listed
+// after its child masks the child — silently, with the parent's own content at
+// the child's path. Apple's `container` and docker resolve nesting themselves and
+// do not care. A recipe authored on macOS would therefore break on Linux, so the
+// order is decided HERE and every driver gets the same one.
+//
+// Stable: mounts at the same depth keep their declared order.
+func sortMountsByDepth(mounts []sandbox.Mount) {
+	sort.SliceStable(mounts, func(i, j int) bool {
+		return pathDepth(mounts[i].Path) < pathDepth(mounts[j].Path)
+	})
+}
+
+// pathDepth counts the segments in a box path: /work → 1, /root/.claude → 2.
+func pathDepth(p string) int {
+	return len(strings.Split(strings.Trim(filepath.Clean(p), "/"), "/"))
+}
+
 // resolvedSource is a source after validation: its strategy (mount/worktree/
 // copy), its expanded host origin, and (for worktrees) the repo toplevel (empty
 // otherwise) — the exact inputs buildBox needs to realize the source. Bundling
@@ -222,7 +244,6 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName string, rec recipe.Recipe,
 	// Turn declared sources into driver mounts + deferred copies (creating
 	// worktrees now that the image is ready).
 	var mounts []sandbox.Mount
-	var perbox []sandbox.Mount
 	var copies []copyOp
 	var cut []wtCut // fresh worktrees to journal once the box is up
 	for i, s := range sources {
@@ -249,18 +270,15 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName string, rec recipe.Recipe,
 			copies = append(copies, copyOp{src: staging, dest: s.Path})
 		case "perbox":
 			// A fresh, empty, box-private host dir (under ~/.dabs/boxes/<id>/<label>)
-			// mounted live at s.Path. Held aside and appended LAST so it lands on
-			// top of any earlier mount it nests over (e.g. Claude's projects/ over
-			// the shared vault).
+			// mounted live at s.Path.
 			host, err := r.perboxDir(rs.origin)
 			if err != nil {
 				return "", nil, err
 			}
-			perbox = append(perbox, sandbox.Mount{Host: host, Path: s.Path})
+			mounts = append(mounts, sandbox.Mount{Host: host, Path: s.Path})
 		}
 	}
-	// Perbox mounts overlay earlier mounts, so they must be applied after them.
-	mounts = append(mounts, perbox...)
+	sortMountsByDepth(mounts)
 
 	workdir := rec.Workdir
 	if workdir == "" {

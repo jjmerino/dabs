@@ -587,12 +587,20 @@ func TestCastAttachesWorktreeAndGitDir(t *testing.T) {
 		{Host: wt, Path: "/work"},                   // the worktree, attached live
 		{Host: "/repo/.git", Path: "/repo/.git"},    // parent store, so git works in-box
 	}
+	// The SET of mounts is the contract; their order is not — actions order mounts
+	// parent-before-child, which is a separate contract with its own test.
 	if len(up.Mounts) != len(want) {
 		t.Fatalf("mounts = %+v, want %+v", up.Mounts, want)
 	}
-	for i := range want {
-		if up.Mounts[i] != want[i] {
-			t.Errorf("mount[%d] = %+v, want %+v", i, up.Mounts[i], want[i])
+	for _, w := range want {
+		found := false
+		for _, got := range up.Mounts {
+			if got == w {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("missing mount %+v; got %+v", w, up.Mounts)
 		}
 	}
 }
@@ -1095,4 +1103,62 @@ recipes:
 	if len(up.Mounts) != 1 || up.Mounts[0].Host != "/proj/box/assets" {
 		t.Errorf("Up mounts = %+v, want the source anchored on the dabs.yaml dir (/proj/box/assets)", up.Mounts)
 	}
+}
+
+// CONTRACT: a mount NESTED inside another reaches the driver AFTER its parent,
+// however the recipe declared them. bwrap binds in argv order, so a parent
+// listed after its child masks the child — the box gets the parent's own content
+// at the child's path, with no error. Apple/docker resolve nesting themselves, so
+// a recipe authored there would break only on Linux. Actions decide the order.
+func TestNestedMountsReachDriverParentFirst(t *testing.T) {
+	// Declared deepest-first, and out of order, on purpose.
+	y := `recipes:
+  m:
+    image: img
+    command: [x]
+    sources:
+      - mount: /h/sessions
+        path: /root/.claude/projects/inner
+      - mount: /h/work
+        path: /work
+      - mount: /h/claude
+        path: /root/.claude
+      - mount: /h/proj
+        path: /root/.claude/projects
+`
+	fd := baseData()
+	for _, p := range []string{"/h/sessions", "/h/work", "/h/claude", "/h/proj"} {
+		fd.exists[p] = true
+	}
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	if err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "m"}); err != nil {
+		t.Fatalf("Recipe: %v", err)
+	}
+	got := onlyUp(t, drv).Mounts
+	seen := map[string]int{}
+	for i, m := range got {
+		for parent, pi := range seen {
+			if strings.HasPrefix(m.Path, parent+"/") && pi > i {
+				t.Errorf("mount %s at index %d comes before its parent %s at %d", m.Path, i, parent, pi)
+			}
+		}
+		seen[m.Path] = i
+	}
+	// A child must never precede a parent it nests in.
+	for i, m := range got {
+		for j := i + 1; j < len(got); j++ {
+			if strings.HasPrefix(m.Path, got[j].Path+"/") {
+				t.Errorf("driver order %v: %s (i=%d) nests in %s (j=%d) but comes first",
+					mountPaths(got), m.Path, i, got[j].Path, j)
+			}
+		}
+	}
+}
+
+func mountPaths(ms []sandbox.Mount) []string {
+	out := make([]string, len(ms))
+	for i, m := range ms {
+		out[i] = m.Path
+	}
+	return out
 }

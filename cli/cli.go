@@ -26,11 +26,29 @@ func (c *CLI) Run(args []string) error {
 	if len(args) == 0 {
 		return NoCommandError{}
 	}
-	cmd, ok := Commands[args[0]]
+	name := args[0]
+	if canonical, ok := aliases[name]; ok {
+		name = canonical
+	}
+	cmd, ok := Commands[name]
 	if !ok {
 		return UnknownCommandError{Name: args[0]}
 	}
 	return cmd.Run(c, args[1:])
+}
+
+// aliases are the names people actually type. A CLI that knows what you meant and
+// refuses anyway is just being difficult; the plural/singular of a noun is not a
+// decision a user should have to remember.
+//
+// They are deliberately absent from Commands, so `dabs --help` lists each command
+// once, under one name.
+var aliases = map[string]string{
+	"worktree": "worktrees",
+	"remove":   "rm",
+	"delete":   "rm",
+	"list":     "ls",
+	"ps":       "ls",
 }
 
 // Usage writes the command list to w.

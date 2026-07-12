@@ -248,6 +248,7 @@ core/sandbox/<kind>/   one driver per kind (apple, bwrap, server). Drivers
   names are neutral (`demo-0`, `myproj`).
 - Commit messages say WHY, and for driver changes include what was run
   against the real system and what it printed.
+- Function names must be verbs.
 
 **Git**
 

@@ -31,6 +31,7 @@ func (f *fakeActions) Worktrees(params.Worktrees) error         { return f.err }
 func (f *fakeActions) Exec(p params.Exec) error                 { f.exec = append(f.exec, p); return f.err }
 func (f *fakeActions) Run(p params.Run) error                   { f.run = append(f.run, p); return f.err }
 func (f *fakeActions) Down(p params.Down) error                 { f.down = append(f.down, p); return f.err }
+func (f *fakeActions) Rm(params.Rm) error                       { return f.err }
 func (f *fakeActions) Ls(p params.Ls) error                     { f.ls = append(f.ls, p); return f.err }
 func (f *fakeActions) ServersList(params.ServersList) error     { return f.err }
 func (f *fakeActions) ServersAdd(params.ServersAdd) error       { return f.err }
@@ -237,5 +238,33 @@ func TestRunPropagatesActionError(t *testing.T) {
 	f := &fakeActions{err: boom}
 	if err := New(f).Run([]string{"ls"}); !errors.Is(err, boom) {
 		t.Errorf("Run(ls) = %v, want %v", err, boom)
+	}
+}
+
+// CONTRACT: the names people actually type reach the command they meant. A CLI
+// that knows what you meant and refuses anyway is just being difficult.
+func TestAliasesDispatch(t *testing.T) {
+	for alias, want := range map[string]string{
+		"worktree": "worktrees",
+		"remove":   "rm",
+		"delete":   "rm",
+		"list":     "ls",
+		"ps":       "ls",
+	} {
+		if _, ok := Commands[want]; !ok {
+			t.Fatalf("alias %q points at %q, which is not a command", alias, want)
+		}
+		f := &fakeActions{}
+		err := New(f).Run([]string{alias})
+		// It must not be rejected as unknown; whatever the command then does with
+		// no args is that command's business.
+		var unknown UnknownCommandError
+		if errors.As(err, &unknown) {
+			t.Errorf("alias %q was rejected as an unknown command", alias)
+		}
+	}
+	// An alias is NOT a second entry in the help: each command is listed once.
+	if _, dup := Commands["worktree"]; dup {
+		t.Error("alias leaked into the command table; help would list it twice")
 	}
 }

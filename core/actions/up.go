@@ -27,16 +27,20 @@ func (r Real) Up(p params.Up) error {
 	if err != nil {
 		return err
 	}
-	// Name the box's node first: a source may mount one of its spaces, so the
-	// paths must exist as values before anything is validated or built.
-	boxID, vars, err := r.mintBoxNode(name)
+	// Cut the PLACE first: a box names its parent's spaces ($PARENT_VOLUME), and a
+	// parent must exist to be named.
+	_, tip, hosts, kept, cut, err := r.provisionPlaces(name, rec.Sources, "")
+	if err != nil {
+		return err
+	}
+	boxID, vars, err := r.mintBoxNode(name, tip)
 	if err != nil {
 		return err
 	}
 	// Validate sources before any side effect, then resolve the image WITHOUT
 	// building the recipe's own Dockerfile: `up` boots an image a prior
 	// `dabs build` produced (it may run where no builder exists).
-	resolved, err := r.validateSources(name, rec.Sources, vars)
+	resolved, err := r.validateSources(name, rec.Sources, vars, hosts)
 	if err != nil {
 		return err
 	}
@@ -44,14 +48,14 @@ func (r Real) Up(p params.Up) error {
 	if err != nil {
 		return err
 	}
-	instance, kept, err := r.buildBox(drv, name, boxID, rec, image, rec.Sources, resolved)
+	instance, err := r.buildBox(drv, name, boxID, tip, rec, image, rec.Sources, resolved, cut)
 	if err != nil {
 		return err
 	}
 	// `up` is DETACHED: it never runs the recipe's command and never tears the
 	// box down — keep is implicit. The box is the user's to reap with `dabs down`.
 	for _, k := range kept {
-		fmt.Fprintln(os.Stdout, tui.Success("worktree kept: %s", k))
+		fmt.Fprintln(os.Stdout, tui.Success("kept: %s", k))
 	}
 	if rec.Target != "" {
 		fmt.Fprintln(os.Stdout, tui.Success("%s up on %s", tui.Accent(instance), rec.Target))

@@ -294,7 +294,7 @@ func TestRecipeWorktreeCreatesAndMounts(t *testing.T) {
         path: /work
 `
 	fd := baseData()
-	fd.toplevel["."] = nil // "." is a repo whose root is "."
+	fd.toplevel["/cwd"] = nil // the cwd is a repo whose root is the cwd
 	drv := &fakeDriver{built: map[string]bool{"img": true}}
 	if err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "w"}); err != nil {
 		t.Fatalf("Recipe: %v", err)
@@ -309,39 +309,44 @@ func TestRecipeWorktreeCreatesAndMounts(t *testing.T) {
 	}
 }
 
-func TestRecipeCopyStagesThenCopies(t *testing.T) {
+func TestRecipeCopySnapshotsOntoTheHostAndMountsIt(t *testing.T) {
 	y := `recipes:
   c:
     image: img
     command: [x]
     sources:
-      - copy: /src
+      - copy: .
         path: /work
 `
 	fd := baseData()
-	fd.exists["/src"] = true
+	fd.exists["/cwd"] = true
 	drv := &fakeDriver{built: map[string]bool{"img": true}}
 	if err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "c"}); err != nil {
 		t.Fatalf("Recipe: %v", err)
 	}
-	// Contract: copy is a snapshot — the box is NOT given a live mount at /work;
-	// instead the source is staged read-only and copied into /work after up.
+	// CONTRACT: a copy is a snapshot dabs OWNS — it lands in the new place's own
+	// space on the HOST, so `down` can ask before reaping it and a human can read
+	// what the box did. The box gets that directory as a live bind, not a copy of
+	// a copy made inside it.
 	up := onlyUp(t, drv)
+	var work sandbox.Mount
 	for _, m := range up.Mounts {
-		if m.Path == "/work" && !m.RO {
-			t.Errorf("copy source produced a writable mount at /work: %+v", m)
+		if m.Path == "/work" {
+			work = m
 		}
 	}
-	// Snapshot is materialized by argv Execs (mkdir + cp) — no shell string, so a
-	// quirky dest path can't break it.
-	if len(drv.execs) != 2 {
-		t.Fatalf("want mkdir+cp Execs, got %v", drv.execs)
+	if work.Host == "" {
+		t.Fatalf("no mount at /work: %+v", up.Mounts)
 	}
-	if drv.execs[0][0] != "mkdir" || drv.execs[1][0] != "cp" {
-		t.Errorf("copy execs = %v, want [mkdir…] then [cp…]", drv.execs)
+	if !strings.HasPrefix(work.Host, "/home/t/.dabs/nodes/") || !strings.Contains(work.Host, "/ephemeral/") {
+		t.Errorf("copy mounted %q; want the place's own ephemeral space", work.Host)
 	}
-	if last := drv.execs[1]; last[len(last)-1] != "/work" {
-		t.Errorf("cp dest = %v, want /work", last)
+	// The snapshot was taken on the host, not by exec'ing cp inside the box.
+	if len(fd.copies) != 1 || !strings.HasPrefix(fd.copies[0], "/cwd -> ") {
+		t.Errorf("host copy = %v, want one copy of the cwd into the node", fd.copies)
+	}
+	if len(drv.execs) != 0 {
+		t.Errorf("copy ran commands inside the box: %v", drv.execs)
 	}
 }
 
@@ -431,8 +436,8 @@ func TestRecipeWorktreeNoCommitsFailsBeforeBuild(t *testing.T) {
         path: /work
 `
 	fd := baseData()
-	fd.toplevel["."] = nil                                   // "." IS a repo...
-	fd.noCommits["."] = true                                 // ...but has no commits
+	fd.toplevel["/cwd"] = nil                                // "." IS a repo...
+	fd.noCommits["/cwd"] = true                              // ...but has no commits
 	drv := &fakeDriver{built: map[string]bool{"img": false}} // not built -> build WOULD happen
 	err := newReal(y, fd, drv, "img").Recipe(params.Recipe{Name: "w"})
 	if err == nil || !strings.Contains(err.Error(), "no commits") {

@@ -47,7 +47,27 @@ type Down struct {
 }
 
 // Ls are the inputs to the ls action.
-type Ls struct{}
+type Ls struct {
+	// All also lists ARCHIVED nodes — boxes no driver holds any more. They are
+	// kept as the record of what ran and from where; `ls` hides them because what
+	// you almost always want to know is what is live.
+	All bool
+}
+
+// Rm are the inputs to removing a node: a place dabs made, or a box.
+//
+// Yes consents to reaping the ephemeral space (the one that may hold work).
+// Volume additionally consents to the volume — what a place keeps ON PURPOSE,
+// so it is never taken without being asked for by name.
+// Force approves discarding a worktree node that holds unreviewed git work
+// (uncommitted changes or unpushed commits) — a stronger consent than Yes,
+// which only speaks to the ephemeral space, not to losing git work.
+type Rm struct {
+	Node   string
+	Yes    bool
+	Volume bool
+	Force  bool
+}
 
 // ServersList are the inputs to listing registered servers.
 type ServersList struct{}
@@ -113,6 +133,7 @@ type Actions interface {
 	Run(Run) error
 	Down(Down) error
 	Ls(Ls) error
+	Rm(Rm) error
 	ServersList(ServersList) error
 	ServersAdd(ServersAdd) error
 	ServersRemove(ServersRemove) error

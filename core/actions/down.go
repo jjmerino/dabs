@@ -51,16 +51,13 @@ func (r Real) Down(p params.Down) error {
 	return nil
 }
 
-// reapBoxSpaces applies each space's promise to the box node behind an instance:
-// tmp/ goes silently, ephemeral/ goes only with consent when it holds something,
-// and volume/ stays. The node record stays too — it is the marker of what ran and
-// from where.
+// reapBoxSpaces applies the space rules to the box node behind an instance. The
+// rules live in reapSpaces, so `down`, `rm` and `worktrees rm` cannot come to
+// different conclusions about what a space means.
 //
-// The space decides, not the recipe, so `down` never has to interpret intent.
-//
-// A worktree lives in its OWN node's ephemeral space, not the box's, so `down`
-// never reaps a checkout — `dabs worktrees rm` does, and it still refuses
-// unreviewed work.
+// A box holds no consent of its own: `down` reaps its tmp, asks about its
+// ephemeral, and keeps its volume — printing where. What a box wants back next
+// time belongs in its PLACE's spaces ($PARENT_VOLUME), which no box reaps.
 //
 // A box with no node has nothing to reap and is not an error.
 func (r Real) reapBoxSpaces(instance string, force bool) error {
@@ -68,30 +65,7 @@ func (r Real) reapBoxSpaces(instance string, force bool) error {
 	if !ok {
 		return nil
 	}
-	tmp, err := r.resolveNodeSpace(n.ID, SpaceTmp)
-	if err != nil {
-		return err
-	}
-	if err := r.data.RemoveAll(tmp); err != nil {
-		return fmt.Errorf("down: %s: %w", tmp, err)
-	}
-
-	eph, err := r.resolveNodeSpace(n.ID, SpaceEphemeral)
-	if err != nil {
-		return err
-	}
-	held, err := r.spaceHolds(eph)
-	if err != nil {
-		return err
-	}
-	if !held {
-		return r.data.RemoveAll(eph)
-	}
-	if !force && !r.confirm(fmt.Sprintf("%s holds files that `down` will delete.\n%s\nDelete them?",
-		tui.Accent(n.ID), tui.Muted(eph))) {
-		return fmt.Errorf("down: %s: kept (its ephemeral space holds files)", n.ID)
-	}
-	return r.data.RemoveAll(eph)
+	return r.reapSpaces(n, spacePolicy{yes: force})
 }
 
 // spaceHolds reports whether a space has anything worth asking about. Absent or
@@ -118,4 +92,22 @@ func (r Real) boxNodeFor(instance string) (Node, bool) {
 		}
 	}
 	return Node{}, false
+}
+
+// downInstance brings one box down by exact name, wherever in the fleet it is.
+// It is what `rm` uses on a box node: a place cannot be pulled out from under a
+// running box.
+func (r Real) downInstance(instance string) error {
+	matches, err := r.matches(instance)
+	if err != nil || len(matches) == 0 {
+		return nil // already gone
+	}
+	for _, m := range matches {
+		if err := m.driver.Down(m.name); err != nil {
+			return err
+		}
+		r.logWorktreeDown(m.name)
+		fmt.Fprintln(os.Stdout, tui.Success("%s down", tui.Accent(m.name)))
+	}
+	return nil
 }

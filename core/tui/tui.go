@@ -27,6 +27,12 @@ func interactive() bool {
 	return true
 }
 
+// Interactive reports whether there is a person here to answer. Callers that must
+// DEFAULT to keeping something check this before asking: Confirm blocks on a read
+// when stdin is a pipe, and a reap that waits forever for an answer nobody can
+// give is worse than one that keeps the files.
+func Interactive() bool { return interactive() }
+
 // Confirm shows prompt, then asks the user to proceed, returning true only for
 // an explicit yes. On a terminal it renders prompt inside a framed box and runs
 // a huh yes/no confirm; everything is drawn on stderr so a captured stdout (the

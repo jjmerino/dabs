@@ -7,19 +7,18 @@ instance; boxes run locally or on a remote server.
 
 ## Requirements
 
-dabs is a single static binary with no runtime dependencies of its own. It
-drives platform tools you install yourself — it detects them and points you
-at the install command, but never installs anything for you.
+dabs drives platform tools you install yourself. It detects them and points you
+at the install command; it never installs anything for you.
 
-- **macOS** 26+ on Apple Silicon — Apple's `container` CLI. Each box is a
-  lightweight Linux micro-VM (sub-second boot).
+- **macOS** on Apple Silicon — Apple's `container` CLI. Each box is a Linux
+  micro-VM.
   `brew install container && container system start`
-- **Linux** — `bubblewrap` (enters boxes) + `docker` (builds images). Boxes
-  are bwrap + overlayfs; millisecond starts.
+- **Linux** — `bubblewrap` (enters boxes) + `docker` (builds images). Boxes are
+  bwrap + overlayfs.
   `apt install bubblewrap` · docker: https://docs.docker.com/engine/install/
 - **Remote servers** (any of the above, driven over ssh) — `ssh` with pubkey
   auth on your side; dabs installed on the server.
-- No Windows driver yet.
+- No Windows driver.
 
 ## Install
 
@@ -65,17 +64,59 @@ Then:
 ```bash
 dabs build myproj                # build the box's image
 dabs up myproj                   # → myproj-a3f9c21d4e02 up   (a NEW pristine box)
-dabs ls                          # name  status  driver
+dabs ls                          # the tree: what dabs owns, and where it runs
 dabs run myproj-a3f 'ls | wc -l'         # run a shell line inside (instance prefixes ok, git-style)
 dabs exec myproj-a3f -- ./mycli --help   # exec an exact command inside (no shell)
 dabs recipe myproj               # boot a box and run its command
-dabs down myproj-a3f             # remove it
+dabs down myproj-a3f             # stop it
 ```
 
-Every `up` creates a **new** instance with a random id — the image is the
-clean state, so "give me a fresh machine" is instant and there is nothing to
-clean up. `down <name> --dry` shows what a name matches; a name matching more
-than one instance is refused unless you pass `--multiple`.
+Every `up` creates a **new** instance with a random id — the image is the clean
+state, so "give me a fresh machine" is instant. `down <name> --dry` shows what a
+name matches; a name matching more than one instance is refused unless you pass
+`--multiple`.
+
+## Nodes
+
+dabs marks every place it makes, so it can tell you what ran, from where, and
+whether anything is still live. `dabs ls` is that tree.
+
+```
+local (apple, this machine)
+  myproj              project   ~/code/myproj
+  └─ myproj-18f9c901  workdir   ~/code/myproj
+     └─ sh-a88626a1   box       myproj-a3f9c21d4e02 · running
+```
+
+A node is a **project** (the directory a command ran from), a **workdir** (a
+directory a recipe took as its `.`), a **worktree** (a git branch dabs cut), or a
+**box**. They stack: `project → (workdir | worktree)? → box`.
+
+A recipe with no image makes a place and stops — `dabs recipe wt` cuts a worktree,
+no box. Point a box at one later, or never.
+
+Each node offers three directories, and the one a recipe mounts says what happens
+to the bytes:
+
+| space | on `down` / `rm` |
+|---|---|
+| `volume/` | kept, unless you ask for it by name (`rm -y --volume`) |
+| `ephemeral/` | reaped with consent; without it, kept and its path printed |
+| `tmp/` | reaped, always |
+
+A source names them with `$NODE_*` (this box's) and `$PARENT_*` (its place's —
+what you want back next time, since a box never returns):
+
+```yaml
+- mkmount: ~/.dabs/shared/claude          # shared by every box that mounts it
+  path: /root/.claude
+- mkmount: $PARENT_VOLUME/claude/projects # this place's sessions; survive `down`
+  path: /root/.claude/projects
+```
+
+`dabs down` stops a box and archives its node. `dabs rm <node>` removes a node and
+whatever stands on it (it brings boxes down first). `dabs ls --all` shows the
+archive.
 
 ## Remote servers
 
@@ -147,7 +188,7 @@ empty, you log in once inside, and every later box that mounts it is logged in.
 - `cli` parses argv into typed params; `core/actions` owns all policy;
   `core/sandbox` is the mechanical driver contract (exact names in, state
   out); drivers live under `core/sandbox/<vendor>` and are build-tagged when
-  OS-coupled. Zero dependencies.
+  OS-coupled.
 - The image is the frozen fresh machine — rebuild it to change what a box
   carries. What crosses the boundary at runtime is exactly what the recipe's
   `sources` declare, and nothing else.

@@ -11,6 +11,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/jjmerino/dabs/core/params"
 )
@@ -159,9 +160,46 @@ func parseDown(args []string) (params.Down, error) {
 }
 
 // parseLs parses `dabs ls` arguments (there are none).
+func parseRm(args []string) (params.Rm, error) {
+	var p params.Rm
+	fs := newFlagSet("rm")
+	fs.BoolVar(&p.Yes, "y", false, "reap the ephemeral space too (the one that may hold work)")
+	fs.BoolVar(&p.Volume, "volume", false, "reap the volume too — what a place keeps on purpose")
+	fs.BoolVar(&p.Force, "force", false, "approve discarding a worktree that holds unreviewed git work")
+	// `dabs rm <node> -y` is how anyone would type it, and Go's flag package stops
+	// at the first non-flag argument. Hoist the flags so either order works.
+	if err := fs.Parse(hoistFlags(args)); err != nil {
+		if err == flag.ErrHelp {
+			return p, HelpRequestedError{helpText("rm", fs)}
+		}
+		return p, BadArgsError{Cmd: "rm", Reason: err.Error()}
+	}
+	if fs.NArg() != 1 {
+		return p, BadArgsError{Cmd: "rm", Reason: "usage: rm <node> [-y] [--volume] [--force]"}
+	}
+	p.Node = fs.Arg(0)
+	return p, nil
+}
+
+// hoistFlags reorders argv so every -flag precedes the positional arguments,
+// keeping their relative order. Go's flag package stops parsing at the first
+// non-flag, so without this a trailing flag is silently read as a positional.
+func hoistFlags(args []string) []string {
+	var flags, rest []string
+	for _, a := range args {
+		if strings.HasPrefix(a, "-") && a != "-" {
+			flags = append(flags, a)
+			continue
+		}
+		rest = append(rest, a)
+	}
+	return append(flags, rest...)
+}
+
 func parseLs(args []string) (params.Ls, error) {
 	var p params.Ls
 	fs := newFlagSet("ls")
+	fs.BoolVar(&p.All, "all", false, "also list archived nodes (boxes no driver holds any more)")
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
 			return p, HelpRequestedError{helpText("ls", fs)}

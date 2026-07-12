@@ -26,6 +26,7 @@ var Commands = map[string]Command{
 	"run":       {(*CLI).runRun},
 	"down":      {(*CLI).runDown},
 	"ls":        {(*CLI).runLs},
+	"rm":        {(*CLI).runRm},
 	"servers":   {(*CLI).runServers},
 }
 
@@ -42,12 +43,13 @@ var commandDocs = map[string]cmdDoc{
 	"do":        {"run a command in a throwaway box via the default recipe (else sh): do <cmd…>", "do <cmd…>"},
 	"cast":      {"run a recipe onto an existing worktree: cast <recipe> <worktree>", "cast <recipe> <worktree>"},
 	"recipes":   {"list the known recipes and what each mounts", "recipes [--print]"},
-	"worktrees": {"inspect/reap recipe worktrees: worktrees [ls | diff <name> | rm <name> | prune] [--force]", "worktrees [ls | diff <name> | rm <name> | prune] [--force]"},
+	"worktrees": {"inspect/reap worktree nodes (rm is `dabs rm` on one): worktrees [ls | diff <name> | rm <name> | prune] [--force]", "worktrees [ls | diff <name> | rm <name> | prune] [--force]"},
 	"up":        {"start a NEW detached box from a recipe (no command): up [recipe|path]", "up [recipe|path]"},
 	"exec":      {"exec an exact command inside an instance (no shell): exec <instance> -- <cmd…>", "exec <instance> -- <cmd…>"},
 	"run":       {"run a shell command inside an instance (args joined into one `sh -c` line — use `exec` for exact argv): run <instance> <shell…>", "run <instance> <shell…>"},
-	"down":      {"stop + remove an instance by name (--multiple to act on several matches)", "down [--force] [--dry] [--multiple] <instance>"},
-	"ls":        {"list sandboxes", "ls"},
+	"down":      {"stop a box; its node is archived, not removed (--multiple for several matches)", "down [--force] [--dry] [--multiple] <instance>"},
+	"ls":        {"list what dabs owns, as a tree, live (--all: include archived nodes)", "ls [--all]"},
+	"rm":        {"remove a node (a place or a box) and what it holds: rm <node> [-y] [--volume] [--force]", "rm <node> [-y] [--volume] [--force]"},
 	"servers":   {"manage registered servers: servers [ls] | add <name> [host] | rm <name>", "servers [ls | add <name> [host] | rm <name>]"},
 }
 
@@ -178,6 +180,14 @@ func (c *CLI) runLs(args []string) error {
 		return err
 	}
 	return c.actions.Ls(p)
+}
+
+func (c *CLI) runRm(args []string) error {
+	p, err := parseRm(args)
+	if err != nil {
+		return err
+	}
+	return c.actions.Rm(p)
 }
 
 func (c *CLI) runServers(args []string) error {

@@ -56,7 +56,11 @@ func buildDrivers() (map[string]sandbox.Driver, []string, error) {
 	for _, name := range names {
 		drv, err := server.New(cfg.Servers[name].Transport(), cfg.Servers[name].Host)
 		if err != nil {
-			return nil, nil, fmt.Errorf("server %q: %w", name, err)
+			// One invalid entry must not brick every command. Skip building its
+			// driver but leave the entry in the loaded config, so `dabs servers`
+			// still lists it and `dabs servers rm` can remove it.
+			fmt.Fprintln(os.Stderr, tui.Warn("dabs: server %q unavailable: %v", name, err))
+			continue
 		}
 		drivers[name] = drv
 		order = append(order, name)

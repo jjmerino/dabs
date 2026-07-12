@@ -98,9 +98,13 @@ func (r Real) Worktrees(p params.Worktrees) error {
 	}
 }
 
-// reapWorktree removes one worktree node: git drops the checkout and its
-// branch, then the node directory (record and all) goes with it. It refuses to
-// discard unreviewed work unless force approves it.
+// reapWorktree removes one worktree node. It is `dabs rm` on that node: the same
+// verb, the same space rules, the same git-work guard, so a worktree cannot be
+// reaped by rules a plain node would not be.
+//
+// The refusal to discard unreviewed work without force lives in Rm's guard, which
+// every reap path shares. reapWorktree validates the node is a worktree (so a bad
+// name for `worktrees rm` reads as one) and passes force through as the approval.
 func (r Real) reapWorktree(id string, force bool) error {
 	n, err := r.readNode(id)
 	if err != nil {
@@ -109,27 +113,5 @@ func (r Real) reapWorktree(id string, force bool) error {
 	if n.Worktree == nil {
 		return fmt.Errorf("node %q is not a worktree", id)
 	}
-	path, err := r.resolveNodeData(id)
-	if err != nil {
-		return err
-	}
-	_, dirty, ahead, err := r.data.GitState(path)
-	if err != nil {
-		return err
-	}
-	if (dirty || ahead > 0) && !force {
-		return fmt.Errorf("%s has unreviewed work (uncommitted=%v, %d commit(s) ahead) — review with `dabs worktrees diff %s`, then rm --force to discard", id, dirty, ahead, id)
-	}
-	if err := r.data.GitRemoveWorktree(path); err != nil {
-		return err
-	}
-	dir, err := r.resolveNodeDir(id)
-	if err != nil {
-		return err
-	}
-	if err := r.data.RemoveAll(dir); err != nil {
-		return fmt.Errorf("worktree %s: removing node dir: %w", id, err)
-	}
-	fmt.Fprintln(os.Stdout, tui.Success("removed %s", tui.Accent(id)))
-	return nil
+	return r.Rm(params.Rm{Node: id, Yes: true, Volume: force, Force: force})
 }

@@ -106,7 +106,10 @@ func (r Real) resolveNodeDir(id string) (string, error) {
 // it expects to happen to the bytes. Convention, not configuration: `down` reads
 // the space, not the recipe.
 const (
-	// SpaceVolume survives `down`. Sessions, caches, anything wanted next time.
+	// SpaceVolume survives `down` — on a PLACE, which every later box re-enters.
+	// Sessions, caches, anything wanted next time. A box's own volume is reaped
+	// with it: a box node is never re-entered, so nothing in it could be found
+	// again.
 	SpaceVolume = "volume"
 	// SpaceEphemeral is dabs's to reap, but not silently: `down` asks before
 	// removing a non-empty one. A worktree's checkout lives here.

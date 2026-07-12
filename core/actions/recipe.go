@@ -130,6 +130,10 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 	for _, k := range kept {
 		fmt.Fprintf(os.Stdout, "%s worktree %s %s box\n", tui.Dot(), k, tui.Arrow())
 	}
+	// Say what is about to run. A command that prints nothing until it finishes
+	// (an agent thinking, a long build) is indistinguishable from a hang without
+	// this line.
+	fmt.Fprintf(os.Stdout, "%s %s\n\n", tui.Muted("running:"), strings.Join(command, " "))
 	if err := drv.Run(instance, command); err != nil {
 		return fmt.Errorf("recipe %q: %w", name, err)
 	}

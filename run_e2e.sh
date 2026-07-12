@@ -18,6 +18,6 @@ go build -o "$DABS" .
 # docker.
 "$DABS" build dabseption
 "$DABS" build test/e2e/box
-name="$("$DABS" up test/e2e/box | awk '{print $1; exit}')"
+name="$("$DABS" up test/e2e/box | awk '/^id:/{print $2; exit}')"
 trap '"$DABS" down "$name" >/dev/null 2>&1 || true' EXIT
 "$DABS" run "$name" -- go test -tags e2e -v ./test/e2e

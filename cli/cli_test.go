@@ -17,6 +17,8 @@ type fakeActions struct {
 	run    []params.Run
 	down   []params.Down
 	ls     []params.Ls
+	rm     []params.Rm
+	images []params.Images
 	recipe []params.Recipe
 	do     []params.Do
 	err    error // returned from every action
@@ -31,8 +33,9 @@ func (f *fakeActions) Worktrees(params.Worktrees) error         { return f.err }
 func (f *fakeActions) Exec(p params.Exec) error                 { f.exec = append(f.exec, p); return f.err }
 func (f *fakeActions) Run(p params.Run) error                   { f.run = append(f.run, p); return f.err }
 func (f *fakeActions) Down(p params.Down) error                 { f.down = append(f.down, p); return f.err }
-func (f *fakeActions) Rm(params.Rm) error                       { return f.err }
+func (f *fakeActions) Rm(p params.Rm) error                     { f.rm = append(f.rm, p); return f.err }
 func (f *fakeActions) Ls(p params.Ls) error                     { f.ls = append(f.ls, p); return f.err }
+func (f *fakeActions) Images(p params.Images) error             { f.images = append(f.images, p); return f.err }
 func (f *fakeActions) ServersList(params.ServersList) error     { return f.err }
 func (f *fakeActions) ServersAdd(params.ServersAdd) error       { return f.err }
 func (f *fakeActions) ServersRemove(params.ServersRemove) error { return f.err }
@@ -96,6 +99,28 @@ func TestRunDelegatesToActions(t *testing.T) {
 				if len(f.run) != 1 || f.run[0].Instance != "demo-0" ||
 					len(f.run[0].Cmd) != 2 || f.run[0].Cmd[0] != "ls" || f.run[0].Cmd[1] != "-la" {
 					t.Errorf("got %+v, want one Run{Instance:demo-0 Cmd:[ls -la]}", f.run)
+				}
+			},
+		},
+		{
+			// B12: a command word starting with `-` must reach the box verbatim,
+			// not be eaten as one of dabs's own flags (which left an empty `sh -c`).
+			name: "run forwards a dash-leading command word",
+			args: []string{"run", "box", "-x"},
+			want: func(t *testing.T, f *fakeActions) {
+				if len(f.run) != 1 || f.run[0].Instance != "box" ||
+					len(f.run[0].Cmd) != 1 || f.run[0].Cmd[0] != "-x" {
+					t.Errorf("got %+v, want Run{Instance:box Cmd:[-x]}", f.run)
+				}
+			},
+		},
+		{
+			// B14: rm gains --multiple, mirroring down.
+			name: "rm --multiple after the name",
+			args: []string{"rm", "demo", "--multiple"},
+			want: func(t *testing.T, f *fakeActions) {
+				if len(f.rm) != 1 || f.rm[0].Node != "demo" || !f.rm[0].Multiple {
+					t.Errorf("got %+v, want Rm{Node:demo Multiple:true}", f.rm)
 				}
 			},
 		},

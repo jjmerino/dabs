@@ -968,6 +968,344 @@ func TestRecipesListsDescriptionOnNameLine(t *testing.T) {
 	}
 }
 
+// --- tests: source/path sanity (bug hunt) -------------------------------------
+
+// CONTRACT: a $NODE_*/$PARENT_* token belongs in a source ORIGIN, not a box
+// PATH. An unexpanded variable in a box path would make a directory literally
+// named "$NODE_VOLUME" at box root, so it is rejected up front.
+func TestRecipeVarInBoxPathIsRejected(t *testing.T) {
+	y := `recipes:
+  m:
+    image: img
+    command: [x]
+    sources:
+      - mount: /d
+        path: $NODE_VOLUME/x
+`
+	fd := baseData()
+	fd.exists["/d"] = true
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "m"})
+	if err == nil || !strings.Contains(err.Error(), "variable") {
+		t.Fatalf("want a box-path variable error, got %v", err)
+	}
+	if len(drv.ups) != 0 {
+		t.Errorf("box brought up despite a variable box path: %v", drv.ups)
+	}
+}
+
+// CONTRACT: a non-absolute box path is rejected — a relative path would be
+// silently rooted at / and leave the workdir empty.
+func TestRecipeRelativeBoxPathIsRejected(t *testing.T) {
+	y := `recipes:
+  m:
+    image: img
+    command: [x]
+    sources:
+      - mount: /d
+        path: relative
+`
+	fd := baseData()
+	fd.exists["/d"] = true
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "m"})
+	if err == nil || !strings.Contains(err.Error(), "absolute") {
+		t.Fatalf("want a non-absolute box-path error, got %v", err)
+	}
+	if len(drv.ups) != 0 {
+		t.Errorf("box brought up despite a relative box path: %v", drv.ups)
+	}
+}
+
+// CONTRACT: a box path with `..` is rejected — it escapes the declared workdir
+// (path: /work/../etc/injected would mount at /etc/injected).
+func TestRecipeDotDotBoxPathIsRejected(t *testing.T) {
+	y := `recipes:
+  m:
+    image: img
+    command: [x]
+    sources:
+      - mount: /d
+        path: /work/../etc/injected
+`
+	fd := baseData()
+	fd.exists["/d"] = true
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "m"})
+	if err == nil || !strings.Contains(err.Error(), "..") {
+		t.Fatalf("want a `..` box-path error, got %v", err)
+	}
+	if len(drv.ups) != 0 {
+		t.Errorf("box brought up despite an escaping box path: %v", drv.ups)
+	}
+}
+
+// CONTRACT: a RELATIVE source origin that climbs above the project with `..` is
+// rejected — dabs cannot track or reap a place outside its namespace. Absolute
+// origins remain an explicit user choice and are left alone.
+func TestRecipeEscapingRelativeOriginIsRejected(t *testing.T) {
+	y := `recipes:
+  m:
+    image: img
+    command: [x]
+    sources:
+      - mkmount: ../escape
+        path: /work
+`
+	fd := baseData()
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "m"})
+	if err == nil || !strings.Contains(err.Error(), "escapes the project") {
+		t.Fatalf("want an origin-escape error, got %v", err)
+	}
+	if len(drv.ups) != 0 {
+		t.Errorf("box brought up despite an escaping origin: %v", drv.ups)
+	}
+}
+
+// CONTRACT: an absolute source origin is NOT rejected as an escape — the shipped
+// claude recipe uses `mkmount: ~/.dabs/shared/claude`, an explicit choice.
+func TestRecipeAbsoluteOriginIsAllowed(t *testing.T) {
+	y := `recipes:
+  m:
+    image: img
+    command: [x]
+    sources:
+      - mkmount: /opt/x
+        path: /work
+`
+	fd := baseData()
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	if err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "m"}); err != nil {
+		t.Fatalf("absolute origin should be allowed: %v", err)
+	}
+	if len(drv.ups) != 1 {
+		t.Errorf("want the box up with an absolute mkmount origin: %v", drv.ups)
+	}
+}
+
+// CONTRACT: a recipe with more than one `.` source is rejected — each `.` cuts a
+// chain tip, but a single box can only stand on one place.
+func TestRecipeMultipleDotSourcesRejected(t *testing.T) {
+	y := `recipes:
+  m:
+    image: img
+    command: [x]
+    sources:
+      - worktree: .
+        path: /work
+      - copy: .
+        path: /snap
+`
+	fd := baseData()
+	fd.toplevel["/cwd"] = nil
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "m"})
+	if err == nil || !strings.Contains(err.Error(), "one `.` source") {
+		t.Fatalf("want a multiple-`.`-source error, got %v", err)
+	}
+	if len(drv.ups) != 0 || len(fd.worktrees) != 0 {
+		t.Errorf("side effects despite two `.` sources: ups=%v worktrees=%v", drv.ups, fd.worktrees)
+	}
+}
+
+// CONTRACT: a `copy:` whose `at:` lands INSIDE the copy source is rejected —
+// cp would recurse into itself (dest/dest/…) and fill the disk.
+func TestRecipeCopyAtInsideSourceRejected(t *testing.T) {
+	y := `recipes:
+  m:
+    image: img
+    command: [x]
+    sources:
+      - copy: .
+        at: /cwd/inner
+        path: /work
+`
+	fd := baseData()
+	fd.exists["/cwd"] = true
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "m"})
+	if err == nil || !strings.Contains(err.Error(), "recurse into itself") {
+		t.Fatalf("want a copy-into-itself error, got %v", err)
+	}
+	if len(fd.copies) != 0 {
+		t.Errorf("copy ran despite the self-recursive destination: %v", fd.copies)
+	}
+}
+
+// CONTRACT: a recipe with an empty command that gets appended argv is rejected —
+// the argv would reach the driver as bare options (bwrap: Unknown option -c).
+func TestRecipeEmptyCommandWithAppendedArgvRejected(t *testing.T) {
+	y := `recipes:
+  x:
+    image: img
+    sources:
+      - mount: /d
+        path: /work
+`
+	fd := baseData()
+	fd.exists["/d"] = true
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	err := newReal(y, fd, drv).WithConfirm(yes).Recipe(params.Recipe{Name: "x", Cmd: []string{"-c", "echo hi"}})
+	if err == nil || !strings.Contains(err.Error(), "no command") {
+		t.Fatalf("want a no-command error, got %v", err)
+	}
+	if len(drv.ups) != 0 {
+		t.Errorf("box brought up feeding argv to no command: %v", drv.ups)
+	}
+}
+
+// CONTRACT: `dabs up` on a boxless (imageless) recipe provisions the place(s) and
+// stops — the SAME outcome as `dabs recipe`, not a spurious "has no path" error.
+func TestUpOnBoxlessRecipeProvisionsLikeRecipe(t *testing.T) {
+	y := `recipes:
+  place:
+    sources:
+      - mount: /data
+        path: /work
+`
+	run := func(do func(actions.Real) error) *fakeDriver {
+		fd := baseData()
+		fd.exists["/data"] = true
+		drv := &fakeDriver{built: map[string]bool{"img": true}}
+		if err := do(newReal(y, fd, drv)); err != nil {
+			t.Fatalf("boxless: %v", err)
+		}
+		if len(drv.ups) != 0 {
+			t.Errorf("boxless recipe brought a box up: %v", drv.ups)
+		}
+		return drv
+	}
+	run(func(r actions.Real) error { return r.Recipe(params.Recipe{Name: "place"}) })
+	run(func(r actions.Real) error { return r.Up(params.Up{Name: "place"}) })
+}
+
+// CONTRACT: running dabs from inside its OWN storage (~/.dabs/...) is refused —
+// it would mark the node store itself as a project.
+func TestProvisioningInsideDabsStoreRefused(t *testing.T) {
+	y := `recipes:
+  m:
+    image: img
+    command: [x]
+    sources:
+      - mount: /d
+        path: /work
+`
+	fd := baseData()
+	fd.cwd = "/home/t/.dabs/nodes/foo-1234"
+	fd.exists["/d"] = true
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "m"})
+	if err == nil || !strings.Contains(err.Error(), "dabs's own storage") {
+		t.Fatalf("want a refuse-inside-storage error, got %v", err)
+	}
+	if len(drv.ups) != 0 {
+		t.Errorf("box brought up from inside dabs storage: %v", drv.ups)
+	}
+}
+
+// CONTRACT: setting PATH in a recipe's env WARNS (to stderr) that it replaces the
+// image PATH — the box still comes up, but the caller is told commands may not
+// resolve.
+func TestRecipePathInEnvWarns(t *testing.T) {
+	y := `recipes:
+  m:
+    image: img
+    command: [x]
+    env: { PATH: /only/here }
+    sources:
+      - mount: /d
+        path: /work
+`
+	fd := baseData()
+	fd.exists["/d"] = true
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	errc := captureStderr(t, func() {
+		if err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "m"}); err != nil {
+			t.Fatalf("Recipe: %v", err)
+		}
+	})
+	if !strings.Contains(errc, "PATH") || !strings.Contains(errc, "REPLACES") {
+		t.Errorf("want a PATH-replacement warning on stderr, got %q", errc)
+	}
+	if len(drv.ups) != 1 {
+		t.Errorf("the box should still come up: %v", drv.ups)
+	}
+}
+
+// --- tests: cast prefix resolution --------------------------------------------
+
+// CONTRACT: `dabs cast <recipe> <worktree>` resolves the worktree by unambiguous
+// PREFIX, git-style — a unique prefix binds the full worktree.
+func TestCastResolvesWorktreeByPrefix(t *testing.T) {
+	y := `recipes:
+  w:
+    image: img
+    command: [x]
+    sources:
+      - worktree: .
+        path: /work
+`
+	fd := baseData()
+	seedWorktreeNode(fd, "repo-c1d2e3f4", wtState{branch: "dabs/c1d2e3f4"})
+	fd.exists["/repo/.git"] = true
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	if err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "w", Worktree: "repo-c1"}); err != nil {
+		t.Fatalf("cast by prefix: %v", err)
+	}
+	if len(fd.worktrees) != 0 {
+		t.Fatalf("cast forked a worktree, want none: %v", fd.worktrees)
+	}
+	if len(drv.ups) != 1 {
+		t.Fatalf("cast did not bring the box up: %v", drv.ups)
+	}
+}
+
+// CONTRACT: an AMBIGUOUS worktree prefix reports "ambiguous" and lists matches —
+// not a bare "no worktree".
+func TestCastAmbiguousWorktreePrefixErrors(t *testing.T) {
+	y := `recipes:
+  w:
+    image: img
+    command: [x]
+    sources:
+      - worktree: .
+        path: /work
+`
+	fd := baseData()
+	seedWorktreeNode(fd, "repo-aaaa1111", wtState{branch: "dabs/aaaa1111"})
+	seedWorktreeNode(fd, "repo-aaaa2222", wtState{branch: "dabs/aaaa2222"})
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "w", Worktree: "repo-aaaa"})
+	if err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("want an ambiguous-prefix error, got %v", err)
+	}
+	if len(drv.ups) != 0 {
+		t.Errorf("box brought up despite an ambiguous cast: %v", drv.ups)
+	}
+}
+
+// captureStderr runs fn with os.Stderr redirected to a pipe and returns what it wrote.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	old := os.Stderr
+	rp, wp, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = wp
+	done := make(chan string, 1)
+	go func() {
+		var b strings.Builder
+		io.Copy(&b, rp)
+		done <- b.String()
+	}()
+	fn()
+	wp.Close()
+	os.Stderr = old
+	return <-done
+}
+
 // captureStdout runs fn with os.Stdout redirected to a pipe and returns what it wrote.
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()

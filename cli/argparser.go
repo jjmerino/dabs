@@ -102,22 +102,22 @@ func parseExec(args []string) (params.Exec, error) {
 // command, flags included (flag parsing stops at the instance positional).
 func parseRun(args []string) (params.Run, error) {
 	var p params.Run
-	fs := newFlagSet("run")
-	if err := fs.Parse(args); err != nil {
-		if err == flag.ErrHelp {
-			return p, HelpRequestedError{helpText("run", fs)}
-		}
-		return p, BadArgsError{Cmd: "run", Reason: err.Error()}
+	// A leading -h/--help is dabs's own help; anything later is the box command,
+	// so a `--help` meant for the in-box tool is still forwarded.
+	if wantsHelp(args) {
+		return p, HelpRequestedError{helpText("run", newFlagSet("run"))}
 	}
-	rest := fs.Args()
-	if len(rest) >= 2 && rest[1] == "--" {
-		rest = append(rest[:1:1], rest[2:]...) // drop an optional -- separator
+	// Everything after the instance is the shell command line, verbatim — dashes
+	// and all. Flag parsing must not reach into it, or a command word like `-x`
+	// would be eaten as a dabs flag and leave an empty `sh -c`.
+	if len(args) >= 2 && args[1] == "--" {
+		args = append(args[:1:1], args[2:]...) // drop an optional -- separator
 	}
-	if len(rest) < 2 {
+	if len(args) < 2 {
 		return p, BadArgsError{Cmd: "run", Reason: "usage: run <instance> <shell command…> — args are joined into one `sh -c` line; use `exec` for exact argv (see dabs ls)"}
 	}
-	p.Instance = rest[0]
-	p.Cmd = rest[1:]
+	p.Instance = args[0]
+	p.Cmd = args[1:]
 	return p, nil
 }
 
@@ -166,6 +166,7 @@ func parseRm(args []string) (params.Rm, error) {
 	fs.BoolVar(&p.Yes, "y", false, "reap the ephemeral space too (the one that may hold work)")
 	fs.BoolVar(&p.Volume, "volume", false, "reap the volume too — what a place keeps on purpose")
 	fs.BoolVar(&p.Force, "force", false, "approve discarding a worktree that holds unreviewed git work")
+	fs.BoolVar(&p.Multiple, "multiple", false, "act on all nodes the name matches (required when it matches more than one)")
 	// `dabs rm <node> -y` is how anyone would type it, and Go's flag package stops
 	// at the first non-flag argument. Hoist the flags so either order works.
 	if err := fs.Parse(hoistFlags(args)); err != nil {

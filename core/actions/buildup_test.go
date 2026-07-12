@@ -149,6 +149,31 @@ recipes:
 	}
 }
 
+// CONTRACT: `dabs build` on a bare-image recipe (no Dockerfile) has nothing to
+// build — it must say so honestly, not claim "<name> built" for a no-op.
+func TestBuildBareImageSaysNothingToBuild(t *testing.T) {
+	y := `recipes:
+  s:
+    image: shell
+`
+	fd := baseData()
+	drv := &fakeDriver{built: map[string]bool{"shell": true}}
+	out := captureStdout(t, func() {
+		if err := newReal(y, fd, drv).Build(params.Build{Name: "s"}); err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+	})
+	if strings.Contains(out, "built") {
+		t.Errorf("bare-image build claimed a build happened: %q", out)
+	}
+	if !strings.Contains(out, "nothing to build") || !strings.Contains(out, "shell") {
+		t.Errorf("want an honest nothing-to-build message naming the image, got %q", out)
+	}
+	if len(drv.builds) != 0 {
+		t.Errorf("a bare-image build should not build anything: %v", drv.builds)
+	}
+}
+
 // --- up ----------------------------------------------------------------------
 
 // CONTRACT: `dabs up` brings up a DETACHED box (image, env, workdir) and, unlike

@@ -62,11 +62,21 @@ type Ls struct {
 // Force approves discarding a worktree node that holds unreviewed git work
 // (uncommitted changes or unpushed commits) — a stronger consent than Yes,
 // which only speaks to the ephemeral space, not to losing git work.
+// Multiple authorizes acting on more than one prefix match; without it a name
+// matching several nodes is refused (mirrors Down.Multiple), so a stray prefix
+// cannot reap several nodes at once.
 type Rm struct {
-	Node   string
-	Yes    bool
-	Volume bool
-	Force  bool
+	Node     string
+	Yes      bool
+	Volume   bool
+	Force    bool
+	Multiple bool
+}
+
+// Images are the inputs to the images action: list built images, or with Prune
+// remove them (they rebuild on the next build).
+type Images struct {
+	Prune bool
 }
 
 // ServersList are the inputs to listing registered servers.
@@ -134,6 +144,7 @@ type Actions interface {
 	Down(Down) error
 	Ls(Ls) error
 	Rm(Rm) error
+	Images(Images) error
 	ServersList(ServersList) error
 	ServersAdd(ServersAdd) error
 	ServersRemove(ServersRemove) error

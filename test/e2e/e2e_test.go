@@ -179,11 +179,15 @@ func up(t *testing.T) string {
 	if code != 0 {
 		t.Fatalf("up failed (%d): %s", code, out)
 	}
-	fields := strings.Fields(out)
-	if len(fields) == 0 || !strings.HasPrefix(fields[0], sandboxName+"-") {
-		t.Fatalf("up printed unexpected: %q", out)
+	// `up` reports the instance on its `id:` line (the box is named after the
+	// image, so the leading line names the recipe, not the instance).
+	for _, line := range strings.Split(out, "\n") {
+		if inst, ok := strings.CutPrefix(strings.TrimSpace(line), "id: "); ok {
+			return strings.TrimSpace(inst)
+		}
 	}
-	return fields[0]
+	t.Fatalf("up printed no id line: %q", out)
+	return ""
 }
 
 func wantExit(t *testing.T, want, got int) {
@@ -371,6 +375,33 @@ func TestRunShellWraps(t *testing.T) {
 	wantContains(t, out, "HI")
 }
 
+// TestRunExitCodePropagates (B1): a box command that exits non-zero is the box
+// command's failure, not dabs's. `dabs run`/`exec` must mirror that exit code and
+// NOT print a spurious `dabs: bwrap:` (or `dabs: apple:`) wrapper line, while a
+// real driver failure (no such instance) still reports clearly as a dabs error.
+func TestRunExitCodePropagates(t *testing.T) {
+	clean(t)
+	i := up(t)
+
+	out, code := run("dabs run " + i + " 'exit 7'")
+	wantExit(t, 7, code)
+	wantNotContains(t, out, "dabs: bwrap:")
+	wantNotContains(t, out, "dabs: apple:")
+	wantNotContains(t, out, "run in ")
+
+	out, code = run("dabs exec " + i + " -- sh -c 'exit 3'")
+	wantExit(t, 3, code)
+	wantNotContains(t, out, "dabs: bwrap:")
+	wantNotContains(t, out, "dabs: apple:")
+
+	// A real failure — no such instance — is still a clear dabs error, not exit 0.
+	out, code = run("dabs run nope-missing -- echo x")
+	if code == 0 {
+		t.Fatalf("missing instance should be a dabs error, got exit 0:\n%s", out)
+	}
+	wantContains(t, out, "no instance matches")
+}
+
 // --- down --------------------------------------------------------------------
 
 func TestDownOne(t *testing.T) {
@@ -476,11 +507,14 @@ func upRecipeBox(t *testing.T, dir string) string {
 	if code != 0 {
 		t.Fatalf("up: %s", out)
 	}
-	fields := strings.Fields(out)
-	if len(fields) == 0 {
-		t.Fatalf("up printed nothing useful: %q", out)
+	// The instance is on the `id:` line (the leading line names the recipe).
+	for _, line := range strings.Split(out, "\n") {
+		if inst, ok := strings.CutPrefix(strings.TrimSpace(line), "id: "); ok {
+			return strings.TrimSpace(inst)
+		}
 	}
-	return fields[0]
+	t.Fatalf("up printed no id line: %q", out)
+	return ""
 }
 
 // --- recipes -----------------------------------------------------------------
@@ -738,6 +772,31 @@ func TestWorktreesInspectAndGuardedReap(t *testing.T) {
 	if e := worktreeDirs(t); len(e) != 0 {
 		t.Fatalf("worktree not reaped after --force: %v", e)
 	}
+}
+
+// TestWorktreesDiffShowsUntrackedFiles (B29): `git diff` is blind to untracked
+// files, so a reviewer deciding merge-vs-discard would miss every net-new file an
+// agent created — often its whole contribution. The diff must surface them. The
+// claude-new-worktree recipe writes an untracked from-box.txt into the worktree.
+func TestWorktreesDiffShowsUntrackedFiles(t *testing.T) {
+	clean(t)
+	installRecipes(t)
+	resetNodes(t)
+	repo := filepath.Join(home, "wtdiff")
+	gitRepo(t, repo)
+	if _, code := runIn(repo, "dabs recipe claude-new-worktree"); code != 0 {
+		t.Fatalf("recipe failed")
+	}
+	wts := worktreeDirs(t)
+	if len(wts) == 0 {
+		t.Fatalf("no worktree created: %v", wts)
+	}
+	name := wts[0]
+
+	out, code := run("dabs worktrees diff " + name)
+	wantExit(t, 0, code)
+	wantContains(t, out, "from-box.txt") // the untracked net-new file must appear
+	wantContains(t, out, "box-was-here") // and its contents
 }
 
 // TestRmWorktreeGuardsUnreviewedWork (finding B26/B27): the git-work guard is not

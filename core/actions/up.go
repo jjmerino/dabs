@@ -25,6 +25,16 @@ func (r Real) Up(p params.Up) error {
 	if err != nil {
 		return err
 	}
+	boxless := rec.Image.Name == "" && rec.Image.Dockerfile == ""
+	if err := r.checkSources(name, rec.Sources, boxless); err != nil {
+		return err
+	}
+	// A recipe with no image is a recipe for a PLACE, not a box. `dabs up` on one
+	// provisions its nodes and stops — the same outcome as `dabs recipe`, so the
+	// two verbs agree instead of `up` erroring on a boxless recipe.
+	if boxless {
+		return r.provisionNodes(name, rec, "")
+	}
 	drv, err := r.driverFor(rec.Target)
 	if err != nil {
 		return err

@@ -3,6 +3,7 @@ package actions
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/jjmerino/dabs/core/params"
@@ -63,6 +64,13 @@ func (r Real) Worktrees(p params.Worktrees) error {
 		if err != nil {
 			return err
 		}
+		// `git diff` is blind to untracked files, so an agent's net-new files —
+		// often its whole contribution — would be invisible to a reviewer deciding
+		// merge-vs-discard. Mark untracked files intent-to-add so they surface as
+		// additions in the diff. Best-effort: the diff still runs if this fails,
+		// and it leaves the reap guards (GitState) untouched, which already count
+		// untracked files as work.
+		exec.Command("git", "-C", path, "add", "--intent-to-add", ".").Run()
 		d, err := r.data.GitDiff(path)
 		if err != nil {
 			return err

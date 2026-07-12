@@ -250,11 +250,9 @@ func TestUnknownCommand(t *testing.T) {
 
 // --- build -------------------------------------------------------------------
 
-// There is no TestBuild. `dabs build` shells out to docker; the suite runs only
-// inside the box, and the box carries no docker — a test here could only ever
-// skip, and a green skipping test reads as coverage it does not have. The build
-// verb is exercised for real on the HOST, by run_e2e.sh: it runs
-// `dabs build test/e2e/box` to make this very box, under `set -e`.
+// The `build` verb is not covered here: it shells out to docker, and this box has
+// none. It is exercised on the HOST by run_e2e.sh, which builds this very box
+// with it under `set -e`.
 
 // --- up / ls -----------------------------------------------------------------
 

@@ -601,8 +601,7 @@ func (r Real) hasBundledImage(name string) bool {
 }
 
 // absPath makes p absolute against the process working directory, read through
-// the data seam (filepath.Abs would reach os.Getwd() directly, leaving actions
-// untestable against a fake).
+// the data seam so a fake can control it.
 func (r Real) absPath(p string) (string, error) {
 	if filepath.IsAbs(p) {
 		return p, nil
@@ -615,9 +614,8 @@ func (r Real) absPath(p string) (string, error) {
 }
 
 // isHostRelative reports whether a source origin is a plain relative path — one
-// that must be anchored on a directory to be usable. It is the single place that
-// knows which origin forms expandPath will resolve on its own (~ and $VAR), so
-// rebasing and expansion cannot drift apart.
+// that must be anchored on a directory. The forms expandPath resolves on its own
+// (~ and $VAR) are not: this is the single place that knows which is which.
 func isHostRelative(p string) bool {
 	return p != "" && !filepath.IsAbs(p) && !strings.HasPrefix(p, "~") && !strings.HasPrefix(p, "$")
 }

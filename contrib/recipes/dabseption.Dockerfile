@@ -8,10 +8,9 @@
 # a fresh worktree for `dabseptionwt`) and builds `dabs` from THAT at start, so
 # one image serves every branch.
 
-# The inner box image, staged for the dabs inside. `COPY --from` below flattens
-# this stage into a rootfs — that IS the export step, done by the builder, so
-# nothing has to run `docker` inside the box (it has none). Mirrors images/shell,
-# the image the bundled `sh` recipe boots.
+# The image the dabs inside boots, matching images/shell (what the bundled `sh`
+# recipe uses). `COPY --from` below flattens it into a rootfs, so the box needs no
+# docker of its own.
 FROM alpine:3.20 AS shellimg
 RUN apk add --no-cache git
 WORKDIR /work
@@ -33,10 +32,9 @@ RUN curl -fsSL https://github.com/containers/bubblewrap/releases/download/v0.11.
 # own /tmp, which is what carries the staged image below into the box.
 ENV HOME=/tmp/h
 
-# Hand the inner dabs a ready-built `shell` image: a flattened rootfs plus the
-# env/workdir bwrap records alongside it. With this present, `dabs up sh` and
-# `dabs do` work inside the box with no builder — `dabs build` still cannot run
-# in here (no docker), and does not need to.
+# The `shell` image as dabs stores one: a flattened rootfs plus the env/workdir
+# recorded alongside. With it present, `dabs up sh` and `dabs do` work in the box
+# with no builder. `dabs build` cannot run here — it needs docker.
 COPY --from=shellimg / /tmp/h/.dabs/images/shell/rootfs
 RUN printf '%s' '{"env":["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"],"workdir":"/work"}' \
       > /tmp/h/.dabs/images/shell/image.json

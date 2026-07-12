@@ -10,13 +10,11 @@ cd "$(dirname "$0")"
 DABS="$(mktemp -d)/dabs"
 go build -o "$DABS" .
 
-# The e2e box DERIVES from the dabseption box (FROM dabs-dabseption) rather than
-# reimplementing it, so build that first — it is the one definition of "a box that
-# can run dabs and boot its own boxes".
+# The e2e box builds FROM dabs-dabseption, so that image must exist first.
 #
-# These two builds are also the `dabs build` verb's exercise: they drive real
+# These two builds are also where the `build` verb is exercised: they drive real
 # image builds through the driver, and `set -e` fails the run if either breaks.
-# The suite itself cannot cover `build` — it runs in the box, and the box has no
+# The suite cannot cover `build` itself — it runs in the box, and the box has no
 # docker.
 "$DABS" build dabseption
 "$DABS" build test/e2e/box

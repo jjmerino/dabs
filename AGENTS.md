@@ -306,6 +306,14 @@ core/sandbox/<kind>/   one driver per kind (apple, bwrap, server). Drivers
 - Self-contained: no references to private projects, machines, usernames, or
   home paths anywhere (code, comments, tests, commit messages). Example
   names are neutral (`demo-0`, `myproj`).
+- Comments describe the code AS IT IS in this commit. Never write about what
+  the code used to be, what it no longer does, what you considered and
+  rejected, or how it compares to the version before yours ("this does NOT
+  reimplement X", "we no longer support Y", "unlike the old Z"). The reader has
+  no access to the change that introduced the line, and a comment arguing that
+  the change was correct is addressed to a reviewer who is already gone. State
+  the constraint the code cannot show; say nothing else. That history belongs in
+  the commit message.
 - Commit messages say WHY, and for driver changes include what was run
   against the real system and what it printed.
 - Function names must be verbs.

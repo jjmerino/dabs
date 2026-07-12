@@ -174,10 +174,13 @@ func writeRecipe(dir, name, dockerfile string) {
 
 // clean reaps every "base" instance now and again at test end, so tests don't
 // see each other's boxes (they share the isolated HOME).
+// clean reaps every box this suite made. The name is a PREFIX matching many
+// instances, so it needs --multiple (the explicit approval to act on more than
+// one) as well as --force (skip the prompt) — --force alone reaps nothing.
 func clean(t *testing.T) {
 	t.Helper()
-	run("dabs down " + sandboxName + " --force")
-	t.Cleanup(func() { run("dabs down " + sandboxName + " --force") })
+	run("dabs down " + sandboxName + " --multiple --force")
+	t.Cleanup(func() { run("dabs down " + sandboxName + " --multiple --force") })
 }
 
 // up starts a fresh base instance and returns its full name.
@@ -386,12 +389,22 @@ func TestDownDryListsAndKeeps(t *testing.T) {
 	}
 }
 
-func TestDownForceReapsAll(t *testing.T) {
+// CONTRACT (the multi-match guard): a name matching MORE THAN ONE box is NOT
+// reaped by --force alone — force only skips the prompt. Acting on several boxes
+// takes the explicit --multiple. An over-broad name must never quietly wipe a
+// fleet; it must refuse and leave everything standing.
+func TestDownRefusesMultiMatchWithoutMultiple(t *testing.T) {
 	clean(t)
 	up(t)
 	up(t)
+	// --force alone against a prefix matching both boxes: reaps NOTHING.
 	run("dabs down " + sandboxName + " --force")
 	out, _ := run("dabs ls")
+	wantContains(t, out, sandboxName+"-")
+
+	// --multiple is the approval — now they go.
+	run("dabs down " + sandboxName + " --multiple --force")
+	out, _ = run("dabs ls")
 	wantNotContains(t, out, sandboxName+"-")
 }
 
@@ -609,9 +622,9 @@ func TestRecipeNewWorktree(t *testing.T) {
 	}
 	wts := worktreeDirs(t)
 	if len(wts) == 0 {
-		t.Fatalf("expected a kept worktree under ~/.dabs/worktrees; got %v", wts)
+		t.Fatalf("expected a kept worktree node; got %v", wts)
 	}
-	wt := filepath.Join(home, ".dabs", "worktrees", wts[0], "from-box.txt")
+	wt := filepath.Join(worktreeData(wts[0]), "from-box.txt")
 	if _, err := os.Stat(wt); err != nil {
 		t.Fatalf("box's write not found in the kept worktree: %v", err)
 	}
@@ -626,14 +639,14 @@ func TestRecipeNewWorktree(t *testing.T) {
 func TestNonKeepWorktreeRecipeJournalBalanced(t *testing.T) {
 	clean(t)
 	installRecipes(t)
-	os.RemoveAll(filepath.Join(home, ".dabs", "worktrees")) // isolate the journal too
+	resetNodes(t) // isolate the journal too
 	repo := filepath.Join(home, "wtbalance")
 	gitRepo(t, repo)
 
 	if _, code := runIn(repo, "dabs recipe claude-new-worktree"); code != 0 {
 		t.Fatalf("recipe failed")
 	}
-	logPath := filepath.Join(home, ".dabs", "worktrees", "log.jsonl")
+	logPath := journalPath()
 	log := readFile(t, logPath)
 	t.Logf("log.jsonl after non-keep recipe:\n%s", log)
 	if up, down := strings.Count(log, `"event":"up"`), strings.Count(log, `"event":"down"`); up != 1 || down != 1 {
@@ -656,7 +669,7 @@ func TestNonKeepWorktreeRecipeJournalBalanced(t *testing.T) {
 func TestWorktreesInspectAndGuardedReap(t *testing.T) {
 	clean(t)
 	installRecipes(t)
-	os.RemoveAll(filepath.Join(home, ".dabs", "worktrees")) // isolate from other tests' kept worktrees
+	resetNodes(t) // isolate from other tests' kept worktrees
 	repo := filepath.Join(home, "wtreap")
 	gitRepo(t, repo)
 	if _, code := runIn(repo, "dabs recipe claude-new-worktree"); code != 0 {
@@ -706,7 +719,7 @@ func gitOut(t *testing.T, dir string, args ...string) string {
 func TestCastAttachesWorktreeAndGivesGit(t *testing.T) {
 	clean(t)
 	installRecipes(t)
-	os.RemoveAll(filepath.Join(home, ".dabs", "worktrees")) // isolate from other tests
+	resetNodes(t) // isolate from other tests
 	repo := filepath.Join(home, "castrepo")
 	gitRepo(t, repo)
 
@@ -719,7 +732,7 @@ func TestCastAttachesWorktreeAndGivesGit(t *testing.T) {
 		t.Fatalf("want exactly one seeded worktree, got %v", wts)
 	}
 	name := wts[0]
-	wt := filepath.Join(home, ".dabs", "worktrees", name)
+	wt := worktreeData(name)
 
 	// Cast a git-doing recipe onto that existing worktree.
 	out, code := run("dabs cast gitprobe " + name)
@@ -778,8 +791,7 @@ func instanceFrom(t *testing.T, out string) string {
 func TestWorktreeBoxLifecycleLog(t *testing.T) {
 	clean(t)
 	installRecipes(t)
-	wtDir := filepath.Join(home, ".dabs", "worktrees")
-	os.RemoveAll(wtDir) // isolate from other tests' worktrees AND their log
+	resetNodes(t) // isolate from other tests' worktrees AND their log
 	repo := filepath.Join(home, "wtlogrepo")
 	gitRepo(t, repo)
 
@@ -795,8 +807,8 @@ func TestWorktreeBoxLifecycleLog(t *testing.T) {
 		t.Fatalf("want exactly one worktree, got %v", wts)
 	}
 	wtName := wts[0]
-	wtPath := filepath.Join(wtDir, wtName)
-	logPath := filepath.Join(wtDir, "log.jsonl")
+	wtPath := worktreeData(wtName)
+	logPath := journalPath()
 
 	// The `up` entry links the box to the worktree by name and absolute path.
 	logAfterUp := readFile(t, logPath)
@@ -844,21 +856,34 @@ func TestWorktreeBoxLifecycleLog(t *testing.T) {
 // box-lifecycle journal (log.jsonl) that now lives in the same directory.
 func worktreeDirs(t *testing.T) []string {
 	t.Helper()
-	entries, err := os.ReadDir(filepath.Join(home, ".dabs", "worktrees"))
+	entries, err := os.ReadDir(filepath.Join(home, ".dabs", "nodes"))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
 		}
-		t.Fatalf("read worktrees dir: %v", err)
+		t.Fatalf("read nodes dir: %v", err)
 	}
 	var out []string
 	for _, e := range entries {
-		if e.Name() == "log.jsonl" {
-			continue
-		}
 		out = append(out, e.Name())
 	}
 	return out
+}
+
+// worktreeData is the checkout a worktree node owns — what a recipe's `.` sees.
+func worktreeData(name string) string {
+	return filepath.Join(home, ".dabs", "nodes", name, "data")
+}
+
+// journalPath is the box-lifecycle journal.
+func journalPath() string { return filepath.Join(home, ".dabs", "log.jsonl") }
+
+// resetNodes clears everything dabs provisioned plus the journal, isolating a
+// test from what other tests left behind.
+func resetNodes(t *testing.T) {
+	t.Helper()
+	os.RemoveAll(filepath.Join(home, ".dabs", "nodes"))
+	os.Remove(journalPath())
 }
 
 // readFile returns a file's contents (fatal on error), for asserting on the log.

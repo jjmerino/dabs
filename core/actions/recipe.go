@@ -113,8 +113,8 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 	// `cast` binds an EXISTING worktree (mounted, not cut) so buildBox never
 	// journals it — record its box→worktree link here instead.
 	if worktree != "" {
-		if home, herr := r.data.HomeDir(); herr == nil {
-			r.logWorktreeUp(instance, worktree, filepath.Join(home, ".dabs", "worktrees", worktree), name)
+		if data, derr := r.resolveNodeData(worktree); derr == nil {
+			r.logWorktreeUp(instance, worktree, data, name)
 		}
 	}
 	// Delete the box once the command finishes, unless the recipe asks to keep
@@ -214,13 +214,15 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName string, rec recipe.Recipe,
 		case "mount":
 			mounts = append(mounts, sandbox.Mount{Host: rs.origin, Path: s.Path, RO: s.RO})
 		case "worktree":
-			wt, branch, err := r.addWorktree(rs.top)
+			wt, branch, id, err := r.addWorktree(rs.top, recipeName)
 			if err != nil {
 				return "", nil, err
 			}
 			mounts = append(mounts, sandbox.Mount{Host: wt, Path: s.Path})
 			kept = append(kept, fmt.Sprintf("%s (branch %s)", wt, branch))
-			cut = append(cut, wtCut{name: filepath.Base(wt), path: wt})
+			// Journal the NODE's id, not a path basename — identity comes from the
+			// node, never from where its data happens to sit.
+			cut = append(cut, wtCut{name: id, path: wt})
 		case "copy":
 			// Mount the origin read-only at a staging path, then snapshot it into
 			// the box-owned destination after up — the box gets its own copy and
@@ -571,28 +573,38 @@ func (r Real) expandPath(p string) (string, error) {
 	return p, nil
 }
 
-// addWorktree creates a fresh git worktree of top under
-// ~/.dabs/worktrees/<repo>-<id> on a new branch dabs/<id> off HEAD, returning
-// the worktree path and branch. It requires at least one commit (a born HEAD).
-func (r Real) addWorktree(top string) (path, branch string, err error) {
+// addWorktree provisions a fresh worktree NODE: a directory dabs owns at
+// ~/.dabs/nodes/<repo>-<id>/, with the git worktree checked out into its data/
+// on a new branch dabs/<id> off HEAD, and a dabs-node.json recording the recipe
+// that made it. It returns the data path (what the box mounts) and the branch.
+// Requires at least one commit (a born HEAD).
+func (r Real) addWorktree(top, recipeName string) (path, branch, id string, err error) {
 	if !r.data.GitHasCommits(top) {
-		return "", "", fmt.Errorf("recipe: repo has no commits yet — make an initial commit first")
+		return "", "", "", fmt.Errorf("recipe: repo has no commits yet — make an initial commit first")
 	}
-	home, err := r.data.HomeDir()
+	id, short := mintNodeID(filepath.Base(top))
+	branch = "dabs/" + short
+
+	path, err = r.resolveNodeData(id)
 	if err != nil {
-		return "", "", fmt.Errorf("recipe: home: %w", err)
+		return "", "", "", fmt.Errorf("recipe: %w", err)
 	}
-	id := randHex(4)
-	base := filepath.Join(home, ".dabs", "worktrees")
-	if err := r.data.MkdirAll(base, 0o755); err != nil {
-		return "", "", fmt.Errorf("recipe: worktrees dir: %w", err)
+	// git worktree add creates data/ itself; make only the node dir above it.
+	if err := r.data.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return "", "", "", fmt.Errorf("recipe: node dir: %w", err)
 	}
-	path = filepath.Join(base, filepath.Base(top)+"-"+id)
-	branch = "dabs/" + id
 	if err := r.data.GitAddWorktree(top, branch, path); err != nil {
-		return "", "", fmt.Errorf("recipe: %w", err)
+		return "", "", "", fmt.Errorf("recipe: %w", err)
 	}
-	return path, branch, nil
+	if err := r.writeNode(Node{
+		ID:       id,
+		Recipe:   recipeName,
+		Created:  stampNow(),
+		Worktree: &NodeWorktree{Branch: branch, Repo: top},
+	}); err != nil {
+		return "", "", "", fmt.Errorf("recipe: %w", err)
+	}
+	return path, branch, id, nil
 }
 
 // perboxDir allocates a fresh, empty host dir private to one box for a `perbox:`
@@ -622,15 +634,18 @@ func (r Real) perboxDir(label string) (string, error) {
 //
 // Sources that don't name `.` (the auth vault, etc.) pass through untouched.
 func (r Real) castSources(recipeName string, in []recipe.Source, worktree string) ([]recipe.Source, error) {
-	home, err := r.data.HomeDir()
+	// The node record is the source of truth for what dabs provisioned — a
+	// worktree node has a `worktree` nest. Anything else isn't ours to cast on.
+	n, err := r.readNode(worktree)
+	if err != nil {
+		return nil, fmt.Errorf("cast: no worktree %q (see: dabs worktrees ls)", worktree)
+	}
+	if n.Worktree == nil {
+		return nil, fmt.Errorf("cast: %q is not a worktree", worktree)
+	}
+	wt, err := r.resolveNodeData(worktree)
 	if err != nil {
 		return nil, err
-	}
-	wt := filepath.Join(home, ".dabs", "worktrees", worktree)
-	if _, err := r.data.Stat(wt); errors.Is(err, fs.ErrNotExist) {
-		return nil, fmt.Errorf("cast: no worktree %q at %s (see: dabs worktrees ls)", worktree, wt)
-	} else if err != nil {
-		return nil, fmt.Errorf("cast: worktree %s: %w", wt, err)
 	}
 	gitDir, err := r.data.GitCommonDir(wt)
 	if err != nil {

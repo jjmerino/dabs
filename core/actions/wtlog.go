@@ -42,7 +42,7 @@ func (r Real) wtLogPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".dabs", "worktrees", wtLogFile), nil
+	return filepath.Join(home, ".dabs", wtLogFile), nil
 }
 
 // logWorktreeUp records that a worktree-backed box came up. Best-effort: a log

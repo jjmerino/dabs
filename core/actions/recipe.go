@@ -241,6 +241,15 @@ func (r Real) validateSources(recipeName string, sources []recipe.Source) ([]res
 // tears the half-built box down. Shared by runRecipe and Up so both mount
 // sources identically.
 func (r Real) buildBox(drv sandbox.Driver, recipeName string, rec recipe.Recipe, image string, sources []recipe.Source, resolved []resolvedSource) (instance string, kept []string, err error) {
+	// Every chain starts at the project — the directory this command ran from.
+	project, err := r.ensureProjectNode(recipeName)
+	if err != nil {
+		return "", nil, err
+	}
+	// The box stacks on the deepest directory node in the chain, or on the
+	// project when the recipe made none.
+	chainTip := project
+
 	// Turn declared sources into driver mounts + deferred copies (creating
 	// worktrees now that the image is ready).
 	var mounts []sandbox.Mount
@@ -252,10 +261,11 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName string, rec recipe.Recipe,
 		case "mount":
 			mounts = append(mounts, sandbox.Mount{Host: rs.origin, Path: s.Path, RO: s.RO})
 		case "worktree":
-			wt, branch, id, err := r.addWorktree(rs.top, recipeName)
+			wt, branch, id, err := r.addWorktree(rs.top, recipeName, project)
 			if err != nil {
 				return "", nil, err
 			}
+			chainTip = id
 			mounts = append(mounts, sandbox.Mount{Host: wt, Path: s.Path})
 			kept = append(kept, fmt.Sprintf("%s (branch %s)", wt, branch))
 			// Journal the NODE's id, not a path basename — identity comes from the
@@ -286,6 +296,18 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName string, rec recipe.Recipe,
 	}
 	instance, err = drv.Up(sandbox.Spec{Name: image, Workdir: workdir, Env: rec.Env, Mounts: mounts})
 	if err != nil {
+		return "", nil, err
+	}
+
+	// Mark the box. Its node is named for the instance, so `dabs ls` and the node
+	// tree agree, and it stacks on whatever the recipe put the code in.
+	if err := r.writeNode(Node{
+		ID:      instance,
+		Kind:    KindBox,
+		Parent:  chainTip,
+		Recipe:  recipeName,
+		Created: stampNow(),
+	}); err != nil {
 		return "", nil, err
 	}
 
@@ -658,24 +680,26 @@ func (r Real) expandPath(p string) (string, error) {
 	return p, nil
 }
 
-// addWorktree provisions a fresh worktree NODE: a directory dabs owns at
-// ~/.dabs/nodes/<repo>-<id>/, with the git worktree checked out into its data/
-// on a new branch dabs/<id> off HEAD, and a dabs-node.json recording the recipe
-// that made it. It returns the data path (what the box mounts) and the branch.
-// Requires at least one commit (a born HEAD).
-func (r Real) addWorktree(top, recipeName string) (path, branch, id string, err error) {
+// addWorktree provisions a fresh worktree NODE at ~/.dabs/nodes/<repo>-<id>/,
+// with the git worktree checked out into its ephemeral space on a new branch
+// dabs/<id> off HEAD. The checkout is EPHEMERAL: dabs cut it, so dabs may reap
+// it — but `down` asks first when it holds work. It returns the checkout path
+// (what the box mounts) and the branch. Requires at least one commit (a born
+// HEAD). parent is the node this one stacks on.
+func (r Real) addWorktree(top, recipeName, parent string) (path, branch, id string, err error) {
 	if !r.data.GitHasCommits(top) {
 		return "", "", "", fmt.Errorf("recipe: repo has no commits yet — make an initial commit first")
 	}
 	id, short := mintNodeID(filepath.Base(top))
 	branch = "dabs/" + short
 
-	path, err = r.resolveNodeData(id)
+	dir, err := r.resolveNodeSpace(id, SpaceEphemeral)
 	if err != nil {
 		return "", "", "", fmt.Errorf("recipe: %w", err)
 	}
-	// git worktree add creates data/ itself; make only the node dir above it.
-	if err := r.data.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	path = filepath.Join(dir, "worktree")
+	// git worktree add creates the checkout dir itself; make only the space above it.
+	if err := r.data.MkdirAll(dir, 0o755); err != nil {
 		return "", "", "", fmt.Errorf("recipe: node dir: %w", err)
 	}
 	if err := r.data.GitAddWorktree(top, branch, path); err != nil {
@@ -683,6 +707,8 @@ func (r Real) addWorktree(top, recipeName string) (path, branch, id string, err 
 	}
 	if err := r.writeNode(Node{
 		ID:       id,
+		Kind:     KindWorktree,
+		Parent:   parent,
 		Recipe:   recipeName,
 		Created:  stampNow(),
 		Worktree: &NodeWorktree{Branch: branch, Repo: top},
@@ -690,6 +716,40 @@ func (r Real) addWorktree(top, recipeName string) (path, branch, id string, err 
 		return "", "", "", fmt.Errorf("recipe: %w", err)
 	}
 	return path, branch, id, nil
+}
+
+// ensureProjectNode marks the directory a command ran from — the project, the
+// root of every chain and what `.` falls back to. Its Dir is the user's: dabs
+// records it and never reaps it.
+//
+// It is created lazily, by commands that PROVISION something. A read-only
+// command (ls, recipes, worktrees) marks nothing, so ~/.dabs/nodes does not grow
+// a node for every directory anyone ever ran dabs in.
+func (r Real) ensureProjectNode(recipeName string) (string, error) {
+	cwd, err := r.data.Getwd()
+	if err != nil {
+		return "", err
+	}
+	nodes, err := r.listNodes()
+	if err != nil {
+		return "", err
+	}
+	for _, n := range nodes {
+		if n.Kind == KindProject && n.Dir == cwd {
+			return n.ID, nil
+		}
+	}
+	id, _ := mintNodeID(filepath.Base(cwd))
+	if err := r.writeNode(Node{
+		ID:      id,
+		Kind:    KindProject,
+		Recipe:  recipeName,
+		Created: stampNow(),
+		Dir:     cwd,
+	}); err != nil {
+		return "", err
+	}
+	return id, nil
 }
 
 // perboxDir allocates a fresh, empty host dir private to one box for a `perbox:`

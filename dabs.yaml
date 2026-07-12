@@ -100,38 +100,48 @@ recipes:
       - worktree: .
         path: /work
 
-  # dabs cast dabswt <worktree> — a box that builds dabs FROM that worktree and
-  # keeps running, so you (or an agent) can test a branch's dabs by exec'ing into
-  # the box: `dabs exec <instance> -- dabs …` or `dabs run <instance> 'dabs …'`.
-  # The source comes from the mounted worktree, built to /usr/local/bin/dabs at
-  # start. `keep: true` keeps the box after the build shell exits — that is the
-  # point: a live, testable dabs per worktree. Cast (not plain `dabs recipe`) so
-  # the parent .git is mounted and git works in-box.
+  # dabs INSIDE dabs. Both recipes below build dabs from /work and KEEP the box,
+  # so you (or an agent) drive that dabs from the host by reaching in:
+  #
+  #   dabs recipe dabseption            # → box kept; note the instance name
+  #   dabs run <instance> 'dabs up sh'  # the dabs in the box boots its OWN box
+  #   dabs exec <instance> -- dabs ls
+  #
+  # They differ in ONE thing — what lands at /work:
+  #   dabseption    the cwd, mounted live  → test the code you have right now
+  #   dabseptionwt  a FRESH worktree       → test a branch without touching the cwd
+  # Everything else (image, privileged target, keep, command) is shared.
   #
   # The box is PRIVILEGED (target below) and carries bubblewrap, so the built
   # dabs boots its driver fleet and runs for real — full CLI, recipe resolution,
   # cast/worktree/keep/down logic, git, error paths — sandboxed in the box while
-  # the driver (you, an agent) stays OUTSIDE on the host, unsandboxed. This is dabs
-  # testing dabs, the trick the e2e suite uses. A host Claude can exercise a
-  # branch's dabs end-to-end without installing it on the host: build once with
-  # `dabs cast dabswt <worktree>`, then `dabs exec`/`dabs run` into the kept box.
+  # the driver (you, an agent) stays OUTSIDE on the host, unsandboxed.
   #
-  # LIMIT: booting a FRESH nested box needs an image, and dabs builds images by
-  # shelling out to `docker`, which is not in this box — so `dabs do`/`up` inside
-  # fail at image build (e2e sidesteps this by pre-staging its base image). CLI
-  # and logic testing is the point here; add docker-in-box for full nested boots.
-  #
-  # NO WORKTREE YET? Skip cast: plain `dabs recipe dabswt` cuts a FRESH worktree
-  # off the current branch, builds dabs, and keeps box + worktree — so you can
-  # check out a branch, `dabs recipe dabswt`, switch back to main, and the box
-  # keeps testing that branch. Trade-off: without cast there is no parent .git
-  # mount, so git is BLIND in-box; use cast when a test needs in-box git.
-  dabswt:
-    description: build and run a branch's dabs in a kept, testable box
-    image: { dockerfile: contrib/recipes/dabswt.Dockerfile, context: . }
-    target: INTERNAL-docker-privileged-for-nested-sandboxing  # privileged, for nested dabs boxes
+  # The box can boot NESTED boxes: the image stages a ready-built `shell` rootfs
+  # (see the Dockerfile's COPY --from), so `dabs up sh` / `dabs do` work inside
+  # with no builder. `dabs build` still cannot run in there — it shells out to
+  # docker, which the box has none of — and does not need to.
+  dabseption:
+    description: build and run the cwd's dabs in a kept box that can boot its own boxes
+    image: &dabseption_image { dockerfile: contrib/recipes/dabseption.Dockerfile, context: . }
+    target: &dabseption_target INTERNAL-docker-privileged-for-nested-sandboxing
     keep: true                            # keep the box alive after the build shell exits — exec in to test
-    command: [sh, -c, "cd /work && go build -o /usr/local/bin/dabs . && dabs --help 2>&1 | head -1; exec sh"]
+    command: &dabseption_command [sh, -c, "cd /work && go build -o /usr/local/bin/dabs . && dabs --help 2>&1 | head -1; exec sh"]
+    sources:
+      - mount: .                          # the cwd, live — build and test the code you have now
+        path: /work
+
+  # Same box, but /work is a FRESH worktree cut off the current branch, so you can
+  # `dabs recipe dabseptionwt`, switch the cwd back to main, and the box keeps
+  # testing that branch. Trade-off: no parent .git is mounted, so git is BLIND
+  # in-box — use `dabs cast dabseptionwt <worktree>` when a test needs in-box git
+  # (cast attaches an EXISTING worktree live and mounts its parent .git).
+  dabseptionwt:
+    description: build and run a branch's dabs in a kept box, from a fresh worktree
+    image: *dabseption_image
+    target: *dabseption_target
+    keep: true
+    command: *dabseption_command
     sources:
       - worktree: .                       # cast rewrites this: attach <worktree> live + mount its parent .git
         path: /work

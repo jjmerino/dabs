@@ -9,23 +9,21 @@ so a change is exercised e2e with the least latency — an incremental
 behavior only, so they run unchanged wherever dabs runs: Apple `container`
 micro-VMs on macOS, bwrap boxes on Linux.
 
-**No double-wrapping.** Isolation is an isolated `$HOME` (a fresh `~/.dabs`,
-removed on teardown) plus unique per-box names. Assertions only ever concern
-this suite's own `dabs-e2e-*` boxes, so concurrent runs and any other boxes
-on the machine can't interfere — no outer sandbox needed.
+**The box is the isolation.** The suite REFUSES to run outside its dabs box
+(it checks `DABS_NAME` and `/.dockerenv`) — so there is no isolated `$HOME` to
+mint and nothing to clean up: every run gets a fresh box with its own `~/.dabs`,
+and the box is reaped afterwards. Running `go test` on your host exits without
+running anything.
 
 ## Run
 
-On any machine where dabs works (macOS with `container`, or Linux with
-`bwrap` + `docker`), and with Go installed:
-
 ```bash
-go test -tags e2e ./test/e2e
+./run_e2e.sh
 ```
 
-`$DABS_UNDER_TEST` overrides the binary under test (e.g. to test an installed/stable
-one instead of building from source). The suite is behind `//go:build e2e`,
-so a plain `go test ./...` stays hermetic and never touches sandboxes.
+That builds the inner base image, builds and boots the box, and runs the suite
+inside it. The suite is behind `//go:build e2e`, so a plain `go test ./...`
+stays hermetic and never touches sandboxes.
 
 ## Layout
 

@@ -165,6 +165,7 @@ func parseRm(args []string) (params.Rm, error) {
 	fs := newFlagSet("rm")
 	fs.BoolVar(&p.Yes, "y", false, "reap the ephemeral space too (the one that may hold work)")
 	fs.BoolVar(&p.Volume, "volume", false, "reap the volume too — what a place keeps on purpose")
+	fs.BoolVar(&p.Force, "force", false, "approve discarding a worktree that holds unreviewed git work")
 	// `dabs rm <node> -y` is how anyone would type it, and Go's flag package stops
 	// at the first non-flag argument. Hoist the flags so either order works.
 	if err := fs.Parse(hoistFlags(args)); err != nil {
@@ -174,7 +175,7 @@ func parseRm(args []string) (params.Rm, error) {
 		return p, BadArgsError{Cmd: "rm", Reason: err.Error()}
 	}
 	if fs.NArg() != 1 {
-		return p, BadArgsError{Cmd: "rm", Reason: "usage: rm <node> [-y] [--volume]"}
+		return p, BadArgsError{Cmd: "rm", Reason: "usage: rm <node> [-y] [--volume] [--force]"}
 	}
 	p.Node = fs.Arg(0)
 	return p, nil

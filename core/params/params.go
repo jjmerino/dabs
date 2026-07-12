@@ -59,10 +59,14 @@ type Ls struct {
 // Yes consents to reaping the ephemeral space (the one that may hold work).
 // Volume additionally consents to the volume — what a place keeps ON PURPOSE,
 // so it is never taken without being asked for by name.
+// Force approves discarding a worktree node that holds unreviewed git work
+// (uncommitted changes or unpushed commits) — a stronger consent than Yes,
+// which only speaks to the ephemeral space, not to losing git work.
 type Rm struct {
 	Node   string
 	Yes    bool
 	Volume bool
+	Force  bool
 }
 
 // ServersList are the inputs to listing registered servers.

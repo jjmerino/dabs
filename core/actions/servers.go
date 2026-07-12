@@ -4,11 +4,21 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 
 	"github.com/jjmerino/dabs/core/config"
 	"github.com/jjmerino/dabs/core/params"
 	"github.com/jjmerino/dabs/core/tui"
 )
+
+// reservedDriverKeys are the fleet keys the driver map assigns to built-in
+// drivers (see buildDrivers). A server registered under one of these overwrites
+// its built-in, so `dabs servers add` refuses them.
+var reservedDriverKeys = map[string]bool{
+	"local":  true,
+	"docker": true,
+	"INTERNAL-docker-privileged-for-nested-sandboxing": true,
+}
 
 // ServersList prints the fleet: the local machine (when a local driver is
 // installed) plus every registered server, each as "<name>\t<strategy>
@@ -38,6 +48,9 @@ func (r Real) ServersList(params.ServersList) error {
 // ServersAdd registers a server. Registration is config-only: reachability
 // and the remote dabs install are checked on first use.
 func (r Real) ServersAdd(p params.ServersAdd) error {
+	if reservedDriverKeys[strings.ToLower(strings.TrimSpace(p.Name))] {
+		return fmt.Errorf("server name %q is reserved for a built-in driver; pick another name", p.Name)
+	}
 	cfg, err := config.Load()
 	if err != nil {
 		return err
@@ -45,9 +58,15 @@ func (r Real) ServersAdd(p params.ServersAdd) error {
 	if cfg.Servers == nil {
 		cfg.Servers = map[string]config.Server{}
 	}
+	if strings.TrimSpace(p.Name) == "" {
+		return fmt.Errorf("server name is empty: dabs servers add <name> [host]")
+	}
 	host := p.Host
 	if host == "" {
 		host = p.Name
+	}
+	if strings.TrimSpace(host) == "" {
+		return fmt.Errorf("server %q has an empty host: dabs servers add <name> <host>", p.Name)
 	}
 	cfg.Servers[p.Name] = config.Server{Host: host}
 	if err := config.Save(cfg); err != nil {

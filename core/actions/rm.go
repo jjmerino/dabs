@@ -47,6 +47,18 @@ func (r Real) Rm(p params.Rm) error {
 		}
 	}
 
+	// A worktree node holds git work no space rule can see: uncommitted changes or
+	// unpushed commits. Discarding that needs the explicit --force, not the -y that
+	// only consents to the ephemeral space. The guard covers every worktree in the
+	// cascade, so a childless leaf and a project reaping its descendants are held to
+	// the same rule as `worktrees rm`. Checked before anything is touched, so a
+	// refusal loses nothing.
+	for _, n := range doomed {
+		if err := r.guardWorktreeWork(n, p.Force); err != nil {
+			return err
+		}
+	}
+
 	// Deepest first: a box comes down before the place it was mounted on goes.
 	for i := len(doomed) - 1; i >= 0; i-- {
 		n := doomed[i]
@@ -58,6 +70,29 @@ func (r Real) Rm(p params.Rm) error {
 		if err := r.reapSpaces(n, spacePolicy{yes: p.Yes, volume: p.Volume, removeNode: true}); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// guardWorktreeWork refuses to discard a worktree node that holds unreviewed git
+// work — uncommitted changes or commits ahead — unless force approves it. Only a
+// worktree node can answer this (git owns the state), so non-worktree nodes pass
+// untouched. This is the same rule `worktrees rm` enforces, applied to every path
+// that reaches a worktree, including a plain `dabs rm` and a project-wide cascade.
+func (r Real) guardWorktreeWork(n Node, force bool) error {
+	if n.Worktree == nil || force {
+		return nil
+	}
+	path, err := r.resolveNodeData(n.ID)
+	if err != nil {
+		return err
+	}
+	_, dirty, ahead, err := r.data.GitState(path)
+	if err != nil {
+		return err
+	}
+	if dirty || ahead > 0 {
+		return fmt.Errorf("%s has unreviewed work (uncommitted=%v, %d commit(s) ahead) — review with `dabs worktrees diff %s`, then rm --force to discard", n.ID, dirty, ahead, n.ID)
 	}
 	return nil
 }

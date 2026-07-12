@@ -740,6 +740,82 @@ func TestWorktreesInspectAndGuardedReap(t *testing.T) {
 	}
 }
 
+// TestRmWorktreeGuardsUnreviewedWork (finding B26/B27): the git-work guard is not
+// the property of one verb. `dabs rm <worktree> -y` must honour it exactly as
+// `worktrees rm` does — -y consents to the ephemeral space, but discarding
+// unreviewed git work needs the stronger --force. A childless worktree LEAF (no
+// cascade) is the case B27 slipped through: it reaps with no prompt at all, so it
+// is precisely where a plain `rm -y` would silently destroy work.
+func TestRmWorktreeGuardsUnreviewedWork(t *testing.T) {
+	clean(t)
+	installRecipes(t)
+	resetNodes(t)
+	repo := filepath.Join(home, "wtrmguard")
+	gitRepo(t, repo)
+	if _, code := runIn(repo, "dabs recipe claude-new-worktree"); code != 0 {
+		t.Fatalf("recipe failed")
+	}
+	wts := worktreeDirs(t)
+	if len(wts) != 1 {
+		t.Fatalf("want one worktree, got %v", wts)
+	}
+	name := wts[0]
+	work := filepath.Join(worktreeData(name), "from-box.txt") // the box's uncommitted write
+
+	// -y is NOT enough to discard git work: refused, work survives, points to --force.
+	out, code := run("dabs rm " + name + " -y")
+	if code == 0 {
+		t.Fatalf("rm -y destroyed a worktree with unreviewed work without --force\n%s", out)
+	}
+	wantContains(t, out, "unreviewed work")
+	wantContains(t, out, "--force")
+	if _, err := os.Stat(work); err != nil {
+		t.Fatalf("rm -y lost the uncommitted work despite refusing: %v", err)
+	}
+	if e := worktreeDirs(t); len(e) != 1 {
+		t.Fatalf("refused rm still reaped the node: %v", e)
+	}
+
+	// --force is the approval — the node reaps.
+	out, code = run("dabs rm " + name + " -y --force")
+	wantExit(t, 0, code)
+	wantContains(t, out, "removed")
+	if e := worktreeDirs(t); len(e) != 0 {
+		t.Fatalf("worktree not reaped after --force: %v", e)
+	}
+}
+
+// TestRmCleanWorktreeNeedsNoForce: the guard is about WORK, not about being a
+// worktree. A clean worktree (nothing uncommitted, nothing ahead) reaps with -y.
+func TestRmCleanWorktreeNeedsNoForce(t *testing.T) {
+	clean(t)
+	installRecipes(t)
+	resetNodes(t)
+	repo := filepath.Join(home, "wtrmclean")
+	gitRepo(t, repo)
+	if _, code := runIn(repo, "dabs recipe claude-new-worktree"); code != 0 {
+		t.Fatalf("recipe failed")
+	}
+	wts := worktreeDirs(t)
+	if len(wts) != 1 {
+		t.Fatalf("want one worktree, got %v", wts)
+	}
+	name := wts[0]
+	// Drop the box's untracked write so the checkout is clean and not ahead.
+	gitOut(t, worktreeData(name), "clean", "-fdx")
+	ls, _ := run("dabs worktrees")
+	if strings.Contains(ls, "HAS WORK") {
+		t.Fatalf("worktree still reads as having work after clean:\n%s", ls)
+	}
+
+	out, code := run("dabs rm " + name + " -y")
+	wantExit(t, 0, code)
+	wantContains(t, out, "removed")
+	if e := worktreeDirs(t); len(e) != 0 {
+		t.Fatalf("clean worktree not reaped with -y: %v", e)
+	}
+}
+
 // gitOut runs a git command in dir and returns trimmed stdout (fatal on error).
 func gitOut(t *testing.T, dir string, args ...string) string {
 	t.Helper()
@@ -1080,6 +1156,56 @@ func TestServersRemove(t *testing.T) {
 	run("dabs servers rm s2")
 	out, _ := run("dabs servers ls")
 	wantNotContains(t, out, "s2")
+}
+
+// TestServersAddEmptyNameRejected: `dabs servers add ""` (an empty/whitespace
+// name) is rejected with a non-zero exit and writes nothing, so it cannot poison
+// config.json. The CLI must stay usable afterwards — a follow-up command exits 0.
+func TestServersAddEmptyNameRejected(t *testing.T) {
+	out, code := run("dabs servers add \"  \"")
+	if code == 0 {
+		t.Fatalf("want non-zero exit for empty server name; got 0\n%s", out)
+	}
+	wantContains(t, out, "empty")
+
+	// Nothing was written, and the CLI is not bricked: --help still works, and
+	// the fleet listing shows only the local machine.
+	_, code = run("dabs --help")
+	wantExit(t, 0, code)
+	ls, code := run("dabs servers ls")
+	wantExit(t, 0, code)
+	wantContains(t, ls, "local")
+}
+
+// TestServersAddEmptyHostRejected: an explicit empty host is rejected, so a
+// server can never be registered with an unusable destination.
+func TestServersAddEmptyHostRejected(t *testing.T) {
+	out, code := run("dabs servers add s3 \"  \"")
+	if code == 0 {
+		t.Fatalf("want non-zero exit for empty host; got 0\n%s", out)
+	}
+	wantContains(t, out, "empty host")
+	ls, _ := run("dabs servers ls")
+	wantNotContains(t, ls, "s3")
+}
+
+// TestServersAddRejectsReservedLocal: "local" is the built-in local driver's
+// fleet key. Registering a server under it would shadow the built-in and
+// misroute every local op to ssh, so `add local` is refused, writes nothing,
+// and leaves exactly one local row — the built-in "this machine".
+func TestServersAddRejectsReservedLocal(t *testing.T) {
+	out, code := run("dabs servers add local")
+	if code == 0 {
+		t.Fatalf("want non-zero exit; got 0\n%s", out)
+	}
+	wantContains(t, out, "reserved")
+
+	// Nothing written: the fleet still shows the built-in local, and only once.
+	ls, _ := run("dabs servers ls")
+	wantContains(t, ls, "this machine")
+	if n := strings.Count(ls, "local"); n != 1 {
+		t.Fatalf("want exactly one local row (the built-in); got %d\n%s", n, ls)
+	}
 }
 
 // --- env marker --------------------------------------------------------------

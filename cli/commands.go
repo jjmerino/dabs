@@ -49,7 +49,7 @@ var commandDocs = map[string]cmdDoc{
 	"run":       {"run a shell command inside an instance (args joined into one `sh -c` line — use `exec` for exact argv): run <instance> <shell…>", "run <instance> <shell…>"},
 	"down":      {"stop a box; its node is archived, not removed (--multiple for several matches)", "down [--force] [--dry] [--multiple] <instance>"},
 	"ls":        {"list what dabs owns, as a tree, live (--all: include archived nodes)", "ls [--all]"},
-	"rm":        {"remove a node (a place or a box) and what it holds: rm <node> [-y] [--volume]", "rm <node> [-y] [--volume]"},
+	"rm":        {"remove a node (a place or a box) and what it holds: rm <node> [-y] [--volume] [--force]", "rm <node> [-y] [--volume] [--force]"},
 	"servers":   {"manage registered servers: servers [ls] | add <name> [host] | rm <name>", "servers [ls | add <name> [host] | rm <name>]"},
 }
 

@@ -3,8 +3,10 @@ package actions
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/jjmerino/dabs/core/params"
+	"github.com/jjmerino/dabs/core/recipe"
 	"github.com/jjmerino/dabs/core/tui"
 )
 
@@ -57,10 +59,49 @@ func (r Real) Up(p params.Up) error {
 	for _, k := range kept {
 		fmt.Fprintln(os.Stdout, tui.Success("kept: %s", k))
 	}
-	if rec.Target != "" {
-		fmt.Fprintln(os.Stdout, tui.Success("%s up on %s", tui.Accent(instance), rec.Target))
-		return nil
-	}
-	fmt.Fprintln(os.Stdout, tui.Success("%s up", tui.Accent(instance)))
+	printUp(name, instance, rec)
 	return nil
+}
+
+// printUp reports what `up` did and what to do next. The instance is named after
+// the IMAGE, so it alone never says which recipe booted the box; and `up`
+// deliberately runs no command, which users assume it did. Both facts, plus the
+// three commands that follow (reap, shell in, run what the recipe encodes), are
+// spelled out here rather than left for the reader to reconstruct.
+func printUp(name, instance string, rec recipe.Recipe) {
+	head := fmt.Sprintf("recipe up: %s", tui.Accent(name))
+	if rec.Target != "" {
+		head += fmt.Sprintf(" (on %s)", rec.Target)
+	}
+	fmt.Fprintln(os.Stdout, tui.Success("%s", head))
+	fmt.Fprintf(os.Stdout, "%s %s\n", tui.Muted("id:"), tui.Accent(instance))
+	fmt.Fprintln(os.Stdout, tui.Muted("(no command was run — the recipe's command is not started by `up`)"))
+	fmt.Fprintf(os.Stdout, "%s dabs down %s\n", tui.Muted("bring down:"), instance)
+	fmt.Fprintf(os.Stdout, "%s dabs exec %s -- sh\n", tui.Muted("sh in:"), instance)
+	if len(rec.Command) == 0 {
+		fmt.Fprintf(os.Stdout, "%s %s\n", tui.Muted("run recipe command:"), tui.Muted("(this recipe declares no command)"))
+		return
+	}
+	// There is no verb that runs the recipe's own command in a box that is
+	// already up — `dabs recipe` boots a NEW box. So print the argv itself,
+	// runnable as-is through exec.
+	fmt.Fprintf(os.Stdout, "%s dabs exec %s -- %s\n", tui.Muted("run recipe command:"), instance, quoteArgv(rec.Command))
+}
+
+// quoteArgv renders an argv as a copy-pasteable shell command line: any argument
+// that is not plainly safe is single-quoted, so a `sh -c "a && b"` command line
+// survives the round trip through the user's shell into `dabs exec`.
+func quoteArgv(argv []string) string {
+	out := make([]string, len(argv))
+	for i, a := range argv {
+		if a != "" && strings.IndexFunc(a, func(r rune) bool {
+			return !(r == '-' || r == '_' || r == '.' || r == '/' || r == ':' || r == '=' ||
+				(r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9'))
+		}) < 0 {
+			out[i] = a
+			continue
+		}
+		out[i] = "'" + strings.ReplaceAll(a, "'", `'\''`) + "'"
+	}
+	return strings.Join(out, " ")
 }

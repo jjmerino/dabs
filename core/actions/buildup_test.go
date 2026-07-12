@@ -278,3 +278,58 @@ recipes:
 		t.Errorf("up brought a box up from an unbuilt image: %v", drv.ups)
 	}
 }
+
+// CONTRACT: `dabs up`'s output must be self-explanatory: the instance is named
+// after the IMAGE, so the line must name the RECIPE too; it must say no command
+// was run (up deliberately starts none); and it must hand over the next steps —
+// reap, shell in, and how to run the recipe's own command (there is no verb for
+// that, so it is spelled out as an exec of the recipe's argv).
+func TestUpOutputNamesRecipeSaysNoCommandAndNextSteps(t *testing.T) {
+	y := `default: review
+recipes:
+  review:
+    image: img
+    command: [sh, -c, "cd /work && claude -p 'go'"]
+`
+	fd := baseData()
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	r := newReal(y, fd, drv)
+	out := captureStdout(t, func() {
+		if err := r.Up(params.Up{}); err != nil {
+			t.Fatalf("Up: %v", err)
+		}
+	})
+	for _, want := range []string{
+		"recipe up: review",
+		"id: img-inst",
+		"no command was run",
+		"bring down: dabs down img-inst",
+		"sh in: dabs exec img-inst -- sh",
+		`run recipe command: dabs exec img-inst -- sh -c 'cd /work && claude -p '\''go'\'''`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("up output missing %q; got:\n%s", want, out)
+		}
+	}
+}
+
+// CONTRACT: a recipe with no command still gets an honest "run recipe command"
+// line — dabs never prints a command that would not work.
+func TestUpOutputCommandlessRecipe(t *testing.T) {
+	y := `default: base
+recipes:
+  base:
+    image: img
+`
+	fd := baseData()
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	r := newReal(y, fd, drv)
+	out := captureStdout(t, func() {
+		if err := r.Up(params.Up{}); err != nil {
+			t.Fatalf("Up: %v", err)
+		}
+	})
+	if !strings.Contains(out, "run recipe command: (this recipe declares no command)") {
+		t.Errorf("want the commandless note; got:\n%s", out)
+	}
+}

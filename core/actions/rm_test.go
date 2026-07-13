@@ -6,7 +6,8 @@ package actions_test
 //     more than one node;
 //   - a reap that would stop a LIVE box or lose held data needs consent (-y),
 //     and without it non-interactively it keeps everything and exits NONZERO;
-//   - --keep archives instead of removing (what `down` used to do).
+//   - --keep stops the box but keeps its record only when files remain;
+//   - --inactive sweeps the inactive subtrees (empty markers) and nothing else.
 
 import (
 	"strings"
@@ -166,11 +167,13 @@ func TestRmLiveBoxWithoutConsentKeepsAndErrors(t *testing.T) {
 	}
 }
 
-// CONTRACT: --keep archives — it stops the box but LEAVES the node record as the
-// account of what ran and from where.
-func TestRmKeepArchivesBoxButKeepsNode(t *testing.T) {
+// CONTRACT: --keep on a box that LEFT FILES BEHIND stops the box but keeps its
+// node record — there is something to point at (a leftover volume here, which
+// --keep never reaps without --volume). The kept record reads as gone-with-files.
+func TestRmKeepBoxWithFilesKeepsNode(t *testing.T) {
 	fd := baseData()
 	seedBoxNode(fd, "keep-aaaa", "inst-a")
+	spaceHeld(fd, "keep-aaaa", "volume") // a leftover the box wrote — kept without --volume
 	drv := &fakeDriver{infos: []sandbox.Info{{Name: "inst-a", Status: "running"}}}
 
 	if err := newReal("", fd, drv).Rm(params.Rm{Node: "keep-aaaa", Keep: true}); err != nil {
@@ -180,7 +183,26 @@ func TestRmKeepArchivesBoxButKeepsNode(t *testing.T) {
 		t.Fatalf("--keep must stop the box, downed %v", drv.downs)
 	}
 	if rmAllHas(fd, nodeBase+"/keep-aaaa") {
-		t.Errorf("--keep must NOT remove the node dir: %v", fd.rmAll)
+		t.Errorf("--keep on a box with leftover files must NOT remove the node dir: %v", fd.rmAll)
+	}
+}
+
+// CONTRACT: bringing a box down takes its node too when nothing is left. --keep
+// on a box whose spaces are empty stops the box AND removes the node dir — an
+// empty record is cruft, not history, so it never lingers as a `gone` row.
+func TestRmKeepEmptyBoxRemovesNode(t *testing.T) {
+	fd := baseData()
+	seedBoxNode(fd, "keep-bbbb", "inst-b") // no space entries → all empty
+	drv := &fakeDriver{infos: []sandbox.Info{{Name: "inst-b", Status: "running"}}}
+
+	if err := newReal("", fd, drv).Rm(params.Rm{Node: "keep-bbbb", Keep: true}); err != nil {
+		t.Fatalf("rm --keep: %v", err)
+	}
+	if len(drv.downs) != 1 || drv.downs[0] != "inst-b" {
+		t.Fatalf("--keep must stop the box, downed %v", drv.downs)
+	}
+	if !rmAllHas(fd, nodeBase+"/keep-bbbb") {
+		t.Errorf("--keep on an empty box must remove the node dir (no gone cruft): %v", fd.rmAll)
 	}
 }
 
@@ -222,6 +244,29 @@ func TestRmEmptyHeldSpaceReapsSilently(t *testing.T) {
 	}
 	if !strings.Contains(out, "removed") {
 		t.Errorf("a node with only empty spaces should be removed; got:\n%s", out)
+	}
+}
+
+// CONTRACT: `rm --inactive` sweeps every INACTIVE subtree — regardless of kind —
+// and leaves active ones untouched. An empty project marker is reaped; a live
+// box's subtree is not stopped or removed.
+func TestRmInactiveSweepsOnlyInactive(t *testing.T) {
+	fd := baseData()
+	seedNode(fd, "proj-x", "project", "") // empty marker → inactive
+	seedBoxNode(fd, "live-box", "inst-live")
+	drv := &fakeDriver{infos: []sandbox.Info{{Name: "inst-live", Status: "running"}}}
+
+	if err := newReal("", fd, drv).Rm(params.Rm{Inactive: true}); err != nil {
+		t.Fatalf("rm --inactive: %v", err)
+	}
+	if !rmAllHas(fd, nodeBase+"/proj-x") {
+		t.Errorf("rm --inactive must reap the empty project marker: %v", fd.rmAll)
+	}
+	if len(drv.downs) != 0 {
+		t.Errorf("rm --inactive must not stop a live box: downed %v", drv.downs)
+	}
+	if rmAllHas(fd, nodeBase+"/live-box") {
+		t.Errorf("rm --inactive must not remove an active box's node: %v", fd.rmAll)
 	}
 }
 

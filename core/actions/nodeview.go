@@ -25,7 +25,7 @@ const (
 	CellEmpty                // "✓"  space present, holds nothing (safe to reap)
 	CellHolds                // "⚠"  space holds files a reap would lose
 	CellLive                 // box:      running
-	CellGone                 // box:      archived (no live instance)
+	CellGone                 // box:      gone (no live instance)
 	CellNoDiff               // worktree: no unreviewed work
 	CellUnmerged             // worktree: commits ahead of the base branch
 	CellHasWork              // worktree: uncommitted/untracked work, nothing ahead

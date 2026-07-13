@@ -22,6 +22,10 @@ func TestLsStarsWorktreesHoldingWork(t *testing.T) {
 			`{"id":"` + id + `","kind":"worktree","worktree":{"branch":"dabs/` + id + `","repo":"/repo"}}`)
 	}
 	fd.dirs["/home/t/.dabs/nodes"] = []string{dirtyID, cleanID}
+	// A real worktree checkout carries files, so its held space holds them — that
+	// is what makes the subtree ACTIVE and shows it in the default `ls`.
+	spaceHeld(fd, dirtyID, "held")
+	spaceHeld(fd, cleanID, "held")
 	// Only the checkout that exists is read; both resolve to held/worktree.
 	fd.states[base+dirtyID+"/held/worktree"] = wtState{branch: "dabs/" + dirtyID, dirty: true}
 	fd.states[base+cleanID+"/held/worktree"] = wtState{branch: "dabs/" + cleanID}

@@ -127,8 +127,8 @@ what you want back next time, since a box never returns):
 
 `dabs rm <node>` stops a box and removes its node and whatever stands on it (it
 brings boxes down first, and asks before it loses a live box or held data).
-`dabs rm --keep <box>` stops the box but ARCHIVES its node instead. `dabs ls
---all` shows the archive.
+`dabs rm --keep <box>` stops the box but KEEPS its node record instead. `dabs
+ls` shows only active subtrees; `dabs ls --all` also shows the inactive ones.
 
 ## Remote servers
 

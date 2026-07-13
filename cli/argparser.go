@@ -91,7 +91,7 @@ func parseExec(args []string) (params.Exec, error) {
 
 // parseRm parses `dabs rm <node> [flags]`. `rm` is the single reaper: it stops a
 // box and removes its node and spaces. -y/--yes skips the consent prompt (stop a
-// live box, reap a held space); --keep archives instead of removing; --dry
+// live box, reap a held space); --keep keeps the node record instead of removing; --dry
 // previews; --volume additionally reaps the volume; --multiple authorizes a
 // prefix that matches several nodes; --force is only for discarding unreviewed
 // worktree git work — a different risk than the prompt -y skips.
@@ -100,12 +100,13 @@ func parseRm(args []string) (params.Rm, error) {
 	fs := newFlagSet("rm")
 	fs.BoolVar(&p.Yes, "y", false, "skip the consent prompt: stop a live box and reap the held space")
 	fs.BoolVar(&p.Yes, "yes", false, "skip the consent prompt (alias of -y)")
-	fs.BoolVar(&p.Keep, "keep", false, "stop the box but ARCHIVE its node instead of removing it")
+	fs.BoolVar(&p.Keep, "keep", false, "stop the box but KEEP its node record instead of removing it")
 	fs.BoolVar(&p.Volume, "volume", false, "reap the volume too — what a place keeps on purpose")
 	fs.BoolVar(&p.Multiple, "multiple", false, "act on all nodes the name matches (required when it matches more than one)")
 	fs.BoolVar(&p.Dry, "dry", false, "preview what would be reaped; remove nothing")
 	fs.BoolVar(&p.Force, "force", false, "approve discarding a worktree that holds unreviewed git work")
 	fs.BoolVar(&p.CleanWorktrees, "clean-worktrees", false, "reap EVERY worktree with no unreviewed work (no node name); --force reaps them all")
+	fs.BoolVar(&p.Inactive, "inactive", false, "reap EVERY inactive subtree — the empty markers `ls` hides (no node name); --dry previews")
 	// `dabs rm <node> -y` is how anyone would type it, and Go's flag package stops
 	// at the first non-flag argument. Hoist the flags so either order works.
 	if err := fs.Parse(hoistFlags(args)); err != nil {
@@ -114,16 +115,19 @@ func parseRm(args []string) (params.Rm, error) {
 		}
 		return p, BadArgsError{Cmd: "rm", Reason: err.Error()}
 	}
-	// --clean-worktrees sweeps the worktrees, so it takes no node name; every other
-	// rm names exactly the one node (or prefix) to reap.
-	if p.CleanWorktrees {
+	if p.CleanWorktrees && p.Inactive {
+		return p, BadArgsError{Cmd: "rm", Reason: "rm --clean-worktrees and --inactive are separate sweeps; use one"}
+	}
+	// A sweep (--clean-worktrees over worktrees, --inactive over inactive subtrees)
+	// takes no node name; every other rm names exactly the one node (or prefix).
+	if p.CleanWorktrees || p.Inactive {
 		if fs.NArg() != 0 {
-			return p, BadArgsError{Cmd: "rm", Reason: "rm --clean-worktrees sweeps every clean worktree and takes no node name"}
+			return p, BadArgsError{Cmd: "rm", Reason: "a sweep (--clean-worktrees / --inactive) takes no node name"}
 		}
 		return p, nil
 	}
 	if fs.NArg() != 1 {
-		return p, BadArgsError{Cmd: "rm", Reason: "usage: rm <node> [-y] [--keep] [--volume] [--multiple] [--dry] [--force] | rm --clean-worktrees"}
+		return p, BadArgsError{Cmd: "rm", Reason: "usage: rm <node> [-y] [--keep] [--volume] [--multiple] [--dry] [--force] | rm --clean-worktrees | rm --inactive"}
 	}
 	p.Node = fs.Arg(0)
 	return p, nil
@@ -147,7 +151,7 @@ func hoistFlags(args []string) []string {
 func parseLs(args []string) (params.Ls, error) {
 	var p params.Ls
 	fs := newFlagSet("ls")
-	fs.BoolVar(&p.All, "all", false, "also list archived nodes (boxes no driver holds any more)")
+	fs.BoolVar(&p.Inactive, "inactive", false, "show ONLY the inactive subtrees (empty markers `ls` hides by default)")
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
 			return p, HelpRequestedError{helpText("ls", fs)}

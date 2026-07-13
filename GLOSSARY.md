@@ -38,7 +38,7 @@ glossary records where the vocabulary is going so new work simply avoids the old
 | **image** | the frozen template a driver builds and boots a box from | `recipe.ImageRef`, `Driver.Build` |
 | **reap** | to remove a node and the spaces it holds (what `dabs rm` does) | `Rm`, `reapSpaces` |
 | **confirmation** | the explicit go-ahead a losing action needs — four flags for four risks | `-y` / `--multiple` / `--force` / `--volume` |
-| **archived** (unstable) | a box whose node record is kept but whose instance is gone (`rm --keep`) | `archive`, `dabs ls --all` |
+| **active / inactive** | whether a subtree holds LIFE — a running box or real files in a space; `ls` shows active, `ls --inactive` the rest | `activeSubtrees`, `dabs ls` |
 | **live / gone** | a box's STATE: its driver holds it, or it does not (**gone**: unstable) | `CellLive`/`CellGone` |
 | **no-diff / has work / unmerged** | a worktree's STATE: clean · uncommitted-or-untracked · commits ahead | `worktreeState` |
 | **target** | the named driver configuration a recipe uses to bring up a box | `recipe.Recipe.Target`, `driverFor` |
@@ -98,18 +98,34 @@ it and never reaps its `Dir`), **workdir** (a host directory a recipe copied as
 `.`), **worktree** (a git worktree dabs cut), **box** (one running sandbox).
 *Where:* `NodeKind` (`KindProject`/`KindWorkdir`/`KindWorktree`/`KindBox`).
 
-### archived (unstable)
-A box reaped with `--keep`: its instance is stopped but its node record stays, so
-what ran and from where outlives the box. Its spaces are already gone. Archived
-boxes are hidden by default and shown by `dabs ls --all`.
+### project
+A project node is a marker for a folder dabs ran from — like the per-project
+folders Claude and other CLIs keep for sessions and state. It is a record, not a
+thing dabs built, and dabs never reaps its `Dir` (that directory is the user's).
+Every chain starts with one; a standalone project with no child box, worktree, or
+workdir holds nothing and so counts INACTIVE — hidden by `dabs ls` until its
+subtree comes alive, and swept by `dabs rm --inactive`.
+*Where:* `KindProject`, `ensureProjectNode`.
 
-Vocabulary likely to change: nothing performed an "archive" verb; the word is
-residue of `rm --keep`. `dabs ls` still prints it — do not lean on it in new work.
-*Where:* `archive`, the `ls` archived count, `dabs ls --all`.
+### active / inactive
+Whether a **subtree** — a root node and everything under it — holds LIFE. A
+subtree is ACTIVE when any node in it has a running box, or holds real files in
+any of its spaces (volume/held/tmp). It is INACTIVE when none do: its boxes are
+gone and its spaces empty — a standalone project marker with no child box,
+worktree, or workdir, or a subtree whose files were all reaped. Visibility follows
+life, not history: `dabs ls` shows only the active subtrees, `dabs ls --inactive`
+shows only the inactive ones, and `dabs rm --inactive` sweeps them away. The one
+content test is shared with the `ls` space cells and the `rm` consent
+(`spaceHolds`), so "holds files" means the same everywhere — and a tree of only
+empty directories holds nothing.
+*Where:* `activeSubtrees`, `nodeSelfActive`, `dabs ls`, `dabs rm --inactive`.
 
 ### live / gone
 A box node's STATE cell: **live** when a driver holds its instance, **gone** when
-none does (it is archived, or its instance died).
+none does. In practice a `gone` box is rare: bringing a box down reaps its spaces
+and, when nothing is left, takes the box node too — so an empty box does not
+linger as a `gone` row. A `gone` box node persists only when the box left files
+behind in a kept space (there is then something to point at).
 
 **gone** (unstable) — it says only what a box is *not*. The noted direction
 splits it into box-specific statuses (**idling** / **running** / **stopped**),
@@ -167,20 +183,24 @@ verb (that shell-line behavior is now `exec` without `--`).
 *Where:* `Exec`, `Driver.Run`.
 
 ### ls
-List what dabs owns as a node tree, grouped by driver; `--all` also shows
-archived boxes. A place with no live box lists under its machine's heading, not a
-separate bucket. A driver with nothing running prints `(nothing running)`.
-*Where:* `Ls`, `renderForest`.
+List what dabs owns as a node tree, grouped by driver. It shows only the ACTIVE
+subtrees (see **active / inactive**); when any inactive subtree exists it prints a
+one-line hint below, and `dabs ls --inactive` lists ONLY those instead. A place
+with no live box lists under its machine's heading, not a separate bucket. A
+driver with nothing running prints `(nothing running)`.
+*Where:* `Ls`, `activeSubtrees`, `renderForest`.
 
 ### rm
 The single reaper: stop a box AND remove its node and the spaces it holds,
 cascading to the nodes nested under it. Losing anything needs confirmation (see
 **confirmation**); without it, `rm` previews what it would take and exits nonzero — it
-never silently tears a box down. `--keep` archives instead of removing.
-`--clean-worktrees` takes no node name: it sweeps EVERY worktree that holds no
-unreviewed work in one shot (`--force` reaps the ones that do), previewing with
+never silently tears a box down. `--keep` stops the box but keeps its record
+instead of removing (though an empty record is taken too — see **reap / keep /
+kept**). Two sweeps take no node name: `--clean-worktrees` reaps EVERY worktree
+that holds no unreviewed work (`--force` reaps the ones that do), and `--inactive`
+reaps EVERY inactive subtree — the empty markers `ls` hides. Both preview with
 `--dry`.
-*Where:* `Rm`, `rmCleanWorktrees`, `reapSpaces`, `Driver.Down`.
+*Where:* `Rm`, `rmCleanWorktrees`, `rmInactive`, `reapSpaces`, `Driver.Down`.
 
 ### worktrees
 Inspect the worktree nodes recipes provision: `worktrees ls` lists them (STATE in
@@ -367,9 +387,9 @@ when a space holds bytes. This documents the current rendering.
 *Where:* `Cell.Symbol`, `styleCell`, the `hasSpaceColumn` legend.
 
 ### `no place` (heading)
-Where an archived box whose place record is gone lists — its place is gone, so it
-has nowhere to nest and lists flat. (Not to be confused with a worktree's
-DETAIL cell reading `no box`, which means "no live box on this worktree".)
+Where a gone box whose place record is gone lists — its place is gone, so it has
+nowhere to nest and lists flat. (Not to be confused with a worktree's DETAIL cell
+reading `no box`, which means "no live box on this worktree".)
 
 Unstable. The noted direction is **orphaned** — one heading for anything not
 correctly connected to the node tree; not implemented, so `no place` is the
@@ -427,10 +447,13 @@ operators are usually agents; say **confirmation**. Code identifiers still read
 ## Other terms
 
 ### reap / keep / kept
-To **reap** is to remove a node and the spaces it holds. **`--keep`** archives
-instead (stop the box, keep the record). A space `rm` declines to reap (a held
-space without `-y`, a volume without `--volume`) is reported **kept**, with its
-path, so nothing is lost silently — the word **kept** appears in `dabs rm` output.
+To **reap** is to remove a node and the spaces it holds. **`--keep`** stops the
+box but keeps its record instead of removing — EXCEPT that bringing a box down
+also takes its node when nothing is left, so a kept box with empty spaces is
+removed all the same and only one that left files behind keeps its record. A space
+`rm` declines to reap (a held space without `-y`, a volume without `--volume`) is
+reported **kept**, with its path, so nothing is lost silently — the word **kept**
+appears in `dabs rm` output.
 *Where:* `Rm`, `reapSpaces`, `archive`.
 
 ### boxless recipe
@@ -486,3 +509,16 @@ held space.
 `exec` without `--` (the shell-line form); `Driver.Run` survives at the contract
 layer as the mechanism `exec` calls. The old lifecycle verbs `up`/`down` are
 gone: booting is `recipe --detach`, reaping is `rm`.
+
+### archived → active / inactive
+**archived** named a box whose record was kept after `rm --keep` while its
+instance was gone, hidden by default and shown by `dabs ls --all`. It is retired.
+Visibility now follows LIFE, not history: a whole **subtree** is judged ACTIVE or
+INACTIVE (see the live entry), `dabs ls` shows only the active ones with a hint
+below, the flag is `dabs ls --inactive` (the old `--all` is gone), and `dabs rm
+--inactive` sweeps the empty records. Two decisions landed with it: bringing a box
+down takes its node too when nothing is left (so an empty box never lingers as a
+`gone` row — `gone` survives only for a box that left files behind), and the
+content test that decides "holds files" is one shared predicate (`spaceHolds`), so
+a tree of only empty directories counts as empty everywhere it is consulted. The
+`archive` identifier survives in code as the name of the `--keep` teardown.

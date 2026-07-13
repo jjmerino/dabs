@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Visibility follows life, not history.** `dabs ls` now shows only ACTIVE
+  subtrees — a project and everything under it, judged as a unit: active when any
+  node in it has a running box or holds real files in a space, inactive otherwise.
+  Empty project markers (minted on every boot) and gone-and-empty boxes no longer
+  clutter the listing. This replaces the **archived** concept: the flag `--all`
+  becomes `--inactive` and shows ONLY the inactive subtrees; a one-line hint under
+  `ls` points to it.
+
+### Added
+- **`dabs rm --inactive`** — sweep every inactive subtree (the empty markers `ls`
+  hides), any node kind, in one shot; `--dry` previews. Distinct from
+  `--clean-worktrees`, which sweeps worktree nodes only.
+
+### Fixed
+- Bringing a box down (`rm --keep`) now takes the box node too when nothing is
+  left in its spaces, so an empty box no longer lingers as a `gone` record; a box
+  that left files behind keeps its record.
+- The "holds files" test counts only real files — a tree of only empty
+  directories reads as empty everywhere it is consulted (the `ls` space cells, the
+  `rm` consent, and the new activity check share one predicate).
+
 ## [0.3.0] - 2026-07-13
 
 The redesign release: one grammar, nodes with spaces, and a vocabulary that is

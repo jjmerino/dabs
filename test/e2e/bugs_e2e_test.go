@@ -233,7 +233,9 @@ func TestLsSanitizesNodeFieldsE2E(t *testing.T) {
 	}
 	t.Cleanup(func() { os.RemoveAll(bad) })
 
-	out, code := run("dabs ls")
+	// The standalone project marker holds no life, so it is inactive; `--inactive`
+	// is where it lists, and the sanitizing must hold there just the same.
+	out, code := run("dabs ls --inactive")
 	if code != 0 {
 		t.Fatalf("ls failed (%d) on a node with control chars in its dir:\n%s", code, out)
 	}
@@ -584,10 +586,11 @@ func TestLegacyEphemeralDirStillReadableE2E(t *testing.T) {
 	}
 	t.Cleanup(func() { os.RemoveAll(node) })
 
-	// ls --all (the box is gone, so it only shows with --all) marks the held space ⚠.
-	ls, code := run("dabs ls --all")
+	// The held (ephemeral) space holds a file, so the subtree is ACTIVE and shows
+	// in the default `ls`, box gone or not — and the row marks the space ⚠.
+	ls, code := run("dabs ls")
 	if code != 0 {
-		t.Fatalf("ls --all failed (%d): %s", code, ls)
+		t.Fatalf("ls failed (%d): %s", code, ls)
 	}
 	var row string
 	for _, line := range strings.Split(ls, "\n") {
@@ -596,7 +599,7 @@ func TestLegacyEphemeralDirStillReadableE2E(t *testing.T) {
 		}
 	}
 	if row == "" {
-		t.Fatalf("legacy node %q not shown in ls --all:\n%s", id, ls)
+		t.Fatalf("legacy node %q not shown in ls:\n%s", id, ls)
 	}
 	if !strings.Contains(row, "⚠") {
 		t.Fatalf("legacy ephemeral/ dir not marked held (⚠) in ls: row=%q\n%s", row, ls)

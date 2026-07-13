@@ -29,10 +29,11 @@ type Exec struct {
 
 // Ls are the inputs to the ls action.
 type Ls struct {
-	// All also lists ARCHIVED nodes — boxes no driver holds any more. They are
-	// kept as the record of what ran and from where; `ls` hides them because what
-	// you almost always want to know is what is live.
-	All bool
+	// Inactive flips the listing to show ONLY inactive subtrees — those holding no
+	// running box and no real files in any space. `ls` by default shows only the
+	// ACTIVE subtrees (what is alive) and, when any inactive one exists, hints at
+	// `dabs ls --inactive` to inspect the records that remain.
+	Inactive bool
 }
 
 // Rm are the inputs to removing a node: a place dabs made, or a box. It is the
@@ -41,9 +42,10 @@ type Ls struct {
 // Yes skips the consent prompt: it reaps the held space (the one that may
 // hold work) and stops a live box without asking. Without it, a reap that would
 // stop a live box or lose data a space holds is REFUSED with a preview.
-// Keep archives instead of removing: the box is stopped but its node record is
-// left behind (what ran, and from where, outlives the box). This is teardown
-// without forgetting.
+// Keep keeps the node record instead of removing: the box is stopped but its
+// record is left behind (what ran, and from where, outlives the box). This is
+// teardown without forgetting; a kept box whose spaces are empty simply becomes
+// inactive and drops out of the default `ls`.
 // Volume additionally consents to the volume — what a place keeps ON PURPOSE,
 // so it is never taken without being asked for by name.
 // Force approves discarding a worktree node that holds unreviewed git work
@@ -56,6 +58,10 @@ type Ls struct {
 // CleanWorktrees reaps EVERY worktree node that holds no unreviewed work, in one
 // sweep, instead of a single named node. A worktree with unreviewed work is kept
 // unless Force. When set, Node is not required.
+// Inactive reaps EVERY inactive subtree — any kind of node whose subtree holds no
+// running box and no real files — in one sweep, instead of a single named node.
+// It is the reaper for the empty markers `ls` hides; nothing it removes holds
+// data, so no consent is at stake. When set, Node is not required.
 type Rm struct {
 	Node           string
 	Yes            bool
@@ -65,6 +71,7 @@ type Rm struct {
 	Multiple       bool
 	Dry            bool
 	CleanWorktrees bool
+	Inactive       bool
 }
 
 // Prune are the inputs to the prune action: reclaim built box images (they

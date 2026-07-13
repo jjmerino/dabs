@@ -175,13 +175,13 @@ know what is in it:
 
    ```bash
    dabs rm <node> -y               # stop the box and remove its node+spaces
-   dabs rm <node> --keep -y        # stop the box but ARCHIVE its node (keep the record)
+   dabs rm <node> --keep -y        # stop the box but KEEP its node record
    dabs rm <name> --multiple -y    # act on ALL matches (needed for >1; the count is shown first)
    dabs rm <name> --dry            # preview what would be reaped; remove nothing
    ```
 
    Flags: `-y`/`--yes` skips the consent prompt (stop a live box, reap a held
-   space); `--keep` archives instead of removing; `--multiple` authorizes a
+   space); `--keep` keeps the node record instead of removing; `--multiple` authorizes a
    prefix matching several nodes; `--volume` also reaps the volume; `--dry`
    previews; `--force` is ONLY for discarding a worktree's unreviewed git work —
    a different risk than the prompt `-y` skips, so it stays its own flag.
@@ -236,11 +236,13 @@ already started, without cutting a new branch.
   actions sort them by box-path depth, because bwrap binds in argv order (a
   parent listed after its child silently masks it) while apple/docker resolve
   nesting themselves. Declaration order is yours to choose.
-- `dabs rm --keep` archives a box: it stops the box and reaps its spaces (`tmp/`
-  silently, `held/` only with consent when it holds files, `volume/` never)
-  but LEAVES the node record. A worktree's checkout lives in its OWN node's
-  held space, so archiving a box never touches it — `dabs rm <wt>` (or `dabs
-  rm --clean-worktrees`) does, and it still refuses unreviewed work.
+- `dabs rm --keep` keeps a box's record: it stops the box and reaps its spaces
+  (`tmp/` silently, `held/` only with consent when it holds files, `volume/`
+  never) but LEAVES the node record. A worktree's checkout lives in its OWN
+  node's held space, so keeping a box never touches it — `dabs rm <wt>` (or
+  `dabs rm --clean-worktrees`) does, and it still refuses unreviewed work. A
+  kept box whose spaces are empty becomes inactive and drops out of the default
+  `dabs ls` (it is a record of history, shown by `dabs ls --all`).
 - Everything dabs owns is namespaced: it only ever sees or removes its own
   boxes.
 - Keep the build context under your home directory. A context under

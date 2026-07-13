@@ -329,8 +329,10 @@ func TestRecipeDashDashShieldsTheCommandsOwnFlags(t *testing.T) {
 	wantContains(t, out, "instance:")
 }
 
-// A reaped box leaves its NODE behind — the marker of what ran and from where —
-// so `ls` still shows it, as gone. What must not survive a reap is a LIVE box.
+// Bringing a box down with --keep, when its spaces are empty, takes the box node
+// too — an empty record is cruft, not history, so it does not linger as a `gone`
+// row. What must not survive is a LIVE box; and the empty record must not survive
+// either, in default `ls` OR in `ls --inactive`.
 func TestLsAfterReapShowsNoLiveBox(t *testing.T) {
 	clean(t)
 	i := up(t)
@@ -339,11 +341,11 @@ func TestLsAfterReapShowsNoLiveBox(t *testing.T) {
 	if isLive(out, i) {
 		t.Fatalf("%s still live after down:\n%s", i, out)
 	}
-	// Its node is ARCHIVED: kept as the record of what ran and from where, but not
-	// shown by default — `ls` answers what is live.
+	// The empty box record is gone from the default listing...
 	wantNotContains(t, out, i)
-	all, _ := run("dabs ls --all")
-	wantContains(t, all, i)
+	// ...and it did not fall into the inactive bucket either — it was removed.
+	inactive, _ := run("dabs ls --inactive")
+	wantNotContains(t, inactive, i)
 }
 
 // isLive reports whether ls shows this instance as anything other than gone. The
@@ -1103,7 +1105,7 @@ func TestWorktreeBoxLifecycleLog(t *testing.T) {
 		wantContains(t, out, want)
 	}
 
-	// Stop the box (archive it) — the journal gains a matching `down`.
+	// Stop the box (keep its record) — the journal gains a matching `down`.
 	out, code = run("dabs rm " + inst + " --keep --yes")
 	wantExit(t, 0, code)
 	logAfterDown := readFile(t, logPath)

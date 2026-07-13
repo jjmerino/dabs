@@ -621,6 +621,110 @@ func TestLegacyEphemeralDirStillReadableE2E(t *testing.T) {
 	}
 }
 
+// --- Edition-3 bug hunt (HUNT3.md) ---------------------------------------------
+
+// A relative dabs.yaml path must resolve as a recipe/build argument, anchored on
+// the process cwd. `recipe .`, `recipe ./dabs.yaml`, and `build .` all name the
+// dabs.yaml in the current directory; they used to be rejected as unknown recipe
+// NAMES (the detach/build path guessed via stat; the plain `recipe` path never
+// looked at disk at all). A bare word with no path shape stays a recipe name, so
+// an unknown one still errors listing what IS known.
+func TestRelativeRecipePathResolvesE2E(t *testing.T) {
+	clean(t)
+	dir := filepath.Join(home, "e2e-relpath")
+	bugRecipe(t, dir, "relbox", "")
+
+	// A path shape that is exactly ".": --detach boots the box from ./dabs.yaml.
+	out, code := runIn(dir, "dabs recipe . --detach")
+	if code != 0 {
+		t.Fatalf("`recipe . --detach` did not resolve ./dabs.yaml (H3 relative path):\n%s", out)
+	}
+	run("dabs rm relbox --multiple --yes")
+
+	// A path shape that ends in dabs.yaml resolves the same file.
+	out, code = runIn(dir, "dabs recipe ./dabs.yaml --detach")
+	if code != 0 {
+		t.Fatalf("`recipe ./dabs.yaml --detach` did not resolve the file:\n%s", out)
+	}
+	run("dabs rm relbox --multiple --yes")
+
+	// The plain (non-detach) `recipe .` — the exact form the hunt typed — must
+	// also resolve the file rather than report `no recipe "."`. This recipe is
+	// boxless (no image), so it provisions its node and returns without a TTY.
+	out, code = runIn(dir, "dabs recipe .")
+	if containsFold(out, "no recipe") {
+		t.Fatalf("`recipe .` was rejected as an unknown recipe NAME (H3 relative path):\n%s", out)
+	}
+	if code != 0 {
+		t.Fatalf("`recipe .` failed to resolve ./dabs.yaml (%d):\n%s", code, out)
+	}
+
+	// `build .` walks the same resolver: it must resolve ./dabs.yaml, not reject
+	// "." as an unknown recipe NAME.
+	out, code = runIn(dir, "dabs build .")
+	if code != 0 || containsFold(out, "no recipe") {
+		t.Fatalf("`build .` did not resolve ./dabs.yaml (%d):\n%s", code, out)
+	}
+
+	// A bare word that is NOT a path stays a recipe NAME: an unknown one errors
+	// with the list of known recipes — never silently guessed onto disk.
+	out, code = runIn(dir, "dabs build no-such-recipe-xyz")
+	if code == 0 {
+		t.Fatalf("`build no-such-recipe-xyz` (a bare unknown name) should error:\n%s", out)
+	}
+	if !containsFold(out, "no recipe") || !containsFold(out, "relbox") {
+		t.Fatalf("unknown bare name did not error listing known recipes:\n%s", out)
+	}
+
+	// A bare recipe NAME that happens to collide with a directory of the same
+	// name must still build the recipe — a bare word is never guessed into a
+	// path. (Stat-based detection used to read `relbox/dabs.yaml` and fail here.)
+	if err := os.MkdirAll(filepath.Join(dir, "relbox"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out, code = runIn(dir, "dabs build relbox")
+	if code != 0 || containsFold(out, "relbox/dabs.yaml") {
+		t.Fatalf("bare name `relbox` was guessed into the relbox/ dir instead of the recipe (%d):\n%s", code, out)
+	}
+}
+
+// A leading bare `--` in exec's argv is a usage error, not a node name. `exec --
+// echo hi` used to consume `--` as the box name and report `no box matches "--"`;
+// it must instead show the shape `exec <node> [--] <cmd…>`.
+func TestExecLeadingDashDashIsUsageErrorE2E(t *testing.T) {
+	out, code := run("dabs exec -- echo hi")
+	if code == 0 {
+		t.Fatalf("`exec -- echo hi` exited 0, want a usage error:\n%s", out)
+	}
+	if containsFold(out, "no box matches") {
+		t.Fatalf("`exec -- echo hi` treated `--` as a node name (H3):\n%s", out)
+	}
+	if !containsFold(out, "exec <node>") {
+		t.Fatalf("`exec -- echo hi` did not show the `exec <node>` shape:\n%s", out)
+	}
+}
+
+// `dabs rm --help` renders the short consent flag as `-y` (one dash) in the
+// flags block, matching the usage line. It used to print `--y` because the flags
+// renderer prepended `--` to every name regardless of length.
+func TestRmHelpShortFlagOneDashE2E(t *testing.T) {
+	out, _ := run("dabs rm --help")
+	// The -y row is the one whose usage stops the live box and reaps the space.
+	var row string
+	for _, line := range strings.Split(out, "\n") {
+		if containsFold(line, "stop a live box") && containsFold(line, "reap") {
+			row = line
+		}
+	}
+	if row == "" {
+		t.Fatalf("rm --help showed no consent-flag row:\n%s", out)
+	}
+	tok := strings.Fields(row)[0]
+	if tok != "-y" {
+		t.Fatalf("rm --help rendered the short flag as %q, want %q:\n%s", tok, "-y", out)
+	}
+}
+
 // $NODE_EPHEMERAL is a permanent alias for $NODE_HELD (the space's former name),
 // so a recipe written against the old var provisions into the SAME held/ space —
 // a user's recipes.yaml is never broken by the rename. A source using

@@ -31,8 +31,8 @@ func (r Real) Down(p params.Down) error {
 		return nil
 	}
 	if len(matches) > 1 && !p.Multiple {
-		fmt.Fprintln(os.Stdout, tui.Warn("%s matches %d instances: %s", p.Instance, len(matches), names(matches)))
-		return fmt.Errorf("%q matches %d instances; pass --multiple to down all of them", p.Instance, len(matches))
+		fmt.Fprintln(os.Stdout, tui.Warn("%s matches %d boxes: %s", p.Instance, len(matches), names(matches)))
+		return fmt.Errorf("%q matches %d boxes; pass --multiple to down all of them", p.Instance, len(matches))
 	}
 	for _, m := range matches {
 		// Reap the box's spaces BEFORE the box, so a refusal leaves the box up and

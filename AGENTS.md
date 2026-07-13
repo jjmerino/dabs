@@ -1,9 +1,10 @@
 # AGENTS.md — running things in a dabs box
 
 You are (presumably) a capable agent with host access. dabs lets you run a
-command — or a whole agent — inside a disposable box that has no view of your
-host. Reach in with `dabs run <instance> <shell…>` (or `dabs exec <instance> --
-<cmd>` for an exact argv), or run a whole agent inside via a recipe
+command — or a whole agent — inside a disposable box that sees only what its
+recipe mounts in, not the rest of your host. Reach in with `dabs run <node>
+<shell…>` (or `dabs exec <node> -- <cmd>` for an exact argv), or run a whole
+agent inside via a recipe
 (`dabs recipe claude`, defined in this repo's `dabs.yaml`).
 
 ## Read `dabs.yaml` first
@@ -189,6 +190,9 @@ e.g. review) at work another agent already started, without cutting a new branch
   otherwise you run stale code.
 - Writes inside a box persist for that instance's lifetime; pristine again
   means a NEW `up`, not reusing the old instance.
+- Isolation is filesystem and process, NOT network: a box has open outbound
+  network access and dabs has no `--no-network` switch yet. Do not rely on a box
+  to contain code that should not reach the network — it can phone home.
 - The box only contains what the Dockerfile installed. Slim base images
   lack tools like `ps`; if a journey needs one, it belongs in the
   Dockerfile, not worked around.

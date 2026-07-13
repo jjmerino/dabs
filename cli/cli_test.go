@@ -214,7 +214,7 @@ func TestCommandHelpShowsOwnUsage(t *testing.T) {
 		cmd  string
 		want []string // substrings that must appear in the command's own help
 	}{
-		{"down", []string{"dabs down", "--force", "--dry", "<instance>"}},
+		{"down", []string{"dabs down", "--force", "--dry", "<node>"}},
 		{"up", []string{"dabs up", "[recipe|path]"}},
 		{"worktrees", []string{"dabs worktrees", "diff <name>", "prune", "--force"}},
 		{"recipes", []string{"dabs recipes", "--print"}},

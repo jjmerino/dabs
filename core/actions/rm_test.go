@@ -233,3 +233,43 @@ func TestRmCascadeYesReapsWholeSetIncludingEphemeral(t *testing.T) {
 		}
 	}
 }
+
+// CONTRACT (node id everywhere): down/run/exec take the NODE id — what `ls`
+// shows — and resolve it to the box the node records. A raw instance name still
+// works for a box no node claims (back-compat / loose boxes).
+func TestDownResolvesByNodeId(t *testing.T) {
+	fd := baseData()
+	seedBoxNode(fd, "mybox-aaaa", "shell-1234") // node id -> its instance
+	drv := &fakeDriver{infos: []sandbox.Info{{Name: "shell-1234", Status: "running"}}}
+	if err := newReal("", fd, drv).Down(params.Down{Instance: "mybox-aaaa"}); err != nil {
+		t.Fatalf("down by node id: %v", err)
+	}
+	if len(drv.downs) != 1 || drv.downs[0] != "shell-1234" {
+		t.Fatalf("down by node id downed %v, want [shell-1234]", drv.downs)
+	}
+}
+
+func TestDownResolvesByNodeIdPrefix(t *testing.T) {
+	fd := baseData()
+	seedBoxNode(fd, "mybox-aaaa", "shell-1234")
+	drv := &fakeDriver{infos: []sandbox.Info{{Name: "shell-1234", Status: "running"}}}
+	if err := newReal("", fd, drv).Down(params.Down{Instance: "mybox"}); err != nil {
+		t.Fatalf("down by node prefix: %v", err)
+	}
+	if len(drv.downs) != 1 || drv.downs[0] != "shell-1234" {
+		t.Fatalf("down by node prefix downed %v, want [shell-1234]", drv.downs)
+	}
+}
+
+func TestDownStillResolvesByRawInstanceName(t *testing.T) {
+	fd := baseData()
+	seedBoxNode(fd, "mybox-aaaa", "shell-1234")
+	drv := &fakeDriver{infos: []sandbox.Info{{Name: "shell-1234", Status: "running"}}}
+	// The instance name is not a node-id prefix, so the byInstance fallback resolves it.
+	if err := newReal("", fd, drv).Down(params.Down{Instance: "shell-1234"}); err != nil {
+		t.Fatalf("down by instance name: %v", err)
+	}
+	if len(drv.downs) != 1 || drv.downs[0] != "shell-1234" {
+		t.Fatalf("down by instance name downed %v, want [shell-1234]", drv.downs)
+	}
+}

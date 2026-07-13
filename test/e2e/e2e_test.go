@@ -346,7 +346,7 @@ func TestRunAmbiguous(t *testing.T) {
 
 func TestRunMissing(t *testing.T) {
 	out, _ := run("dabs run nope-missing -- echo x")
-	wantContains(t, out, "no instance matches")
+	wantContains(t, out, "no box matches")
 }
 
 func TestRunIsolationBetweenInstances(t *testing.T) {
@@ -399,7 +399,7 @@ func TestRunExitCodePropagates(t *testing.T) {
 	if code == 0 {
 		t.Fatalf("missing instance should be a dabs error, got exit 0:\n%s", out)
 	}
-	wantContains(t, out, "no instance matches")
+	wantContains(t, out, "no box matches")
 }
 
 // --- down --------------------------------------------------------------------

@@ -56,14 +56,41 @@ func lsTimeout(d sandbox.Driver, timeout time.Duration) ([]sandbox.Info, error) 
 // pays an ssh round-trip or risks hanging on a slow server. Only when no local
 // driver holds an exact match are the remote servers queried — concurrently,
 // each bounded by remoteTimeout.
-func (r Real) matches(instance string) ([]match, error) {
-	// A name is REQUIRED: an empty/blank name is a prefix of EVERY instance, so
+func (r Real) matches(arg string) ([]match, error) {
+	// A name is REQUIRED: an empty/blank name is a prefix of EVERY node, so
 	// without this it would "match" the whole fleet (reported as ambiguous, one
 	// `if` away from acting on all of them). Blank matches nothing, never all —
 	// for every verb that resolves a name, not just down.
-	if strings.TrimSpace(instance) == "" {
+	if strings.TrimSpace(arg) == "" {
 		return nil, fmt.Errorf("a name is required (see dabs ls)")
 	}
+
+	// The canonical handle is the NODE id — the one `dabs ls` shows and `rm`
+	// takes. A box node records the instance it turned out to be, so resolving a
+	// node id to its box is a lookup, not a guess. A box that no node claims
+	// (booted by an older dabs, or by hand) is still reachable by its raw
+	// instance name — the byInstance fallback below.
+	nodes, err := r.listNodes()
+	if err != nil {
+		return nil, err
+	}
+	want := map[string]bool{} // the instance name(s) the argument names, via node ids
+	for _, n := range nodes {
+		if n.Kind == KindBox && n.Instance != "" && strings.HasPrefix(n.ID, arg) {
+			want[n.Instance] = true
+		}
+	}
+	byInstance := len(want) == 0
+
+	// check reports whether a driver's instance is a match, and whether it is an
+	// UNAMBIGUOUS exact hit that short-circuits the fleet (so remotes are skipped).
+	check := func(name string) (matched, exact bool) {
+		if byInstance {
+			return strings.HasPrefix(name, arg), name == arg
+		}
+		return want[name], want[name] && len(want) == 1
+	}
+
 	var out []match
 
 	// Local drivers first, synchronously and in fleet order — an exact match on
@@ -79,10 +106,11 @@ func (r Real) matches(instance string) ([]match, error) {
 			return nil, fmt.Errorf("%s: %w", key, err)
 		}
 		for _, in := range infos {
-			if in.Name == instance {
+			matched, exact := check(in.Name)
+			if exact {
 				return []match{{name: in.Name, target: key, driver: drv}}, nil
 			}
-			if strings.HasPrefix(in.Name, instance) {
+			if matched {
 				out = append(out, match{name: in.Name, target: key, driver: drv})
 			}
 		}
@@ -124,10 +152,11 @@ func (r Real) matches(instance string) ([]match, error) {
 			continue
 		}
 		for _, in := range byKey[key] {
-			if in.Name == instance {
+			matched, exact := check(in.Name)
+			if exact {
 				return []match{{name: in.Name, target: key, driver: r.drivers[key]}}, nil
 			}
-			if strings.HasPrefix(in.Name, instance) {
+			if matched {
 				out = append(out, match{name: in.Name, target: key, driver: r.drivers[key]})
 			}
 		}
@@ -142,7 +171,7 @@ func (r Real) resolveOne(instance string) (match, error) {
 		return match{}, err
 	}
 	if len(m) == 0 {
-		return match{}, fmt.Errorf("no instance matches %q (see dabs ls)", instance)
+		return match{}, fmt.Errorf("no box matches %q (see dabs ls)", instance)
 	}
 	if len(m) > 1 {
 		return match{}, fmt.Errorf("%q is ambiguous: %s (see dabs ls)", instance, names(m))

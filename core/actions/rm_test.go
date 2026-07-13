@@ -108,14 +108,14 @@ func rmAllHas(fd *fakeData, p string) bool {
 	return false
 }
 
-// CONTRACT (E2-2): a node that holds data (here a held ephemeral) is NOT reaped
+// CONTRACT (E2-2): a node that holds data (here a held space) is NOT reaped
 // without consent. Non-interactively there is nobody to ask, so the node is KEPT,
 // nothing is removed, and rm exits NONZERO — a script must see the reap did not
 // happen rather than read exit 0 as "gone".
-func TestRmHeldEphemeralWithoutConsentKeepsNodeAndErrors(t *testing.T) {
+func TestRmHeldSpaceWithoutConsentKeepsNodeAndErrors(t *testing.T) {
 	fd := baseData()
 	seedBoxNode(fd, "hold-aaaa", "inst-a")
-	spaceHeld(fd, "hold-aaaa", "ephemeral")
+	spaceHeld(fd, "hold-aaaa", "held")
 	drv := &fakeDriver{infos: []sandbox.Info{{Name: "inst-a", Status: "running"}}}
 
 	var err error
@@ -125,8 +125,8 @@ func TestRmHeldEphemeralWithoutConsentKeepsNodeAndErrors(t *testing.T) {
 	if err == nil {
 		t.Fatal("held data without -y non-interactively must error, got nil")
 	}
-	if !strings.Contains(out, "ephemeral data") {
-		t.Errorf("held ephemeral should be previewed; got:\n%s", out)
+	if !strings.Contains(out, "a held space") {
+		t.Errorf("held-space should be previewed; got:\n%s", out)
 	}
 	if strings.Contains(out, "removed") {
 		t.Errorf("a kept node must NOT be removed; got:\n%s", out)
@@ -134,7 +134,7 @@ func TestRmHeldEphemeralWithoutConsentKeepsNodeAndErrors(t *testing.T) {
 	if len(drv.downs) != 0 {
 		t.Errorf("a kept node's box must NOT be stopped; downed %v", drv.downs)
 	}
-	if rmAllHas(fd, nodeBase+"/hold-aaaa") || rmAllHas(fd, nodeBase+"/hold-aaaa/ephemeral") {
+	if rmAllHas(fd, nodeBase+"/hold-aaaa") || rmAllHas(fd, nodeBase+"/hold-aaaa/held") {
 		t.Errorf("reaped despite refusal: %v", fd.rmAll)
 	}
 }
@@ -184,11 +184,11 @@ func TestRmKeepArchivesBoxButKeepsNode(t *testing.T) {
 	}
 }
 
-// CONTRACT: -y consents, so the held ephemeral is reaped and the node removed.
-func TestRmHeldEphemeralWithConsentReaps(t *testing.T) {
+// CONTRACT: -y consents, so the held space is reaped and the node removed.
+func TestRmHeldSpaceWithConsentReaps(t *testing.T) {
 	fd := baseData()
 	seedBoxNode(fd, "reap-aaaa", "inst-a")
-	spaceHeld(fd, "reap-aaaa", "ephemeral")
+	spaceHeld(fd, "reap-aaaa", "held")
 	drv := &fakeDriver{infos: []sandbox.Info{{Name: "inst-a", Status: "running"}}}
 
 	out := captureStdout(t, func() {
@@ -197,17 +197,17 @@ func TestRmHeldEphemeralWithConsentReaps(t *testing.T) {
 		}
 	})
 	if !strings.Contains(out, "removed") {
-		t.Errorf("rm -y should reap the held ephemeral and remove the node; got:\n%s", out)
+		t.Errorf("rm -y should reap the held space and remove the node; got:\n%s", out)
 	}
-	if !rmAllHas(fd, nodeBase+"/reap-aaaa/ephemeral") {
-		t.Errorf("held ephemeral not reaped with -y: %v", fd.rmAll)
+	if !rmAllHas(fd, nodeBase+"/reap-aaaa/held") {
+		t.Errorf("held-space not reaped with -y: %v", fd.rmAll)
 	}
 }
 
-// CONTRACT: an EMPTY ephemeral on a box that is NOT live is reaped silently —
+// CONTRACT: an EMPTY held space on a box that is NOT live is reaped silently —
 // never prompted about, never "kept" — and the node is removed. Nothing is at
 // stake (no live box, no held data), so no consent is needed.
-func TestRmEmptyEphemeralReapsSilently(t *testing.T) {
+func TestRmEmptyHeldSpaceReapsSilently(t *testing.T) {
 	fd := baseData()
 	seedBoxNode(fd, "gone-aaaa", "inst-a") // no space entries → all empty
 	drv := &fakeDriver{}                   // box already down → nothing live at stake
@@ -218,7 +218,7 @@ func TestRmEmptyEphemeralReapsSilently(t *testing.T) {
 		}
 	})
 	if strings.Contains(out, "kept") || strings.Contains(out, "holds files") {
-		t.Errorf("empty ephemeral must be reaped silently, not prompted/kept; got:\n%s", out)
+		t.Errorf("empty held space must be reaped silently, not prompted/kept; got:\n%s", out)
 	}
 	if !strings.Contains(out, "removed") {
 		t.Errorf("a node with only empty spaces should be removed; got:\n%s", out)
@@ -246,8 +246,8 @@ func TestRmCascadeSummarizesDataAndRefusesWithoutYes(t *testing.T) {
 	seedNode(fd, "proj", "project", "")
 	seedNode(fd, "wd1", "workdir", "proj")
 	seedNode(fd, "wd2", "workdir", "proj")
-	spaceHeld(fd, "wd1", "ephemeral")
-	spaceHeld(fd, "wd2", "ephemeral")
+	spaceHeld(fd, "wd1", "held")
+	spaceHeld(fd, "wd2", "held")
 
 	var err error
 	out := captureStdout(t, func() {
@@ -256,30 +256,30 @@ func TestRmCascadeSummarizesDataAndRefusesWithoutYes(t *testing.T) {
 	if err == nil {
 		t.Fatal("non-interactive cascade must refuse (pass -y), got nil")
 	}
-	if !strings.Contains(out, "2 node(s) hold ephemeral data") {
-		t.Errorf("want ONE aggregated ephemeral line for both holders; got:\n%s", out)
+	if !strings.Contains(out, "2 node(s) hold a held space") {
+		t.Errorf("want ONE aggregated held-space line for both holders; got:\n%s", out)
 	}
 	if len(fd.rmAll) != 0 {
 		t.Errorf("a refused cascade reaped something: %v", fd.rmAll)
 	}
 }
 
-// CONTRACT: the single -y (or one interactive yes) reaps the WHOLE set, ephemeral
+// CONTRACT: the single -y (or one interactive yes) reaps the WHOLE set, held space
 // included, with no further per-node questions.
-func TestRmCascadeYesReapsWholeSetIncludingEphemeral(t *testing.T) {
+func TestRmCascadeYesReapsWholeSetIncludingHeld(t *testing.T) {
 	fd := baseData()
 	seedNode(fd, "proj", "project", "")
 	seedNode(fd, "wd1", "workdir", "proj")
 	seedNode(fd, "wd2", "workdir", "proj")
-	spaceHeld(fd, "wd1", "ephemeral")
-	spaceHeld(fd, "wd2", "ephemeral")
+	spaceHeld(fd, "wd1", "held")
+	spaceHeld(fd, "wd2", "held")
 
 	if err := newReal("", fd, &fakeDriver{}).Rm(params.Rm{Node: "proj", Yes: true}); err != nil {
 		t.Fatalf("rm -y: %v", err)
 	}
 	for _, id := range []string{"wd1", "wd2"} {
-		if !rmAllHas(fd, nodeBase+"/"+id+"/ephemeral") {
-			t.Errorf("%s ephemeral not reaped by the batch -y: %v", id, fd.rmAll)
+		if !rmAllHas(fd, nodeBase+"/"+id+"/held") {
+			t.Errorf("%s held space not reaped by the batch -y: %v", id, fd.rmAll)
 		}
 	}
 	for _, id := range []string{"proj", "wd1", "wd2"} {

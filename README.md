@@ -63,7 +63,7 @@ Then:
 
 ```bash
 dabs build myproj                # build the box's image
-dabs recipe myproj --detach      # → myproj-a3f9c21d4e02 up   (a NEW pristine box, no command)
+dabs recipe myproj --detach      # recipe booted: myproj (id: myproj-a3f9c21d4e02) — a NEW pristine box, no command
 dabs ls                          # the tree: what dabs owns, and where it runs
 dabs exec myproj-a3f 'ls | wc -l'        # run a shell line inside (instance prefixes ok, git-style)
 dabs exec myproj-a3f -- ./mycli --help   # exec an exact command inside (no shell)
@@ -101,7 +101,7 @@ to the bytes:
 | space | on `rm` |
 |---|---|
 | `volume/` | kept, unless you ask for it by name (`rm -y --volume`) |
-| `ephemeral/` | reaped with consent; without it, kept and its path printed |
+| `held/` | reaped with consent; without it, kept and its path printed |
 | `tmp/` | reaped, always |
 
 A source names them with `$NODE_*` (this box's) and `$PARENT_*` (its place's —
@@ -169,8 +169,9 @@ inside the box:
 | `copy` | a snapshot taken at box start | untouched |
 
 Host paths may use `~` and `$VAR`. dabs also supplies the box's three node
-spaces to source paths — `$NODE_VOLUME` (survives `rm --keep`), `$NODE_EPHEMERAL`
-(`rm` asks first), `$NODE_TMP` (`rm` reaps quietly) — plus the `$PARENT_*`
+spaces to source paths — `$NODE_VOLUME` (survives `rm` unless `--volume`), `$NODE_HELD`
+(`rm` asks first; `$NODE_EPHEMERAL` is a permanent alias), `$NODE_TMP` (`rm` reaps
+quietly) — plus the `$PARENT_*`
 family naming the same spaces of the box's parent place. Use `$PARENT_VOLUME`
 for what a box wants back on the NEXT box: a fresh box gets an empty
 `$NODE_VOLUME`, but its parent place persists, so a box can keep a private slice

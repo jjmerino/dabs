@@ -152,11 +152,11 @@ func TestViewNodesSpaceCells(t *testing.T) {
 	nodes := []Node{{ID: "proj", Kind: KindProject, Dir: "/repo", Created: "1"}}
 
 	v := newViewReal(fd).viewNodes(nodes, nil)[0]
-	if v.Volume != CellHeld {
-		t.Errorf("held volume = %v, want CellHeld", v.Volume)
+	if v.Volume != CellHolds {
+		t.Errorf("held volume = %v, want CellHolds", v.Volume)
 	}
-	if v.Ephemeral != CellEmpty || v.Tmp != CellEmpty {
-		t.Errorf("empty spaces = eph %v tmp %v, want both CellEmpty", v.Ephemeral, v.Tmp)
+	if v.Held != CellEmpty || v.Tmp != CellEmpty {
+		t.Errorf("empty spaces = eph %v tmp %v, want both CellEmpty", v.Held, v.Tmp)
 	}
 }
 
@@ -164,9 +164,9 @@ func TestViewNodesSpaceCells(t *testing.T) {
 // commits ahead are unmerged; dirty-only (uncommitted/untracked, nothing
 // ahead) is work in progress, not an unmerged branch; clean is merged.
 func TestViewNodesWorktreeState(t *testing.T) {
-	dirtyWT := vBase + "wt-dirty/ephemeral/worktree"
-	cleanWT := vBase + "wt-clean/ephemeral/worktree"
-	aheadWT := vBase + "wt-ahead/ephemeral/worktree"
+	dirtyWT := vBase + "wt-dirty/held/worktree"
+	cleanWT := vBase + "wt-clean/held/worktree"
+	aheadWT := vBase + "wt-ahead/held/worktree"
 	fd := &vFakeData{
 		statOK: map[string]bool{dirtyWT: true, cleanWT: true, aheadWT: true},
 		git:    map[string]vGit{dirtyWT: {dirty: true}, aheadWT: {ahead: 1}},
@@ -191,7 +191,7 @@ func TestViewNodesWorktreeState(t *testing.T) {
 		t.Errorf("clean worktree State = %v, want CellNoDiff", byID["wt-clean"].State)
 	}
 	// Where points at the checkout folder on disk, not a recorded source.
-	if !strings.Contains(byID["wt-dirty"].Where, "wt-dirty/ephemeral/worktree") {
+	if !strings.Contains(byID["wt-dirty"].Where, "wt-dirty/held/worktree") {
 		t.Errorf("worktree Where = %q, want the checkout folder", byID["wt-dirty"].Where)
 	}
 }
@@ -201,7 +201,7 @@ func TestViewNodesWorktreeState(t *testing.T) {
 func TestRenderForestColumnsAndGlyphs(t *testing.T) {
 	proj := &NodeView{ID: "proj", Kind: KindProject, State: CellNA, Where: "/repo"}
 	box := &NodeView{ID: "box", Kind: KindBox, State: CellLive, Where: "inst",
-		Volume: CellHeld, Ephemeral: CellEmpty, Tmp: CellEmpty}
+		Volume: CellHolds, Held: CellEmpty, Tmp: CellEmpty}
 	proj.Children = []*NodeView{box}
 
 	out := renderForest([]*NodeView{proj}, []Column{ColNode, ColKind, ColVol, ColState}, 2)
@@ -259,13 +259,13 @@ func TestRenderForestSanitizesUntrustedFields(t *testing.T) {
 // recorded source — which for a workdir is the parent project's directory. This
 // resolves from storage, so it is right even for records that stored the source.
 func TestViewNodesWorkdirWhereIsItsCopyFolder(t *testing.T) {
-	work := vBase + "wd/ephemeral/work"
+	work := vBase + "wd/held/work"
 	fd := &vFakeData{statOK: map[string]bool{work: true}}
 	// Dir records the SOURCE (the project) — the pre-fix value; Where must not use it.
 	nodes := []Node{{ID: "wd", Kind: KindWorkdir, Dir: "/some/repo", Created: "1"}}
 
 	v := newViewReal(fd).viewNodes(nodes, nil)[0]
-	if !strings.Contains(v.Where, "wd/ephemeral/work") {
+	if !strings.Contains(v.Where, "wd/held/work") {
 		t.Errorf("workdir Where = %q, want its copy folder", v.Where)
 	}
 	if strings.Contains(v.Where, "/some/repo") {
@@ -273,17 +273,17 @@ func TestViewNodesWorkdirWhereIsItsCopyFolder(t *testing.T) {
 	}
 }
 
-// countHeldSpaces walks the whole forest (into Children) and tallies data per
+// countHoldingSpaces walks the whole forest (into Children) and tallies data per
 // space — the aggregate a cascade reap asks about once.
 func TestCountHeldSpaces(t *testing.T) {
 	roots := []*NodeView{
-		{Ephemeral: CellHeld, Children: []*NodeView{
-			{Ephemeral: CellHeld, Volume: CellHeld},
-			{Tmp: CellHeld},
+		{Held: CellHolds, Children: []*NodeView{
+			{Held: CellHolds, Volume: CellHolds},
+			{Tmp: CellHolds},
 		}},
-		{Volume: CellHeld},
+		{Volume: CellHolds},
 	}
-	eph, vol, tmp := countHeldSpaces(roots)
+	eph, vol, tmp := countHoldingSpaces(roots)
 	if eph != 2 || vol != 2 || tmp != 1 {
 		t.Errorf("counts = eph %d vol %d tmp %d, want 2/2/1", eph, vol, tmp)
 	}

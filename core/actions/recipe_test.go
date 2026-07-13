@@ -378,8 +378,8 @@ func TestRecipeCopySnapshotsOntoTheHostAndMountsIt(t *testing.T) {
 	if work.Host == "" {
 		t.Fatalf("no mount at /work: %+v", up.Mounts)
 	}
-	if !strings.HasPrefix(work.Host, "/home/t/.dabs/nodes/") || !strings.Contains(work.Host, "/ephemeral/") {
-		t.Errorf("copy mounted %q; want the place's own ephemeral space", work.Host)
+	if !strings.HasPrefix(work.Host, "/home/t/.dabs/nodes/") || !strings.Contains(work.Host, "/held/") {
+		t.Errorf("copy mounted %q; want the place's own held space", work.Host)
 	}
 	// The snapshot was taken on the host, not by exec'ing cp inside the box.
 	if len(fd.copies) != 1 || !strings.HasPrefix(fd.copies[0], "/cwd -> ") {

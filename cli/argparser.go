@@ -85,14 +85,14 @@ func parseExec(args []string) (params.Exec, error) {
 
 // parseRm parses `dabs rm <node> [flags]`. `rm` is the single reaper: it stops a
 // box and removes its node and spaces. -y/--yes skips the consent prompt (stop a
-// live box, reap a held ephemeral); --keep archives instead of removing; --dry
+// live box, reap a held space); --keep archives instead of removing; --dry
 // previews; --volume additionally reaps the volume; --multiple authorizes a
 // prefix that matches several nodes; --force is only for discarding unreviewed
 // worktree git work — a different risk than the prompt -y skips.
 func parseRm(args []string) (params.Rm, error) {
 	var p params.Rm
 	fs := newFlagSet("rm")
-	fs.BoolVar(&p.Yes, "y", false, "skip the consent prompt: stop a live box and reap the ephemeral space")
+	fs.BoolVar(&p.Yes, "y", false, "skip the consent prompt: stop a live box and reap the held space")
 	fs.BoolVar(&p.Yes, "yes", false, "skip the consent prompt (alias of -y)")
 	fs.BoolVar(&p.Keep, "keep", false, "stop the box but ARCHIVE its node instead of removing it")
 	fs.BoolVar(&p.Volume, "volume", false, "reap the volume too — what a place keeps on purpose")

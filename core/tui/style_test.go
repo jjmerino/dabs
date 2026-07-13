@@ -41,8 +41,6 @@ func TestStyleHelpersPlainWhenPiped(t *testing.T) {
 		"Heading": Heading("Fleet"),
 		"Badge":   Badge("default"),
 		"Status":  Status("running"),
-		"WorkNo":  WorkState(false),
-		"WorkYes": WorkState(true),
 		"Box":     Box("summary"),
 		"Arrow":   Arrow(),
 		"Dot":     Dot(),

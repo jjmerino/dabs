@@ -114,7 +114,7 @@ func (r Real) upDetached(arg, worktree string) error {
 // facts, plus the three commands that follow (reap, shell in, run what the recipe
 // encodes), are spelled out here rather than left for the reader to reconstruct.
 func printUp(name, nodeID, instance string, rec recipe.Recipe) {
-	head := fmt.Sprintf("recipe up: %s", tui.Accent(name))
+	head := fmt.Sprintf("recipe booted: %s", tui.Accent(name))
 	if rec.Target != "" {
 		head += fmt.Sprintf(" (on %s)", rec.Target)
 	}
@@ -122,7 +122,7 @@ func printUp(name, nodeID, instance string, rec recipe.Recipe) {
 	fmt.Fprintf(os.Stdout, "%s %s\n", tui.Muted("id:"), tui.Accent(nodeID))
 	fmt.Fprintf(os.Stdout, "%s %s\n", tui.Muted("instance:"), instance)
 	fmt.Fprintln(os.Stdout, tui.Muted("(no command was run — the recipe's command is not started by `--detach`)"))
-	fmt.Fprintf(os.Stdout, "%s dabs rm %s\n", tui.Muted("bring down:"), nodeID)
+	fmt.Fprintf(os.Stdout, "%s dabs rm %s\n", tui.Muted("reap:"), nodeID)
 	// The "sh in:" line runs `dabs exec <id> -- sh`. When the recipe's own
 	// command IS exactly `sh`, the "run recipe command:" line below renders the
 	// identical argv, so printing both would repeat one command under two labels —

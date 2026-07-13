@@ -278,10 +278,10 @@ func (r Real) provisionNodes(name string, rec recipe.Recipe, worktree string) er
 }
 
 // workdirData is the directory a workdir node owns: its own copy of the code,
-// in the node's ephemeral space, so `down` asks before reaping it and you can
+// in the node's held space, so `rm` asks before reaping it and you can
 // read it on the host.
 func (r Real) workdirData(id string) (string, error) {
-	eph, err := r.resolveNodeSpace(id, SpaceEphemeral)
+	eph, err := r.resolveNodeSpace(id, SpaceHeld)
 	if err != nil {
 		return "", err
 	}
@@ -290,7 +290,7 @@ func (r Real) workdirData(id string) (string, error) {
 }
 
 // mintBoxNode names the box's node before the box exists, and returns the three
-// space paths a recipe may name as $NODE_VOLUME / $NODE_EPHEMERAL / $NODE_TMP.
+// space paths a recipe may name as $NODE_VOLUME / $NODE_HELD / $NODE_TMP.
 // The id is minted first because a source may mount a space, and a mount needs a
 // path before the driver is called.
 func (r Real) mintBoxNode(recipeName, parent string) (id string, vars map[string]string, err error) {
@@ -313,12 +313,17 @@ func (r Real) mintBoxNode(recipeName, parent string) (id string, vars map[string
 	return id, vars, nil
 }
 
-// spaceVars names a node's three spaces under a prefix, for source paths.
+// spaceVars names a node's three spaces under a prefix, for source paths. The
+// held space is offered under two names: $<prefix>_HELD (the documented one) and
+// $<prefix>_EPHEMERAL (a PERMANENT alias for the space's former name, so a user's
+// own recipes.yaml written against the old name keeps provisioning into the same
+// held space and is never broken by the rename). Both resolve to held/.
 func (r Real) spaceVars(id, prefix string) (map[string]string, error) {
 	vars := map[string]string{}
 	for v, space := range map[string]string{
 		"_VOLUME":    SpaceVolume,
-		"_EPHEMERAL": SpaceEphemeral,
+		"_HELD":      SpaceHeld,
+		"_EPHEMERAL": SpaceHeld, // permanent alias for _HELD (the former name)
 		"_TMP":       SpaceTmp,
 	} {
 		p, err := r.resolveNodeSpace(id, space)
@@ -338,7 +343,7 @@ func (r Real) spaceVars(id, prefix string) (map[string]string, error) {
 // ($PARENT_VOLUME) and a parent must exist to be named.
 //
 // `at:` says where a provisioned place puts its bytes on the host, in the new
-// node's own spaces — so the recipe, not this function, decides what `down` may
+// node's own spaces — so the recipe, not this function, decides what `rm` may
 // reap.
 func (r Real) provisionPlaces(recipeName string, sources []recipe.Source, boundWorktree string) (project, tip string, hosts map[int]string, kept []string, cut []wtCut, err error) {
 	project, err = r.ensureProjectNode(recipeName)
@@ -424,15 +429,15 @@ func (r Real) provisionPlaces(recipeName string, sources []recipe.Source, boundW
 }
 
 // placeAt resolves a provisioning source's `at:` — where it puts its bytes in the
-// NEW node's spaces. Unset, it is that node's ephemeral space: dabs made it, so
-// dabs may reap it, but `down` asks first because that is where work lives.
+// NEW node's spaces. Unset, it is that node's held space: dabs made it, so
+// dabs may reap it, but `rm` asks first because that is where work lives.
 func (r Real) placeAt(s recipe.Source, id, leaf string) (string, error) {
 	vars, err := r.spaceVars(id, "NODE")
 	if err != nil {
 		return "", err
 	}
 	if s.At == "" {
-		return filepath.Join(vars["NODE_EPHEMERAL"], leaf), nil
+		return filepath.Join(vars["NODE_HELD"], leaf), nil
 	}
 	return r.expandPathWith(s.At, vars)
 }
@@ -1000,9 +1005,9 @@ func withinRoot(root, target string) bool {
 }
 
 // addWorktree provisions a fresh worktree NODE at ~/.dabs/nodes/<repo>-<id>/,
-// with the git worktree checked out into its ephemeral space on a new branch
-// dabs/<id> off HEAD. The checkout is EPHEMERAL: dabs cut it, so dabs may reap
-// it — but `down` asks first when it holds work. It returns the checkout path
+// with the git worktree checked out into its held space on a new branch
+// dabs/<id> off HEAD. The checkout is HELD: dabs cut it, so dabs may reap
+// it — but `rm` asks first when it holds work. It returns the checkout path
 // (what the box mounts) and the branch. Requires at least one commit (a born
 // HEAD). parent is the node this one stacks on.
 func (r Real) addWorktree(top, recipeName, parent string) (path, branch, id string, err error) {
@@ -1012,7 +1017,7 @@ func (r Real) addWorktree(top, recipeName, parent string) (path, branch, id stri
 	id, short := mintNodeID(filepath.Base(top))
 	branch = "dabs/" + short
 
-	dir, err := r.resolveNodeSpace(id, SpaceEphemeral)
+	dir, err := r.resolveNodeSpace(id, SpaceHeld)
 	if err != nil {
 		return "", "", "", fmt.Errorf("recipe: %w", err)
 	}

@@ -38,9 +38,9 @@ type Ls struct {
 // Rm are the inputs to removing a node: a place dabs made, or a box. It is the
 // single reaper — it stops a live box and takes its node and spaces away.
 //
-// Yes skips the consent prompt: it reaps the ephemeral space (the one that may
+// Yes skips the consent prompt: it reaps the held space (the one that may
 // hold work) and stops a live box without asking. Without it, a reap that would
-// stop a live box or lose held data is REFUSED with a preview.
+// stop a live box or lose data a space holds is REFUSED with a preview.
 // Keep archives instead of removing: the box is stopped but its node record is
 // left behind (what ran, and from where, outlives the box). This is teardown
 // without forgetting.

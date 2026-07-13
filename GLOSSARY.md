@@ -1,126 +1,177 @@
 # dabs glossary
 
-The canonical vocabulary of dabs — one entry per term, what it means, and where
-it is used in the code. The **Inconsistencies to resolve** section at the end
-records where the *same* concept is currently named differently; that record is
-the reason this file exists and is meant to drive a terminology cleanup.
+The canonical vocabulary of dabs — one word, one meaning. Where a concept once
+had several names, the cluster has been resolved to a single term; the
+**Resolved history** section at the end records those decisions so a reader who
+learned an old name can find the new one.
 
-This document changes no code and renames nothing. Every "used in" reference was
-checked against the tree at the branch point.
+References point at the function or type that owns a concept, not a line number,
+so they age with the code rather than drifting from it.
 
 ---
 
-## The box lifecycle
+## Vocabulary at a glance
 
-A run flows: **recipe → build → up / cast → box (instance) → run / exec / do →
-down**. The nouns below name the thing that lifecycle produces.
+| word | meaning | where you meet it |
+|---|---|---|
+| **box** | the disposable, host-isolated environment a command or agent runs in | the user-facing noun in `AGENTS.md`/`README.md`; `recipe --detach` boots one |
+| **instance** | the driver's name for one running box, `<name>-<hex>` | `dabs ls` INSTANCE-in-parens, `Driver.Up/Run/Down` |
+| **node** | the record dabs wrote for one thing it provisioned; its `id` is the canonical handle | `~/.dabs/nodes/<id>/`, `actions.Node` |
+| **place** | a node a box can stand on — a project, workdir, or worktree (everything that is not a box) | `provisionPlaces`, the ls chain |
+| **space** | one of a node's three directories — `volume`/`held`/`tmp` — that decides what `rm` does with the bytes | `SpaceVolume`/`SpaceHeld`/`SpaceTmp`, `reapSpaces` |
+| **recipe** | a fully declarative box (image, sources, env, command, target, keep) | `recipe.Recipe`, `dabs.yaml` |
+| **image** | the frozen template a driver builds and boots a box from | `recipe.ImageRef`, `Driver.Build` |
+| **reap** | to remove a node and the spaces it holds (what `dabs rm` does) | `Rm`, `reapSpaces` |
+| **consent** | the explicit permission a losing action needs — four flags for four risks | `-y` / `--multiple` / `--force` / `--volume` |
+| **archived** | a box whose node record is kept but whose instance is gone (`rm --keep`) | `archive`, `dabs ls --all` |
+| **live / gone** | a box's STATE: its driver holds it, or it does not | `CellLive`/`CellGone` |
+| **no-diff / has work / unmerged** | a worktree's STATE: clean · uncommitted-or-untracked · commits ahead | `worktreeState` |
+| **target** | which fleet member runs a box — `""` (local) or a named server/driver | `recipe.Recipe.Target`, `driverFor` |
+| **server** | a registered remote machine with dabs installed, reached over ssh | `dabs servers`, `config` |
+| **driver** | one sandboxing mechanism behind the `sandbox.Driver` contract | `core/sandbox/<kind>` |
+| **fleet** | the whole set of drivers dabs dispatches across | `Real.drivers`, `dabs ls` |
+| **worktree** | a fresh git branch off HEAD, cut into a node's held space and mounted live | the `worktree:` source, `dabs worktrees` |
+| **detach** | boot a box and leave it up without running the recipe's command | `recipe --detach`, `upDetached` |
+
+---
+
+## The box, and the record of it
 
 ### box
-The disposable, host-isolated environment an agent or command runs in — a
+The disposable, host-isolated environment a command or agent runs in — a
 pristine machine that sees only what its image installed, with no view of the
-host. The primary user-facing noun in `AGENTS.md` and `README.md`.
-*Used in:* `AGENTS.md` (throughout), `README.md:3` ("Each box is a pristine…"),
-`cli/commands.go` (`recipe --detach` help: "boots a NEW detached box"),
-`core/sandbox/sandbox.go:14,44` ("attached into a box", "one running box").
+host. The primary user-facing noun.
+*Where:* `AGENTS.md`/`README.md` throughout; `recipe --detach` boots one;
+`sandbox.Spec` describes one to a driver.
 
 ### instance
-One concrete, running box, born pristine from an image and named
-`<name>-<hex-id>`. Every `recipe --detach` yields a new instance; the id
-disambiguates multiple boxes from the same recipe. The name you pass to
-`exec`/`rm`.
-*Used in:* `core/sandbox/sandbox.go:35,51-55` (Info, Driver.Up/Run/Down),
-`cli/commands.go` (`exec`/`rm` help), `README.md`.
+The driver's name for one concrete, running box, minted after boot and shaped
+`<name>-<hex>`. It is distinct from the node id (which is minted first, before
+the box exists), so a box has two names and its node record links them. `ls`
+shows the instance in parentheses beside the box's node id; `exec`/`rm` resolve
+either.
+*Where:* `sandbox.Info`, `Driver.Up/Run/Down`, `viewNode` (box WHERE cell).
+
+### node
+The record dabs wrote for one thing it provisioned, at
+`~/.dabs/nodes/<id>/dabs-node.json`. It carries a `kind`, a `parent`, and the
+recipe that made it, so listing and reaping read what dabs wrote rather than
+sniffing the filesystem.
+*Where:* `actions.Node`, `writeNode`/`readNode`/`listNodes`.
+
+### handle / node id
+A node's `id` — the canonical, stable handle. `rm`/`exec`/`recipe --worktree`
+all resolve it first, git-style: an exact id wins, then a unique prefix. A raw
+box instance name resolves only as a fallback, for a box no node claims.
+*Where:* `mintNodeID`, `rmMatches`, `matches`.
+
+### place
+A node a box stands ON — a project, workdir, or worktree; everything that is not
+a box. A box mounts what a place owns, and a place is re-entered by every later
+box, which is why what a box wants back next time belongs in the place's volume,
+not the box's own. The chain is `project → (workdir | worktree)? → box`.
+*Where:* `provisionPlaces`, the ls section chain.
+
+### kind (of node)
+What a node marks: **project** (the directory a command ran from — dabs records
+it and never reaps its `Dir`), **workdir** (a host directory a recipe copied as
+`.`), **worktree** (a git worktree dabs cut), **box** (one running sandbox).
+*Where:* `NodeKind` (`KindProject`/`KindWorkdir`/`KindWorktree`/`KindBox`).
+
+### archived
+A box reaped with `--keep`: its instance is stopped but its node record stays, so
+what ran and from where outlives the box. Its spaces are already gone. Archived
+boxes are hidden by default and shown by `dabs ls --all`.
+*Where:* `archive`, the `ls` archived count, `dabs ls --all`.
+
+### live / gone
+A box node's STATE cell: **live** when a driver in the fleet holds its instance,
+**gone** when none does (it is archived, or its instance died).
+*Where:* `CellLive`/`CellGone`, `viewNode`.
 
 ### sandbox
-The environment abstraction as a whole — the isolation mechanism, and the term
-for the box as seen by the driver/contract layer. Same object as *box*/*instance*,
-named from the implementation's point of view.
-*Used in:* `cli/commands.go:30` (`ls` help: "list what dabs owns, as a tree"),
-`core/sandbox/sandbox.go:1-8,24,42` (package + `Spec`/`BuildSpec` docs),
-`core/actions/ls.go:11` (`Ls` renders the node tree), `README.md:3,42,75,96`.
-
-### environment
-Informal synonym used in prose for what a box provides (a machine's worth of
-tools/state). Not a CLI term and not a type; appears descriptively.
-*Used in:* prose in `AGENTS.md`/`README.md` (e.g. remote "cloud environment"
-descriptions); no command or struct is named `environment`.
-
-### dab / dabs
-The project and CLI itself (`dabs <command>`). No singular "a dab" object exists
-in the vocabulary — *dabs* is only the tool name and command prefix.
-*Used in:* `cli/cli.go:38` (`usage: dabs <command> [args]`), `AGENTS.md`,
-`README.md`, module path `github.com/jjmerino/dabs`.
+The isolation abstraction as the driver/contract layer sees it — the same object
+a user calls a *box*, named from the implementation's point of view. Confined to
+`core/sandbox` (`sandbox.Driver`, `Spec`, `BuildSpec`); it is not a user-facing
+noun.
+*Where:* `core/sandbox`.
 
 ---
 
-## Verbs (commands)
+## Verbs
 
 ### build
 Build a recipe's box **image** (once per Dockerfile change). Resolves a recipe
-(no name → `dabs.yaml` default, a name → that recipe, a path → a `dabs.yaml`).
-*Used in:* `cli/commands.go:19`, `core/actions/build.go:11-15`,
-`core/sandbox/sandbox.go:37-42` (`Driver.Build`).
+(no name → the `dabs.yaml` default, a name → that recipe, a path → a `dabs.yaml`
+to load).
+*Where:* `Build`, `Driver.Build`.
+
+### recipe
+`recipe [name] [cmd…]` boots a box from a named recipe and runs its command,
+then tears the box down (unless the recipe says `keep`). With no name — or a
+leading `--` — it runs the DEFAULT recipe (the `dabs.yaml` `default:`, else the
+bundled `sh` box) with the command appended, always confirming first.
+*Where:* `Recipe`/`runRecipe`.
 
 ### recipe --detach
-Boot a NEW pristine detached box from a recipe (no command); prints the instance
-name. Every `recipe --detach` is a fresh box.
-*Used in:* `cli/commands.go` (`recipe` help), `core/actions/up.go`,
-`core/sandbox/sandbox.go:45` (`Driver.Up`), `README.md`.
+Boot a NEW pristine box from a recipe and leave it up WITHOUT running the
+recipe's command. It leads its output with the box's node id (the canonical
+handle) and prints the driver instance on its own line; the box is yours to reach
+with `exec` and to reap with `rm`. A boxless recipe (no image) detaches cleanly —
+it provisions its places and stops.
+*Where:* `upDetached`, `printUp`.
 
-### cast
-Run a recipe onto an **existing** worktree (by name from `worktrees ls`) instead
-of the cwd, mounting that worktree and its `.git` live so git works in the box.
-Implemented as `Recipe` with a `Worktree` set.
-*Used in:* `cli/commands.go:23,61-66` (`runCast`), `AGENTS.md` ("Re-attaching").
-
-### run
-Run a shell command line inside an instance — args joined into one `sh -c` line,
-so pipes/globs/`&&` work. No `--` needed.
-*Used in:* `cli/commands.go:28`, `core/sandbox/sandbox.go:47` (`Driver.Run`),
-`README.md:63`.
+### recipe --worktree \<wt>
+Bind an EXISTING dabs worktree (by name from `worktrees ls`) to the recipe's `.`
+source instead of the cwd, mounting the worktree and its parent `.git` live so
+git resolves inside the box. Replaces the deleted `cast` verb. Composes with
+`--detach`.
+*Where:* `bindWorktree`, `Recipe`/`upDetached`.
 
 ### exec
-Run an EXACT argv inside an instance (no shell). The low-level exact peek.
-*Used in:* `cli/commands.go:27`, `core/sandbox/sandbox.go:49` (`Driver.Exec`).
-
-### recipe -- <cmd…>
-Run a one-off command in a throwaway box via the project **default** recipe
-(else the bundled `sh` box), appending the command to that recipe's command.
-Prompts y/N first.
-*Used in:* `cli/commands.go` (`runRecipe`), `AGENTS.md`.
-
-### recipe (verb) / recipes
-`recipe <name> [cmd…]` runs a named recipe box (no name → default). `recipes`
-lists the known recipes and what each mounts.
-*Used in:* `cli/commands.go:21,24,41-53,90-101`, `core/actions/recipe.go`.
-
-### rm
-The single reaper: stop a box AND remove its node and spaces (cascading to
-whatever stands on it). Stopping a live box or losing held data needs consent —
-`-y`/`--yes`, or an interactive y/N; without it rm previews what it would take
-and exits nonzero. `--keep` ARCHIVES instead: stop the box but keep its node as
-the record of what ran and from where. `--multiple` acts on all matches (a name
-matching several is otherwise refused; the count is shown first), `--volume`
-also reaps the volume, `--dry` previews, `--force` discards a worktree's
-unreviewed git work.
-*Used in:* `cli/commands.go`, `core/actions/rm.go`, `core/actions/instance.go`,
-`core/sandbox/sandbox.go` (`Driver.Down`).
+Run a command inside a box — the single reach-in verb. `exec <box> -- <argv>`
+runs an EXACT argv with no shell; `exec <box> <tokens…>` (no `--`) joins the
+tokens into one `sh -c` line so pipes/globs/`&&` work. Replaces the deleted `run`
+verb (that shell-line behavior is now `exec` without `--`).
+*Where:* `Exec`, `Driver.Run`.
 
 ### ls
 List what dabs owns as a node tree, grouped by fleet member; `--all` also shows
-archived nodes. An empty fleet member prints `(nothing running)` and a tree with
-no live box prints under `no box`.
-*Used in:* `cli/commands.go:30`, `core/actions/ls.go:11-13,40`,
-`core/sandbox/sandbox.go:55` (`Driver.Ls`).
+archived boxes. A place with no live box lists under its machine's heading, not a
+separate bucket. An empty fleet member prints `(nothing running)`.
+*Where:* `Ls`, `renderForest`.
+
+### rm
+The single reaper: stop a box AND remove its node and the spaces it holds,
+cascading to whatever stands on it. Losing anything needs consent (see
+**consent**); without it, `rm` previews what it would take and exits nonzero — it
+never silently tears a box down. `--keep` archives instead of removing.
+`--clean-worktrees` takes no node name: it sweeps EVERY worktree that holds no
+unreviewed work in one shot (`--force` reaps the ones that do), previewing with
+`--dry`.
+*Where:* `Rm`, `rmCleanWorktrees`, `reapSpaces`, `Driver.Down`.
+
+### worktrees
+Inspect the worktree nodes recipes provision: `worktrees ls` lists them (STATE in
+the three-value vocabulary, DETAIL carrying branch/recipe/box-liveness) and
+`worktrees diff <name>` shows a review diff that surfaces untracked files. There
+are only these two subcommands — reaping is `dabs rm <name>` or
+`dabs rm --clean-worktrees`.
+*Where:* `Worktrees`.
+
+### recipes
+List the known recipes and what each mounts; `--print` dumps the bundled recipes
+YAML (the authoring format) to copy into `~/.dabs/recipes.yaml`.
+*Where:* `Recipes`.
+
+### prune
+Reclaim built box images (they rebuild on the next build). `--dry` lists what
+exists; `--force` removes even an image a live box depends on.
+*Where:* `Prune`.
 
 ### servers
 Manage registered remote servers: `servers [ls] | add <name> [host] | rm <name>`.
-*Used in:* `cli/commands.go:31,151-182`, `core/config/config.go`.
-
-### worktrees
-Inspect/reap recipe-created git worktrees: `worktrees [ls | diff <name> |
-rm <name> | prune] [--force]`.
-*Used in:* `cli/commands.go:25,68-88`, `AGENTS.md` ("Reap the worktrees").
+*Where:* `ServersList`/`ServersAdd`/`ServersRemove`, `config`.
 
 ---
 
@@ -128,209 +179,245 @@ rm <name> | prune] [--force]`.
 
 ### recipe
 A fully declarative description of a box: image, workdir, command, env, sources,
-target, keep. The unit `recipe`/`cast`/`build` all resolve. Resolution
-order: bundled (`sh`) → `~/.dabs/recipes.yaml` (global) → `./dabs.yaml` (project),
-later winning.
-*Used in:* `core/recipe/recipe.go:28-40` (`Recipe`), `AGENTS.md`, `dabs.yaml`.
+target, keep. Resolution order: bundled (`sh`) → `~/.dabs/recipes.yaml` (global)
+→ `./dabs.yaml` (project), later winning.
+*Where:* `recipe.Recipe`, `loadRegistry`.
 
 ### registry / default
-A recipes file: a top-level `recipes:` map plus an optional `default:` naming
-the recipe `dabs recipe` runs when given no name.
-*Used in:* `core/recipe/recipe.go:22-26` (`Registry`), `AGENTS.md`.
+A recipes file: a top-level `recipes:` map plus an optional `default:` naming the
+recipe `dabs recipe` runs when given no name.
+*Where:* `recipe.Registry`.
 
 ### image
-The frozen box template a driver builds and boots from. Referenced by a bare
-NAME (reuse `~/.dabs/images/<name>`, build from a bundled recipe if missing) or
-an inline `{dockerfile, context}` build recipe.
-*Used in:* `core/recipe/recipe.go:31,42-47` (`ImageRef`),
-`core/sandbox/sandbox.go:29` (`BuildSpec`).
+The frozen box template a driver builds and boots from. Referenced by a bare NAME
+(reuse `~/.dabs/images/<name>`, build from a bundled recipe if missing) or an
+inline `{dockerfile, context}` build recipe.
+*Where:* `recipe.ImageRef`, `Driver.Build`.
 
 ### command
-What runs inside the box. A recipe's `command` must NOT bake in agent
-instructions (that is the caller's / a skill's job).
-*Used in:* `core/recipe/recipe.go:34`, `AGENTS.md` ("Recipes provision; skills
-prompt").
+What runs inside the box. A recipe's `command` must not bake in agent
+instructions — that is the caller's or a skill's job.
+*Where:* `recipe.Recipe.Command`.
+
+### description
+A recipe's one-line human summary, shown in `dabs recipes`.
+*Where:* `recipe.Recipe.Description`.
 
 ### keep
 Recipe flag: keep the box alive after the command finishes (default: delete it).
-*Used in:* `core/recipe/recipe.go:38`, `core/actions/recipe.go:123,139`.
+A kept box is yours to reap with `dabs rm`.
+*Where:* `recipe.Recipe.Keep`.
 
-### target
-Which fleet driver runs a recipe/box — `""` = local, or a server / driver-kind
-name. Servers are one kind of target; future driver kinds (modal, daytona) will
-be targets without being servers.
-*Used in:* `core/recipe/recipe.go:37`, `core/actions/real.go:15,37`,
-`core/config/config.go:15-16`, `dabs.yaml` (`target:`).
+### target / server / driver / fleet
+**target** is which fleet member runs a box — `""` (local) or a named
+server/driver kind. A **server** is one kind of target: a remote machine with
+dabs installed, reached over ssh. A **driver** is one sandboxing mechanism behind
+the `sandbox.Driver` contract (`apple`, `bwrap`, `docker`, `ssh`), plus the
+reserved `INTERNAL-docker-privileged-for-nested-sandboxing` kind used only when a
+box must itself run a nested sandbox. The **fleet** is the whole set of drivers
+dabs dispatches across; the local driver always exists, and instance names
+resolve across the whole fleet.
+*Where:* `recipe.Recipe.Target`, `driverFor`, `Driver.Kind`, `Real.drivers`.
 
 ### workdir / env
 The cwd (`/work` default) and environment variables inside the box.
-*Used in:* `core/recipe/recipe.go:32,35`, `core/sandbox/sandbox.go:27-28`,
-`README.md:97-98`.
+*Where:* `recipe.Recipe.Workdir`/`Env`, `sandbox.Spec`.
+
+### at
+Where a provisioning source (a `worktree:` or `copy:`) puts its bytes in the NEW
+node's own spaces — e.g. `$NODE_HELD/worktree`. It lets the recipe say where the
+checkout lands and what `rm` will do to it, rather than dabs deciding in secret.
+Unset, it defaults to the node's held space.
+*Where:* `recipe.Source.At`, `placeAt`.
 
 ---
 
 ## Source kinds
 
-A recipe's `sources:` list places things into the box at a `path`. Exactly one
-of the four kinds names each source's origin and picks HOW it lands.
-*All defined in:* `core/recipe/recipe.go:67-121`, `core/actions/recipe.go`.
+A recipe's `sources:` list places things into the box at a `path`. Exactly one of
+the four kinds names each source's origin and picks HOW it lands.
+*All defined in:* `recipe.Source`, `buildBox`.
 
 ### mount
-A live bind — the box's writes hit the host and persist past the box (a shared
-login dir, the cwd). The host path must exist: a missing one is a typo, and dabs
-refuses it. `ro: true` makes it read-only.
-*Used in:* `core/recipe/recipe.go:69-72,87`, `core/sandbox/sandbox.go:14-21`
-(`Mount`).
+A live bind — the box's writes hit the host and persist past the box. The host
+path must exist: a missing one is a typo, and dabs refuses it. `ro: true` makes
+it read-only.
 
 ### mkmount
 A live bind that CREATES its host origin (0700) if it is not there. Say it where
 you mean "provision this": a login dir a harness will fill, a session dir that
 starts empty.
-*Used in:* `core/recipe/recipe.go:72-74,88`, `core/actions/recipe.go` (`buildBox`).
 
 ### worktree
-A fresh git branch off HEAD of the named repo, mounted live — how an agent gets
-an isolated, reconcilable checkout. The checkout lives in its own worktree node's
-ephemeral space. Reaped via `dabs worktrees`.
-*Used in:* `core/recipe/recipe.go:75,89`, `AGENTS.md`.
+A fresh git branch off HEAD of the named repo, cut into its own worktree node's
+held space and mounted live — how an agent gets an isolated, reconcilable
+checkout. Inspect with `dabs worktrees`; reap with `dabs rm`.
 
 ### copy
 A snapshot taken at box-start time — the box owns it, the host is untouched.
-*Used in:* `core/recipe/recipe.go:76,90`.
 
 ---
 
 ## Nodes and spaces
 
-### node
-A marker for one place dabs provisioned, recorded at `~/.dabs/nodes/<id>/`. It
-carries a `kind`, a `parent`, and the recipe that made it — so listing, reaping
-and casting read what dabs wrote rather than sniffing the filesystem.
-*Used in:* `core/actions/node.go:20-73`.
-
-### kind (of node)
-What a node marks: **project** (the directory a command ran from — dabs records
-it and never reaps it), **workdir** (a host directory a recipe mounted or copied
-as `.`), **worktree** (a git worktree dabs cut), **box** (one running sandbox).
-The chain is constrained to `project → (workdir | worktree)? → box`: boxes never
-nest, a worktree is never cut inside a box.
-*Used in:* `core/actions/node.go:52-65` (`NodeKind`).
-
 ### space
 One of the three directories every node offers. Which one a recipe mounts
 declares what happens to the bytes — convention, not configuration: `rm` reads
-the space, not the recipe.
+the space, not the recipe. Each answers one question:
 
-| space | `rm` |
-|---|---|
-| `volume/` | keeps it (unless `--volume`) |
-| `ephemeral/` | asks before deleting a non-empty one |
-| `tmp/` | removes it silently |
+| space | the question | on `rm` |
+|---|---|---|
+| `volume/` | *does this outlive the box?* | kept; deleting it always takes its own `--volume`, never bundled into `-y` |
+| `held/` | *does something outside this box point at it?* | asks before deleting a non-empty one — deleting it breaks someone else |
+| `tmp/` | *does anybody but the box care?* | removed silently |
 
-*Used in:* `core/actions/node.go`, `core/actions/rm.go` (`reapSpaces`).
+**held** leads with the pointer, not the consequence: a git worktree record,
+review tooling, or dabs's own workflows point INTO a held space, so removing it
+breaks something outside the box — which is *why* `rm` asks first. A worktree's
+checkout lives here.
 
-### $NODE_VOLUME / $NODE_EPHEMERAL / $NODE_TMP
+**tmp** carries a promise: dabs never READS tmp's contents to decide anything.
+`ls` may draw a display-only ⚠ on a tmp that holds files, but no reap, guard, or
+consent ever branches on what is in tmp — it is the box's scratch and nobody
+else's business.
+*Where:* `SpaceVolume`/`SpaceHeld`/`SpaceTmp`, `reapSpaces`, `heldCell`.
+
+### $NODE_VOLUME / $NODE_HELD / $NODE_TMP
 The box node's three spaces, supplied by dabs to source paths so a recipe can
-name them without knowing an id. They are substituted in source paths ONLY — not
-exported into the box's environment.
-*Used in:* `core/actions/recipe.go` (`mintBoxNode`, `expandPathWith`),
-`core/recipe/recipe.go:79-85`.
+name them without knowing an id. Substituted in source paths ONLY — never
+exported into the box's environment. **`$NODE_EPHEMERAL` is a permanent alias for
+`$NODE_HELD`** (the held space's former name), so a recipe written before the
+rename keeps provisioning into the same held space and is never broken.
+*Where:* `spaceVars`, `mintBoxNode`, `expandPathWith`.
 
-### $PARENT_VOLUME / $PARENT_EPHEMERAL / $PARENT_TMP
-The same three spaces of the box's PARENT place (the project/workdir/worktree the
-box stands on) rather than the box's own node. A fresh box mints a new box node
-with an empty `$NODE_VOLUME`, but the parent place persists — so `$PARENT_VOLUME`
-is where a box keeps what it wants back on the next box (the shipped `claude`
-recipe stores sessions there so they reload). Substituted in source paths ONLY.
-*Used in:* `core/actions/recipe.go` (`spaceVars`, `expandPathWith`), `dabs.yaml`
-(`claude`/`claudewt`/`scratch` recipes).
-
----
-
-## Drivers, fleet, servers
-
-### driver
-One sandboxing system implementing the `sandbox.Driver` contract (Apple
-`container`, bwrap, ssh/server). Drivers are MECHANICAL: they take EXACT names
-and expose state; all policy (name resolution, force/dry, aggregation) lives in
-`core/actions`.
-*Used in:* `core/sandbox/sandbox.go:1-12,33-57`, `core/sandbox/<kind>/`,
-`README.md:108-110`.
-
-### kind
-A driver's identity string ("apple", "bwrap", "ssh", …), stamped on `Info.Driver`
-and reachable without any instances.
-*Used in:* `core/sandbox/sandbox.go:57` (`Driver.Kind`), `core/actions/ls.go:13`.
-
-### fleet
-The set of drivers dabs dispatches across — the local driver always exists, plus
-any configured remote targets. Instance names resolve across the whole fleet;
-`ls` aggregates over it.
-*Used in:* `core/actions/real.go:13-18`, `core/config/config.go:30-32`,
-`README.md:89`.
-
-### server
-A registered remote machine that has dabs installed, reached over ssh with
-pubkey auth. One *kind* of target. Managed via `dabs servers`.
-*Used in:* `core/config/config.go:15-16`, `cli/commands.go:31,151-182`,
-`README.md:75-76`.
+### $PARENT_VOLUME / $PARENT_HELD / $PARENT_TMP
+The same three spaces of the box's PARENT place rather than the box's own node. A
+fresh box mints a new box node with an empty `$NODE_VOLUME`, but the parent place
+persists — so `$PARENT_VOLUME` is where a box keeps what it wants back on the next
+box (the shipped `claude` recipe stores sessions there so they reload).
+`$PARENT_EPHEMERAL` aliases `$PARENT_HELD` just as `$NODE_EPHEMERAL` does.
+*Where:* `spaceVars`, `expandPathWith`, `dabs.yaml`.
 
 ---
 
-## Inconsistencies to resolve
+## Reading `dabs ls`
 
-The core problem: **one object — the disposable environment — has four names**,
-and the CLI's own help strings disagree on which to use at each lifecycle stage.
-A dumb-user usability run (naive Haiku agents driving dabs) confirmed the
-confusion is concentrated at **boot / image / naming time**, not at reach-in or
-teardown.
+### the columns
+`ls` draws NODE · KIND · VOL · HELD · TMP · STATE · WHERE. VOL/HELD/TMP are the
+three space cells; STATE is the box or worktree state; WHERE is where the bytes
+live on disk (for a box, its driver instance in parentheses beside its node dir).
+*Where:* `lsColumns`, `columnTitle`, `renderForest`.
 
-### 1. The box / instance / sandbox / environment cluster (the main one)
+### the space legend (✓ / ⚠)
+Under any tree with a space column: **✓** the space is present and holds nothing
+(safe to reap); **⚠** the space holds files a reap would lose. On `tmp`, the ⚠ is
+display-only (see the tmp promise).
+*Where:* `Cell.Symbol`, `styleCell`, the `hasSpaceColumn` legend.
 
-The verb that MAKES the thing, the verb that LISTS it, and the verb that KILLS it
-each name it differently — inside a single `dabs --help` listing:
+### `no place` (heading)
+Where an archived box whose place record is gone lists — its place is gone, so it
+has nowhere to nest and lists flat. (Not to be confused with a worktree's
+DETAIL cell reading `no box`, which means "no live box on this worktree".)
+*Where:* the `no place` heading in `Ls`.
 
-| Stage | Command | Noun used | Evidence |
-|-------|---------|-----------|----------|
-| make  | `recipe --detach` | **box** | `cli/commands.go` "boots a NEW detached box" |
-| build image | `build` | **box image** / **sandbox** | `cli/commands.go:19` "build a recipe's box image"; `core/sandbox` calls it a sandbox image |
-| list  | `ls`    | **sandboxes** | `cli/commands.go:30` "list sandboxes" |
-| list (empty output) | `ls` | **instances** | `core/actions/ls.go:40` prints "(no instances)" |
-| reach in | `exec` | **instance** | `cli/commands.go` "run a command inside a box" |
-| kill  | `rm`    | **nodes** | `cli/commands.go` "stop a box and remove its node" |
+### `boxes with no node` (heading)
+Where a box a driver holds but no node claims lists — booted by an older dabs or
+by hand. Still yours, so still shown and still reapable by its instance name.
+*Where:* the `boxes with no node` heading in `Ls`.
 
-So `dabs ls` is *itself* internally inconsistent: its help says "sandboxes" but
-its empty-state output says "(no instances)".
+### the worktree states
+A worktree's STATE — the same three values in `dabs ls` and `dabs worktrees ls`:
+**no-diff** (clean), **has work** (uncommitted or untracked changes, nothing
+ahead), **unmerged** (commits ahead of the base branch). Only commits ahead read
+as unmerged; local-only work reads as work.
+*Where:* `worktreeState`, `Worktrees`.
 
-*Recommended canonical noun (proposal for review, not decided):* **box** as the
-user-facing noun everywhere in help text and command output — `AGENTS.md` and
-`README.md` already lead with it, and the dumb-user run showed users think in
-"boxes". Keep **instance** only where identity/naming matters (`<name>-<hex>`,
-i.e. "a box's instance name"), and confine **sandbox** to the driver/contract
-layer (`core/sandbox`, `sandbox.Driver`, `Spec`) where it names the abstraction,
-not the user's object. Retire **environment** as a loose synonym. Concretely, the
-minimal help-string fixes would be: `ls` help → "list boxes"; `ls` empty output →
-"(no boxes)"; `exec`/`rm` help → "box" (retaining "instance name" where a
-specific id is meant).
+### unreviewed work
+The uncommitted changes or unpushed commits a worktree holds that no space rule
+can see. `rm` refuses to discard it without `--force`; `ls` flags a section
+holding it. Review it with `dabs worktrees diff <name>`.
+*Where:* `guardWorktreeWork`, `worktreeWork`.
 
-### 2. `ps` vs `ls` — the discovery gap
+---
 
-Naive users reached for `dabs ps` (the muscle-memory verb, cf. `docker ps`)
-before discovering `dabs ls`. `ps` is an accepted alias for `ls` (see the alias
-map in `cli/cli.go`), so the muscle-memory verb works; it is just absent from
-`dabs --help`. `ls` is defined at `cli/commands.go:30`.
+## Consent
 
-### 3. "box image" vs "sandbox image"
+Four flags guard four different risks; they are never collapsed into one:
 
-`build`'s help says "box image" (`cli/commands.go:19`) while the contract layer
-speaks of the "sandbox" image and "sandbox identity" (`core/sandbox/sandbox.go:24,29`).
-Same artifact, two names — folds into the resolution of cluster #1 (drivers keep
-"sandbox", user-facing help says "box").
+| flag | consents to |
+|---|---|
+| `-y` / `--yes` | stop a live box, and reap a held space that holds files |
+| `--volume` | additionally delete the volume — what a place keeps on purpose |
+| `--force` | discard a worktree's unreviewed git work |
+| `--multiple` | act on more than one node a prefix matched |
 
-### What tested WELL (leave alone)
+`--multiple` is not `--all`: `--multiple` authorizes acting on the several nodes
+ONE name matched, while `--clean-worktrees` (the sweep) acts on every worktree.
+Without the matching flag, the losing action is refused and previewed first.
+*Where:* `Rm`, `reapSpaces`, `guardWorktreeWork`, `rmMatches`.
 
-The reach-in and teardown vocabulary was used confidently and correctly by naive
-users: `dabs exec <instance>` and `dabs rm <instance>`. The source kinds
-(`mount`/`mkmount`/`worktree`/`copy`), `recipe`, and `cast` did not
-surface as points of confusion. The confusion is specifically the lifecycle
-noun, and specifically at boot/list/image time.
+---
+
+## Other terms
+
+### reap / keep / kept
+To **reap** is to remove a node and the spaces it holds. **`--keep`** archives
+instead (stop the box, keep the record). A space `rm` declines to reap (a held
+space without `-y`, a volume without `--volume`) is reported **kept**, with its
+path, so nothing is lost silently.
+*Where:* `Rm`, `reapSpaces`, `archive`.
+
+### boxless recipe
+A recipe with no image: it provisions its places (a worktree, a copied directory)
+and stops. There is no box to mount, so `--detach` and a plain `recipe` reach the
+same outcome.
+*Where:* `provisionNodes`.
+
+### DABS_NAME
+An environment variable dabs sets inside every box to the box's instance name, so
+a program can detect it is running inside a dabs box.
+*Where:* each driver's `Up`.
+
+### --help-full-for-agents
+A flag that prints the full agent-facing guide (recipes, examples) instead of the
+short usage — the entry point an agent reads before driving dabs.
+*Where:* `cli`.
+
+### CLI aliases
+Names people actually type resolve to the canonical verb: `ps`/`list` → `ls`,
+`remove`/`delete` → `rm`, `worktree` → `worktrees`.
+*Where:* the alias map in `cli`.
+
+---
+
+## Resolved history
+
+This file once tracked an unresolved terminology tangle; the decisions below are
+now canon. The record is kept so a reader who learned an older name lands here.
+
+### the box / instance / sandbox cluster
+One object — the disposable environment — had drifted across four names. Resolved:
+**box** is the user-facing noun everywhere in help and output; **instance** is
+kept only where the driver's `<name>-<hex>` identity matters; **sandbox** is
+confined to the driver/contract layer (`core/sandbox`), where it names the
+abstraction, not the user's object; **environment** is retired as a loose synonym.
+
+### node = the record, not the box
+A box is what the user runs; the **node** is the record dabs keeps of it (and of
+every place). `rm`'s help speaks of removing a box's node because the node is what
+persists — most of all for an archived box, where the record is all that is left.
+
+### the ephemeral → held rename
+The space once named **ephemeral** is now **held**, because the word that matters
+is *why* dabs hesitates to delete it: something outside the box points at it.
+Existing nodes keep their `ephemeral/` dirs (read via a legacy fallback) and
+`$NODE_EPHEMERAL`/`$PARENT_EPHEMERAL` stay as permanent aliases, so no user's
+data or recipe breaks. Separately, the view-model concept "a space holds bytes"
+is called **holds** (`CellHolds`, the ⚠ "holds files") so it never reads as the
+held space.
+
+### deleted verbs
+**cast** became `recipe --worktree` (bind an existing worktree). **run** became
+`exec` without `--` (the shell-line form); `Driver.Run` survives at the contract
+layer as the mechanism `exec` calls. The old lifecycle verbs `up`/`down` are
+gone: booting is `recipe --detach`, reaping is `rm`.

@@ -97,9 +97,12 @@ func (r *ImageRef) UnmarshalYAML(unmarshal func(interface{}) error) error {
 // Host paths may use ~ and $VAR/${VAR}. dabs supplies the running box's node
 // spaces as variables, so a source can point at them without knowing an id:
 //
-//	$NODE_VOLUME     survives `down`      — sessions, caches
-//	$NODE_EPHEMERAL  `down` asks first    — work you would miss
-//	$NODE_TMP        `down` reaps quietly — scratch
+//	$NODE_VOLUME  survives rm (unless --volume) — sessions, caches
+//	$NODE_HELD    rm asks first               — work you would miss
+//	$NODE_TMP     rm reaps quietly            — scratch
+//
+// $NODE_EPHEMERAL is a permanent alias for $NODE_HELD (the held space's former
+// name), so a recipe written before the rename keeps working unchanged.
 //
 // A mkmount into $NODE_VOLUME nested over a shared mount gives the box its own
 // persistent slice of an otherwise shared tree.
@@ -110,8 +113,8 @@ type Source struct {
 	Copy     string `json:"copy,omitempty" yaml:"copy,omitempty"`
 	// At is where a source that PROVISIONS something puts it on the host — a
 	// worktree's checkout, a copy's directory. It names one of the new node's own
-	// spaces ($NODE_EPHEMERAL/worktree), so the recipe says where the bytes land
-	// and what `down` will do to them, rather than dabs knowing in secret.
+	// spaces ($NODE_HELD/worktree), so the recipe says where the bytes land
+	// and what `rm` will do to them, rather than dabs knowing in secret.
 	At   string `json:"at,omitempty" yaml:"at,omitempty"`
 	Path string `json:"path" yaml:"path"`                 // absolute destination inside the box
 	RO   bool   `json:"ro,omitempty" yaml:"ro,omitempty"` // for mount: read-only

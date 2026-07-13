@@ -32,7 +32,7 @@ type Node struct {
 	// Dir is the place this node marks. For a project it is the cwd the command
 	// ran from; for a workdir the host directory `.` resolved to. Empty for a box
 	// (a box marks a sandbox, not a directory) and for a worktree (dabs made its
-	// checkout, which lives in the node's own ephemeral space).
+	// checkout, which lives in the node's own held space).
 	Dir string `json:"dir,omitempty"`
 	// Instance is the driver's name for a box node's sandbox. A node id is minted
 	// before the box is up (its spaces must exist to be mounted), so the two names
@@ -57,7 +57,7 @@ const (
 	// KindWorkdir marks a host directory a recipe mounted or copied as `.`.
 	KindWorkdir NodeKind = "workdir"
 	// KindWorktree marks a git worktree dabs cut. Its checkout lives in the
-	// node's ephemeral space, so dabs owns it and may reap it.
+	// node's held space, so dabs owns it and may reap it.
 	KindWorktree NodeKind = "worktree"
 	// KindBox marks a running sandbox, one per driver instance.
 	KindBox NodeKind = "box"
@@ -78,7 +78,7 @@ type NodeWorktree struct {
 // and the things it owns always share one id.
 //
 // Readable and prefix-matchable is the point: `dabs worktrees`, `recipe --worktree <name>`
-// and `down <name>` all resolve on a unique prefix, git-style.
+// and `rm <name>` all resolve on a unique prefix, git-style.
 func mintNodeID(prefix string) (id, short string) {
 	short = randHex(4)
 	return prefix + "-" + short, short
@@ -103,18 +103,24 @@ func (r Real) resolveNodeDir(id string) (string, error) {
 }
 
 // A node offers three directories, and which one a recipe mounts declares what
-// it expects to happen to the bytes. Convention, not configuration: `down` reads
+// it expects to happen to the bytes. Convention, not configuration: `rm` reads
 // the space, not the recipe.
 const (
-	// SpaceVolume survives `down` — on a PLACE, which every later box re-enters.
-	// Sessions, caches, anything wanted next time. A box's own volume is reaped
-	// with it: a box node is never re-entered, so nothing in it could be found
-	// again.
+	// SpaceVolume survives an `rm` unless --volume names it — on a PLACE, which
+	// every later box re-enters. Sessions, caches, anything wanted next time. A
+	// box's own volume follows the same rule (it is kept without --volume), but a
+	// box is never re-entered, so nothing put there is found again.
 	SpaceVolume = "volume"
-	// SpaceEphemeral is dabs's to reap, but not silently: `down` asks before
-	// removing a non-empty one. A worktree's checkout lives here.
-	SpaceEphemeral = "ephemeral"
-	// SpaceTmp is scratch. `down` removes it without asking.
+	// SpaceHeld is dabs's to reap, but not silently: something outside the box
+	// points at it (a worktree's checkout lives here, review tooling reads it), so
+	// `rm` asks before removing a non-empty one — deleting it breaks someone else.
+	SpaceHeld = "held"
+	// SpaceHeldLegacy is the on-disk name held spaces had before the rename. New
+	// nodes create held/; a node written by an older dabs keeps its ephemeral/
+	// dir, and resolveNodeData falls back to it so it still lists, diffs and binds.
+	SpaceHeldLegacy = "ephemeral"
+	// SpaceTmp is scratch. `rm` removes it without asking and never reads it to
+	// decide anything.
 	SpaceTmp = "tmp"
 )
 
@@ -128,18 +134,26 @@ func (r Real) resolveNodeSpace(id, space string) (string, error) {
 }
 
 // resolveNodeData returns the directory a node's `.` resolves to: a worktree's
-// checkout, which dabs cut into the node's ephemeral space.
+// checkout, which dabs cut into the node's held space.
 //
-// Nodes written before the space layout keep their checkout in `data/`. Both are
-// read, so a worktree made by an older dabs still lists, diffs and binds.
+// Two legacy layouts are still read, so a worktree made by an older dabs keeps
+// working: a node whose held space is named ephemeral/ (the space's former name),
+// and a node written before the space layout that keeps its checkout in `data/`.
+// A new node's checkout is held/worktree; that is what is returned when nothing
+// legacy is present.
 func (r Real) resolveNodeData(id string) (string, error) {
-	eph, err := r.resolveNodeSpace(id, SpaceEphemeral)
+	held, err := r.resolveNodeSpace(id, SpaceHeld)
 	if err != nil {
 		return "", err
 	}
-	wt := filepath.Join(eph, "worktree")
+	wt := filepath.Join(held, "worktree")
 	if _, err := r.data.Stat(wt); err == nil {
 		return wt, nil
+	}
+	if legacy, err := r.resolveNodeSpace(id, SpaceHeldLegacy); err == nil {
+		if lwt := filepath.Join(legacy, "worktree"); r.dataExists(lwt) {
+			return lwt, nil
+		}
 	}
 	dir, err := r.resolveNodeDir(id)
 	if err != nil {
@@ -149,6 +163,28 @@ func (r Real) resolveNodeData(id string) (string, error) {
 		return legacy, nil
 	}
 	return wt, nil
+}
+
+// resolveHeldSpace returns a node's held space directory, preferring the current
+// held/ name but falling back to a legacy ephemeral/ dir an older dabs wrote —
+// so the held-space guards (the ls ⚠, the rm consent) still see a legacy node's
+// files. When neither is present it returns held/, the name a new node uses.
+func (r Real) resolveHeldSpace(id string) (string, error) {
+	held, err := r.resolveNodeSpace(id, SpaceHeld)
+	if err != nil {
+		return "", err
+	}
+	if r.dataExists(held) {
+		return held, nil
+	}
+	legacy, err := r.resolveNodeSpace(id, SpaceHeldLegacy)
+	if err != nil {
+		return "", err
+	}
+	if r.dataExists(legacy) {
+		return legacy, nil
+	}
+	return held, nil
 }
 
 // dataExists reports whether a path is present, treating any error as absent.

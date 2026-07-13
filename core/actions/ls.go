@@ -89,9 +89,21 @@ func (r Real) Ls(p params.Ls) error {
 	for _, n := range nodes {
 		byID[n.ID] = n
 	}
-	live := map[string][]Node{} // driver key -> the nodes in its chains
-	var placed = map[string]bool{}
-	livePlaced := map[string]bool{} // node id -> shown under some driver heading
+	sections := map[string][]Node{}  // driver key -> the nodes under its heading
+	placed := map[string]bool{}      // section+id, so one section never repeats a node
+	shown := map[string]bool{}       // node id -> shown under some heading
+	sectionOf := map[string]string{} // node id -> the first heading showing it
+	add := func(key string, n Node) {
+		if placed[key+"\x00"+n.ID] {
+			return
+		}
+		placed[key+"\x00"+n.ID] = true
+		sections[key] = append(sections[key], n)
+		shown[n.ID] = true
+		if _, ok := sectionOf[n.ID]; !ok {
+			sectionOf[n.ID] = key
+		}
+	}
 	for _, n := range nodes {
 		if n.Kind != KindBox {
 			continue
@@ -101,58 +113,66 @@ func (r Real) Ls(p params.Ls) error {
 			continue
 		}
 		for _, a := range chainOf(n, byID) {
-			livePlaced[a.ID] = true
-			if !placed[st.where+"\x00"+a.ID] {
-				placed[st.where+"\x00"+a.ID] = true
-				live[st.where] = append(live[st.where], a)
+			add(st.where, a)
+		}
+	}
+
+	// A place with nothing running on it is still ON this machine — its path is
+	// real here — so it belongs under the machine's own heading, chain and all,
+	// not an error-looking bucket. A worktree there may hold an agent's
+	// afternoon; a volume, what a box left behind.
+	for _, n := range nodes {
+		if n.Kind == KindBox || shown[n.ID] {
+			continue
+		}
+		for _, a := range chainOf(n, byID) {
+			if a.Kind != KindBox && !shown[a.ID] {
+				add("local", a)
 			}
 		}
 	}
 
-	// Local drivers only earn a heading when something is running on them. A
+	// An archived box is one tree with its place: whenever its parent is shown
+	// under some heading, the box nests there — the same shape `rm` previews —
+	// instead of floating as a parentless row.
+	var orphans []Node // archived boxes whose parent is not shown at all
+	for _, n := range nodes {
+		if n.Kind != KindBox {
+			continue
+		}
+		if _, up := state[n.Instance]; up {
+			continue
+		}
+		if key, ok := sectionOf[n.Parent]; ok {
+			add(key, n)
+		} else {
+			orphans = append(orphans, n)
+		}
+	}
+
+	// Local drivers only earn a heading when something stands on this machine. A
 	// server always gets one — knowing a server is there and empty is the point.
 	for _, key := range r.order {
-		if len(live[key]) == 0 && !isServer(kinds[key]) {
+		if len(sections[key]) == 0 && !isServer(kinds[key]) {
 			continue
 		}
-		fmt.Fprintln(os.Stdout, tui.Heading(header(key, kinds[key])))
-		if len(live[key]) == 0 {
-			fmt.Fprintln(os.Stdout, tui.Indent(tui.Muted("(nothing running)"), 2))
-			continue
-		}
-		fmt.Fprint(os.Stdout, renderForest(r.viewNodes(live[key], state), lsColumns, 2))
-	}
-
-	// Everything dabs marked that is not running anywhere: the places, and the
-	// boxes that are gone. Still yours — a worktree holds work, a volume holds
-	// what a box left behind.
-	var idle []Node
-	seen := map[string]bool{}
-	for _, n := range nodes {
-		if anyLiveInChain(n, nodes, byID, state) {
-			continue // already shown under the driver running it
-		}
-		// Carry the chain, so an idle box still hangs off the place it ran in
-		// rather than floating as a root of its own — but an ancestor already
-		// shown under a driver heading (a chain with both a live and a gone box)
-		// is not repeated here.
-		for _, a := range chainOf(n, byID) {
-			if livePlaced[a.ID] {
-				continue
-			}
-			if !seen[a.ID] {
-				seen[a.ID] = true
-				idle = append(idle, a)
-			}
-		}
-	}
-	if len(idle) > 0 {
-		head := "no box"
-		if anyWork(idle, work) {
+		head := header(key, kinds[key])
+		if anyWork(sections[key], work) {
 			head += tui.Muted("   * has work you have not reviewed — dabs worktrees diff <name>")
 		}
 		fmt.Fprintln(os.Stdout, tui.Heading(head))
-		fmt.Fprint(os.Stdout, renderForest(r.viewNodes(idle, state), lsColumns, 2))
+		if len(sections[key]) == 0 {
+			fmt.Fprintln(os.Stdout, tui.Indent(tui.Muted("(nothing running)"), 2))
+			continue
+		}
+		fmt.Fprint(os.Stdout, renderForest(r.viewNodes(sections[key], state), lsColumns, 2))
+	}
+
+	// Archived boxes with no living parent context — their place is gone from
+	// the records — have nowhere to nest, so they list flat under `no box`.
+	if len(orphans) > 0 {
+		fmt.Fprintln(os.Stdout, tui.Heading("no box"))
+		fmt.Fprint(os.Stdout, renderForest(r.viewNodes(orphans, state), lsColumns, 2))
 	}
 
 	// A box a driver holds that no node claims — booted by an older dabs, or by
@@ -279,6 +299,24 @@ func anyWork(nodes []Node, work map[string]bool) bool {
 // A box booted through a recipe `target:` lives on another driver, so where it is
 // is part of what it is.
 type boxState struct{ status, where string }
+
+// boxStates asks every driver in the fleet which boxes it holds — the same
+// query `ls` runs — keyed by instance name. Any view built from it agrees with
+// `ls` about which boxes are live; a driver that errors contributes nothing,
+// so its boxes read as gone rather than failing the caller.
+func (r Real) boxStates() map[string]boxState {
+	state := map[string]boxState{}
+	for _, key := range r.order {
+		infos, err := lsTimeout(r.drivers[key], remoteTimeout)
+		if err != nil {
+			continue
+		}
+		for _, in := range infos {
+			state[in.Name] = boxState{status: in.Status, where: key}
+		}
+	}
+	return state
+}
 
 // lsColumns are the columns `ls` draws for every node: the tree, its kind, the
 // three space cells, its live/gone or merged/unmerged state, and where it is.

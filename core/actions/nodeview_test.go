@@ -160,26 +160,32 @@ func TestViewNodesSpaceCells(t *testing.T) {
 	}
 }
 
-// A worktree's State is its local git state: dirty or ahead is unmerged work,
-// clean is merged.
+// A worktree's State is its local git state, in `worktrees`'s vocabulary:
+// commits ahead are unmerged; dirty-only (uncommitted/untracked, nothing
+// ahead) is work in progress, not an unmerged branch; clean is merged.
 func TestViewNodesWorktreeState(t *testing.T) {
 	dirtyWT := vBase + "wt-dirty/ephemeral/worktree"
 	cleanWT := vBase + "wt-clean/ephemeral/worktree"
+	aheadWT := vBase + "wt-ahead/ephemeral/worktree"
 	fd := &vFakeData{
-		statOK: map[string]bool{dirtyWT: true, cleanWT: true},
-		git:    map[string]vGit{dirtyWT: {dirty: true}},
+		statOK: map[string]bool{dirtyWT: true, cleanWT: true, aheadWT: true},
+		git:    map[string]vGit{dirtyWT: {dirty: true}, aheadWT: {ahead: 1}},
 	}
 	nodes := []Node{
 		{ID: "wt-dirty", Kind: KindWorktree, Worktree: &NodeWorktree{Branch: "dabs/d"}, Created: "1"},
 		{ID: "wt-clean", Kind: KindWorktree, Worktree: &NodeWorktree{Branch: "dabs/c"}, Created: "2"},
+		{ID: "wt-ahead", Kind: KindWorktree, Worktree: &NodeWorktree{Branch: "dabs/a"}, Created: "3"},
 	}
 	roots := newViewReal(fd).viewNodes(nodes, nil)
 	byID := map[string]*NodeView{}
 	for _, v := range roots {
 		byID[v.ID] = v
 	}
-	if byID["wt-dirty"].State != CellUnmerged {
-		t.Errorf("dirty worktree State = %v, want CellUnmerged", byID["wt-dirty"].State)
+	if byID["wt-dirty"].State != CellHasWork {
+		t.Errorf("dirty worktree State = %v, want CellHasWork", byID["wt-dirty"].State)
+	}
+	if byID["wt-ahead"].State != CellUnmerged {
+		t.Errorf("ahead worktree State = %v, want CellUnmerged", byID["wt-ahead"].State)
 	}
 	if byID["wt-clean"].State != CellNoDiff {
 		t.Errorf("clean worktree State = %v, want CellNoDiff", byID["wt-clean"].State)

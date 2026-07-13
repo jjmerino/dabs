@@ -348,11 +348,11 @@ recipes:
 	// the instance is kept on its own line, and the hint lines use the node id.
 	nodeID := boxNodeIDFrom(t, fd)
 	for _, want := range []string{
-		"recipe up: review",
+		"recipe booted: review",
 		"id: " + nodeID,
 		"instance: img-inst",
 		"no command was run",
-		"bring down: dabs rm " + nodeID,
+		"reap: dabs rm " + nodeID,
 		"sh in: dabs exec " + nodeID + " -- sh",
 		`run recipe command: dabs exec ` + nodeID + ` -- sh -c 'cd /work && claude -p '\''go'\'''`,
 	} {

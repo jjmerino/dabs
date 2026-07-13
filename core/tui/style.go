@@ -152,22 +152,6 @@ func Status(s string) string {
 	}
 }
 
-// WorkState colors a worktree state cell: "HAS WORK" draws the eye (accent),
-// "clean" recedes (muted).
-func WorkState(hasWork bool) string {
-	label := "clean"
-	if hasWork {
-		label = "HAS WORK"
-	}
-	if !stdoutIsTTY {
-		return label
-	}
-	if hasWork {
-		return headingStyle.Render(label)
-	}
-	return mutedStyle.Render(label)
-}
-
 // Box wraps a block in a rounded accent border — the frame around a
 // look-before-run summary.
 func Box(s string) string {

@@ -22,9 +22,9 @@ func TestLsStarsWorktreesHoldingWork(t *testing.T) {
 			`{"id":"` + id + `","kind":"worktree","worktree":{"branch":"dabs/` + id + `","repo":"/repo"}}`)
 	}
 	fd.dirs["/home/t/.dabs/nodes"] = []string{dirtyID, cleanID}
-	// Only the checkout that exists is read; both resolve to ephemeral/worktree.
-	fd.states[base+dirtyID+"/ephemeral/worktree"] = wtState{branch: "dabs/" + dirtyID, dirty: true}
-	fd.states[base+cleanID+"/ephemeral/worktree"] = wtState{branch: "dabs/" + cleanID}
+	// Only the checkout that exists is read; both resolve to held/worktree.
+	fd.states[base+dirtyID+"/held/worktree"] = wtState{branch: "dabs/" + dirtyID, dirty: true}
+	fd.states[base+cleanID+"/held/worktree"] = wtState{branch: "dabs/" + cleanID}
 
 	out := captureStdout(t, func() {
 		if err := newReal("", fd, &fakeDriver{}).Ls(params.Ls{}); err != nil {

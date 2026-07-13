@@ -23,7 +23,7 @@ type Cell int
 const (
 	CellNA       Cell = iota // "—"  not applicable to this node kind
 	CellEmpty                // "✓"  space present, holds nothing (safe to reap)
-	CellHeld                 // "⚠"  space holds files a reap would lose
+	CellHolds                // "⚠"  space holds files a reap would lose
 	CellLive                 // box:      running
 	CellGone                 // box:      archived (no live instance)
 	CellNoDiff               // worktree: no unreviewed work
@@ -37,7 +37,7 @@ func (c Cell) Symbol() string {
 	switch c {
 	case CellEmpty:
 		return "✓"
-	case CellHeld:
+	case CellHolds:
 		return "⚠"
 	case CellLive:
 		return "live"
@@ -62,8 +62,8 @@ type NodeView struct {
 	ID        string
 	Kind      NodeKind
 	Where     string // the "where": cwd (project) / on-disk folder (workdir, worktree) / instance (box)
-	Volume    Cell   // CellEmpty / CellHeld
-	Ephemeral Cell
+	Volume    Cell   // CellEmpty / CellHolds
+	Held      Cell
 	Tmp       Cell
 	State     Cell // box: live/gone · worktree: no-diff/has work/unmerged · else CellNA
 	Children  []*NodeView
@@ -115,14 +115,14 @@ func (r Real) viewNode(n Node, state map[string]boxState) *NodeView {
 		ID:        n.ID,
 		Kind:      n.Kind,
 		Volume:    r.spaceCell(n.ID, SpaceVolume),
-		Ephemeral: r.spaceCell(n.ID, SpaceEphemeral),
+		Held:      r.heldCell(n.ID),
 		Tmp:       r.spaceCell(n.ID, SpaceTmp),
 		State:     CellNA,
 	}
 	switch n.Kind {
 	case KindBox:
 		// A box marks a sandbox, but its bytes still live somewhere: the node dir
-		// under ~/.dabs/nodes/<id> holds its volume/ephemeral/tmp spaces. WHERE
+		// under ~/.dabs/nodes/<id> holds its volume/held/tmp spaces. WHERE
 		// points there (tilde-abbreviated) so a box's on-disk location is as
 		// discoverable as a place's; the driver INSTANCE name — the running box —
 		// rides alongside so users still see it and rm/exec still resolve it.
@@ -156,8 +156,8 @@ func (r Real) nodeFolder(n Node) string {
 	if data, err := r.resolveNodeData(n.ID); err == nil && r.dataExists(data) {
 		return data
 	}
-	if eph, err := r.resolveNodeSpace(n.ID, SpaceEphemeral); err == nil {
-		if work := filepath.Join(eph, "work"); r.dataExists(work) {
+	if held, err := r.resolveHeldSpace(n.ID); err == nil {
+		if work := filepath.Join(held, "work"); r.dataExists(work) {
 			return work
 		}
 	}
@@ -165,7 +165,7 @@ func (r Real) nodeFolder(n Node) string {
 }
 
 // boxNodeDir is the directory a box node's bytes live in — its own node dir,
-// which holds the volume/ephemeral/tmp spaces. It falls back to the node id when
+// which holds the volume/held/tmp spaces. It falls back to the node id when
 // the dir cannot be resolved, so a box row always says something locatable.
 func (r Real) boxNodeDir(n Node) string {
 	if dir, err := r.resolveNodeDir(n.ID); err == nil {
@@ -181,17 +181,33 @@ func (r Real) spaceCell(id, space string) Cell {
 	if err != nil {
 		return CellEmpty
 	}
-	held, err := r.spaceHolds(dir)
-	if err != nil || !held {
+	holds, err := r.spaceHolds(dir)
+	if err != nil || !holds {
 		return CellEmpty
 	}
-	return CellHeld
+	return CellHolds
 }
 
-// worktreeState reads a worktree's git state the way `worktrees` does, and
-// keeps its vocabulary: commits ahead of the base are UNMERGED; uncommitted or
-// untracked changes with nothing ahead are work in progress (HAS WORK), not an
-// unmerged branch. A git error leaves the state unknown rather than guessing.
+// heldCell reports whether a node's held space holds anything, reading the
+// current held/ dir OR a legacy ephemeral/ one an older dabs wrote — so a legacy
+// node still shows the ⚠ that guards its files.
+func (r Real) heldCell(id string) Cell {
+	dir, err := r.resolveHeldSpace(id)
+	if err != nil {
+		return CellEmpty
+	}
+	holds, err := r.spaceHolds(dir)
+	if err != nil || !holds {
+		return CellEmpty
+	}
+	return CellHolds
+}
+
+// worktreeState reads a worktree's git state into the SAME three-value
+// vocabulary `worktrees ls` prints: commits ahead of the base are UNMERGED;
+// uncommitted or untracked changes with nothing ahead are HAS WORK; a clean
+// worktree even with the base is NO-DIFF. A git error leaves the state unknown
+// rather than guessing.
 func (r Real) worktreeState(n Node) Cell {
 	path, err := r.resolveNodeData(n.ID)
 	if err != nil {
@@ -219,7 +235,7 @@ const (
 	ColNode Column = iota
 	ColKind
 	ColVol
-	ColEph
+	ColHeld
 	ColTmp
 	ColState
 	ColWhere
@@ -232,8 +248,8 @@ func columnTitle(c Column) string {
 		return "KIND"
 	case ColVol:
 		return "VOL"
-	case ColEph:
-		return "EPH"
+	case ColHeld:
+		return "HELD"
 	case ColTmp:
 		return "TMP"
 	case ColState:
@@ -310,8 +326,8 @@ func renderForest(roots []*NodeView, cols []Column, indent int) string {
 			return tui.Muted(string(r.v.Kind))
 		case ColVol:
 			return styleCell(r.v.Volume)
-		case ColEph:
-			return styleCell(r.v.Ephemeral)
+		case ColHeld:
+			return styleCell(r.v.Held)
 		case ColTmp:
 			return styleCell(r.v.Tmp)
 		case ColState:
@@ -374,7 +390,7 @@ func renderForest(roots []*NodeView, cols []Column, indent int) string {
 // explains ✓ ⚠ — is only printed when those glyphs actually appear.
 func hasSpaceColumn(cols []Column) bool {
 	for _, c := range cols {
-		if c == ColVol || c == ColEph || c == ColTmp {
+		if c == ColVol || c == ColHeld || c == ColTmp {
 			return true
 		}
 	}
@@ -385,7 +401,7 @@ func hasSpaceColumn(cols []Column) bool {
 // n/a space recedes (muted).
 func styleCell(c Cell) string {
 	switch c {
-	case CellHeld:
+	case CellHolds:
 		if w := tui.Warn(""); lipgloss.Width(w) > 0 {
 			return w // a terminal: amber warn glyph
 		}

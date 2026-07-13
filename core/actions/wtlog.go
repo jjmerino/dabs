@@ -16,8 +16,8 @@ import (
 
 // wtLogEntry is one line of ~/.dabs/worktrees/log.jsonl, the append-only journal
 // of worktree-backed box lifecycles. The log is the ONLY record of which
-// instance belongs to which worktree, so `down` and the liveness column both
-// read it back.
+// instance belongs to which worktree, so teardown (on reap) and the liveness
+// column both read it back.
 //
 // Only Event, Instance and Worktree are ever read back (for the down-lookup and
 // the liveness fold). TS, Path and Recipe are INSPECTION-ONLY: they are written
@@ -131,8 +131,8 @@ func (r Real) readWtLog() ([]wtLogEntry, error) {
 
 // liveBoxes replays the journal to the set of instances currently up, returning
 // instance → worktree name. An `up` marks an instance live; a later `down` for
-// the same instance clears it. This is the log-derived liveness both `down` and
-// the worktrees DETAIL column rely on.
+// the same instance clears it. This is the log-derived liveness both teardown
+// and the worktrees DETAIL column rely on.
 //
 // This fold IS the on-read compaction: every up/down pair collapses to nothing,
 // so however long the file grows, only currently-live instances survive the

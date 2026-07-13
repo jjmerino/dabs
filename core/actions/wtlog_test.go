@@ -76,7 +76,7 @@ func TestRecipeWorktreeLogsUp(t *testing.T) {
 	if e.Worktree == "worktree" {
 		t.Fatalf("journal keyed on the checkout dir instead of the node id: %+v", e)
 	}
-	if want := nodeBase + "/" + e.Worktree + "/ephemeral/worktree"; e.Path != want {
+	if want := nodeBase + "/" + e.Worktree + "/held/worktree"; e.Path != want {
 		t.Fatalf("journal name and path disagree: worktree=%q path=%q, want %q", e.Worktree, e.Path, want)
 	}
 }

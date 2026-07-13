@@ -166,7 +166,7 @@ func nodeIDFrom(t *testing.T, out string) string {
 }
 
 // E2-5: an `ls` box row set WHERE to the instance name only, so a box's on-disk
-// location — its node dir, where volume/ephemeral bytes live — was never shown.
+// location — its node dir, where volume/held bytes live — was never shown.
 // The row must carry BOTH the box's location AND (still) the instance name.
 func TestLsBoxRowShowsLocationE2E(t *testing.T) {
 	clean(t)
@@ -325,7 +325,7 @@ func TestExecForwardsStdinE2E(t *testing.T) {
 
 // --- Family B: `up` succeeds but the box cannot run its command ----------------
 
-// E2-16/45/49: `dabs recipe <r> --detach` printed success (recipe up / id:)
+// E2-16/45/49: `dabs recipe <r> --detach` printed success (recipe booted / id:)
 // even when the box could not be ENTERED — a source over `/`, a `workdir:`
 // missing from the image, or an ro parent masking an rw child. Every later exec
 // then failed `bwrap: Can't chdir`. A boot that cannot enter is not up: it must
@@ -367,13 +367,13 @@ func TestBootFailsWhenBoxUnusableE2E(t *testing.T) {
 // --- Family D: a check never looks at what is actually on disk ----------------
 
 // E2-4: spaceHolds did a shallow ReadDir, so a space whose only content was an
-// EMPTY subdirectory (an `mkmount:` that created $NODE_EPHEMERAL/e but never
+// EMPTY subdirectory (an `mkmount:` that created $NODE_HELD/e but never
 // wrote a file) read as ⚠ "holds files". `dabs ls` must mark that box's
-// ephemeral EMPTY (✓), not held (⚠) — otherwise the warning is trained noise.
-func TestEmptyEphemeralSpaceNotMarkedHeldE2E(t *testing.T) {
+// held space EMPTY (✓), not holding (⚠) — otherwise the warning is trained noise.
+func TestEmptyHeldSpaceNotMarkedHeldE2E(t *testing.T) {
 	clean(t)
 	dir := filepath.Join(home, "e2e-eph")
-	bugRecipe(t, dir, "eph", "      - mkmount: $NODE_EPHEMERAL/e\n        path: /work/e\n")
+	bugRecipe(t, dir, "eph", "      - mkmount: $NODE_HELD/e\n        path: /work/e\n")
 
 	out, code := run("dabs recipe " + dir + " --detach")
 	if code != 0 {
@@ -389,15 +389,15 @@ func TestEmptyEphemeralSpaceNotMarkedHeldE2E(t *testing.T) {
 		t.Fatalf("up printed no id line: %q", out)
 	}
 
-	// The mkmount created <box-node>/ephemeral/e as an EMPTY directory — no file
+	// The mkmount created <box-node>/held/e as an EMPTY directory — no file
 	// anywhere. The node dir is named by node id (distinct from the instance), so
 	// find it by glob; in this clean box it is the only such space.
-	matches, _ := filepath.Glob(filepath.Join(nodesDir(), "*", "ephemeral", "e"))
+	matches, _ := filepath.Glob(filepath.Join(nodesDir(), "*", "held", "e"))
 	if len(matches) != 1 {
-		t.Fatalf("expected exactly one ephemeral/e space, got %v", matches)
+		t.Fatalf("expected exactly one held/e space, got %v", matches)
 	}
 	if entries, err := os.ReadDir(matches[0]); err != nil || len(entries) != 0 {
-		t.Fatalf("ephemeral/e should be an empty dir: entries=%v err=%v", entries, err)
+		t.Fatalf("held/e should be an empty dir: entries=%v err=%v", entries, err)
 	}
 
 	ls, code := run("dabs ls")
@@ -416,7 +416,7 @@ func TestEmptyEphemeralSpaceNotMarkedHeldE2E(t *testing.T) {
 		t.Fatalf("box row for %q not found in ls:\n%s", inst, ls)
 	}
 	if strings.Contains(row, "⚠") {
-		t.Fatalf("empty ephemeral marked held (E2-4): row=%q\nfull ls:\n%s", row, ls)
+		t.Fatalf("empty held space marked held (E2-4): row=%q\nfull ls:\n%s", row, ls)
 	}
 	if !strings.Contains(row, "✓") {
 		t.Fatalf("box row shows no empty glyph, expected ✓: row=%q\nfull ls:\n%s", row, ls)
@@ -557,5 +557,97 @@ func TestRecipeToUnreachableServerFailsFastE2E(t *testing.T) {
 	if !containsFold(out, "203.0.113.1") ||
 		!(containsFold(out, "timed out") || containsFold(out, "unreachable")) {
 		t.Fatalf("unreachable-target build error names neither the host nor a timeout (E2-32):\n%s", out)
+	}
+}
+
+// --- Vocabulary edition: the held rename's legacy fallbacks -------------------
+
+// The ephemeral space is now named held/, but a node an older dabs wrote keeps
+// its ephemeral/ dir. resolveHeldSpace reads that legacy dir, so such a node
+// still shows the held ⚠ in ls and its files are still guarded by rm's consent.
+// Hand-write a gone box node whose held space is literally ephemeral/ with a
+// file in it, then prove both guards see it.
+func TestLegacyEphemeralDirStillReadableE2E(t *testing.T) {
+	clean(t)
+	id := "legacy-eph01"
+	node := filepath.Join(nodesDir(), id)
+	if err := os.MkdirAll(filepath.Join(node, "ephemeral"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rec := `{"id":"` + id + `","kind":"box","recipe":"legacy","created":"2020-01-01T00:00:00Z","instance":"gone-legacy"}`
+	if err := os.WriteFile(filepath.Join(node, "dabs-node.json"), []byte(rec), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	keep := filepath.Join(node, "ephemeral", "keepme.txt")
+	if err := os.WriteFile(keep, []byte("afternoon of work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(node) })
+
+	// ls --all (the box is gone, so it only shows with --all) marks the held space ⚠.
+	ls, code := run("dabs ls --all")
+	if code != 0 {
+		t.Fatalf("ls --all failed (%d): %s", code, ls)
+	}
+	var row string
+	for _, line := range strings.Split(ls, "\n") {
+		if strings.Contains(line, id) {
+			row = line
+		}
+	}
+	if row == "" {
+		t.Fatalf("legacy node %q not shown in ls --all:\n%s", id, ls)
+	}
+	if !strings.Contains(row, "⚠") {
+		t.Fatalf("legacy ephemeral/ dir not marked held (⚠) in ls: row=%q\n%s", row, ls)
+	}
+
+	// rm without consent (non-interactive) must be REFUSED and keep the file —
+	// the held guard reads the legacy dir too.
+	out, code := run("dabs rm " + id)
+	if code == 0 {
+		t.Fatalf("rm reaped a legacy held space with no consent:\n%s", out)
+	}
+	if _, err := os.Stat(keep); err != nil {
+		t.Fatalf("legacy held file was lost by a refused rm: %v", err)
+	}
+
+	// rm -y consents, reaping the legacy dir and removing the node.
+	if out, code := run("dabs rm " + id + " -y"); code != 0 {
+		t.Fatalf("rm -y did not reap the legacy node (%d):\n%s", code, out)
+	}
+	if _, err := os.Stat(keep); !os.IsNotExist(err) {
+		t.Fatalf("legacy held dir not reaped by rm -y: stat err=%v", err)
+	}
+}
+
+// $NODE_EPHEMERAL is a permanent alias for $NODE_HELD (the space's former name),
+// so a recipe written against the old var provisions into the SAME held/ space —
+// a user's recipes.yaml is never broken by the rename. A source using
+// $NODE_EPHEMERAL must land its bytes under held/, not a resurrected ephemeral/.
+func TestEphemeralVarAliasStillWorksE2E(t *testing.T) {
+	clean(t)
+	dir := filepath.Join(home, "e2e-alias")
+	bugRecipe(t, dir, "alias", "      - mkmount: $NODE_EPHEMERAL/e\n        path: /work/e\n")
+
+	out, code := run("dabs recipe " + dir + " --detach")
+	if code != 0 {
+		t.Fatalf("up failed (%d): %s", code, out)
+	}
+	inst := instanceFrom(t, out)
+
+	// Write a file into the mounted space from inside the box.
+	if _, code := run("dabs exec " + inst + " -- sh -c 'echo hi > /work/e/marker'"); code != 0 {
+		t.Fatalf("exec into aliased mount failed:\n%s", out)
+	}
+
+	// The bytes must land under the node's held/ space, exactly where $NODE_HELD
+	// would have put them — and NOT under a legacy ephemeral/ dir.
+	held, _ := filepath.Glob(filepath.Join(nodesDir(), "*", "held", "e", "marker"))
+	if len(held) != 1 {
+		t.Fatalf("$NODE_EPHEMERAL did not provision into the held/ space, got %v", held)
+	}
+	if eph, _ := filepath.Glob(filepath.Join(nodesDir(), "*", "ephemeral", "e", "marker")); len(eph) != 0 {
+		t.Fatalf("$NODE_EPHEMERAL resurrected a legacy ephemeral/ dir: %v", eph)
 	}
 }

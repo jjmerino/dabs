@@ -172,6 +172,14 @@ func TestWorktreeLsColumnsAndLiveness(t *testing.T) {
 	if !strings.Contains(out, "no box") {
 		t.Fatalf("wtdead should show no box:\n%s", out)
 	}
+	// STATE uses the SAME three-value vocabulary `dabs ls` prints: wtlive is dirty
+	// (has work), wtdead is clean (no-diff) — not the old binary HAS WORK/clean.
+	if !strings.Contains(out, "has work") {
+		t.Fatalf("dirty worktree should read `has work` in STATE:\n%s", out)
+	}
+	if !strings.Contains(out, "no-diff") {
+		t.Fatalf("clean worktree should read `no-diff` in STATE:\n%s", out)
+	}
 }
 
 // CONTRACT: dabs lists only what it PROVISIONED. An entry under nodes/ with no

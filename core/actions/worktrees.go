@@ -10,7 +10,7 @@ import (
 )
 
 // Worktrees INSPECTS the worktree NODES dabs recipes provision under
-// ~/.dabs/nodes/<id>/ (the checkout lives in that node's ephemeral space). Recipes KEEP
+// ~/.dabs/nodes/<id>/ (the checkout lives in that node's held space). Recipes KEEP
 // worktrees so an agent's work is never lost; this is how you see what they did.
 // Reaping is `dabs rm <name>` for one (with the unreviewed-work guard) or
 // `dabs rm --clean-worktrees` to sweep every worktree that holds no such work.
@@ -42,14 +42,23 @@ func (r Real) Worktrees(p params.Worktrees) error {
 				rows = append(rows, []string{tui.Accent(n.ID), path, "", tui.Warn("unreadable: %v", err)})
 				continue
 			}
-			hasWork := dirty || ahead > 0
+			// Same three-value vocabulary the ls STATE column prints (see
+			// worktreeState): commits ahead are UNMERGED; uncommitted/untracked work
+			// with nothing ahead is HAS WORK; otherwise NO-DIFF. So `dabs ls` and
+			// `dabs worktrees ls` say the same thing about one worktree.
+			state := CellNoDiff
+			if ahead > 0 {
+				state = CellUnmerged
+			} else if dirty {
+				state = CellHasWork
+			}
 			box := "no box"
 			if inst, ok := live[n.ID]; ok {
 				box = fmt.Sprintf("box %s live", inst)
 			}
 			detail := tui.Muted("branch %s · recipe %s · uncommitted=%v ahead=%d · %s",
 				branch, n.Recipe, dirty, ahead, box)
-			rows = append(rows, []string{tui.Accent(n.ID), path, tui.WorkState(hasWork), detail})
+			rows = append(rows, []string{tui.Accent(n.ID), path, styleState(state), detail})
 		}
 		fmt.Fprintln(os.Stdout, tui.Rows([]string{"NAME", "WORKTREE", "STATE", "DETAIL"}, rows))
 		return nil

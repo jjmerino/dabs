@@ -63,7 +63,7 @@ func (r Real) matches(arg string) ([]match, error) {
 	// A name is REQUIRED: an empty/blank name is a prefix of EVERY node, so
 	// without this it would "match" the whole fleet (reported as ambiguous, one
 	// `if` away from acting on all of them). Blank matches nothing, never all —
-	// for every verb that resolves a name, not just down.
+	// for every verb that resolves a name, not just rm.
 	if strings.TrimSpace(arg) == "" {
 		return nil, fmt.Errorf("a name is required (see dabs ls)")
 	}

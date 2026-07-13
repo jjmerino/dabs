@@ -122,7 +122,7 @@ func TestRmPreviewShowsLiveBoxAsLiveE2E(t *testing.T) {
 }
 
 // E2-6: a live project place whose only box is archived was filed under the
-// `no box` heading — an error-looking bucket — although the place has a real
+// `no place` heading — an error-looking bucket — although the place has a real
 // path on THIS machine. It belongs under the machine's own section.
 func TestLsPlaceWithDownedBoxNotUnderNoBoxE2E(t *testing.T) {
 	clean(t)
@@ -145,7 +145,7 @@ func TestLsPlaceWithDownedBoxNotUnderNoBoxE2E(t *testing.T) {
 		t.Fatalf("ls failed (%d): %s", code, ls)
 	}
 	section := sectionOf(t, ls, proj)
-	if strings.HasPrefix(section, "no box") {
+	if strings.HasPrefix(section, "no place") {
 		t.Fatalf("a project with a real path on this machine is filed under %q (E2-6):\n%s", section, ls)
 	}
 	if !strings.HasPrefix(section, "local") {
@@ -153,7 +153,7 @@ func TestLsPlaceWithDownedBoxNotUnderNoBoxE2E(t *testing.T) {
 	}
 }
 
-// E2-51: `ls --all` drew an archived box as a PARENTLESS row under `no box`
+// E2-51: `ls --all` drew an archived box as a PARENTLESS row under `no place`
 // while its parent project sat live under `local` — two trees for one tree.
 // The archived box must nest under its parent whenever the parent is shown,
 // and `rm --dry` must show the same parent/child shape.
@@ -183,7 +183,7 @@ func TestLsAllNestsArchivedBoxUnderLiveParentE2E(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("ls --all failed (%d): %s", code, all)
 	}
-	if sec := sectionOf(t, all, boxA); strings.HasPrefix(sec, "no box") {
+	if sec := sectionOf(t, all, boxA); strings.HasPrefix(sec, "no place") {
 		t.Fatalf("archived box drawn parentless under %q while its parent is shown (E2-51):\n%s", sec, all)
 	}
 	archRow := rowWith(t, all, boxA)
@@ -209,7 +209,7 @@ func TestLsAllNestsArchivedBoxUnderLiveParentE2E(t *testing.T) {
 
 // E2-21: ls's STATE column said `unmerged` for a worktree with ZERO commits
 // ahead and only uncommitted/untracked work — but `dabs worktrees` already
-// distinguishes that as HAS WORK. Only commits ahead are unmerged; local-only
+// distinguishes that as has work. Only commits ahead are unmerged; local-only
 // work must read as work, not as an unmerged branch.
 func TestLsWorktreeStateNotUnmergedWhenZeroAheadE2E(t *testing.T) {
 	clean(t)

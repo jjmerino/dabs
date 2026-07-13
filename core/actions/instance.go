@@ -55,7 +55,7 @@ func (r Real) downInstance(instance string) error {
 			return err
 		}
 		r.logWorktreeDown(m.name)
-		fmt.Fprintln(os.Stdout, tui.Success("%s down", tui.Accent(m.name)))
+		fmt.Fprintln(os.Stdout, tui.Success("%s stopped", tui.Accent(m.name)))
 	}
 	return nil
 }

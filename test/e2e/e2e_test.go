@@ -278,7 +278,7 @@ func TestUpPrintsInstance(t *testing.T) {
 	out, code := run("dabs recipe " + baseDir + " --detach")
 	wantExit(t, 0, code)
 	wantContains(t, out, sandboxName+"-")
-	wantContains(t, out, " up")
+	wantContains(t, out, "recipe booted:")
 }
 
 func TestUpCreatesDistinctInstances(t *testing.T) {
@@ -451,7 +451,7 @@ func TestRmStopsBox(t *testing.T) {
 	clean(t)
 	i := up(t)
 	out, _ := run("dabs rm " + i + " --yes")
-	wantContains(t, out, i+" down")
+	wantContains(t, out, i+" stopped")
 }
 
 func TestRmDryListsAndKeeps(t *testing.T) {
@@ -802,7 +802,7 @@ func TestWorktreesInspectAndGuardedReap(t *testing.T) {
 
 	out, code := run("dabs worktrees")
 	wantExit(t, 0, code)
-	wantContains(t, out, "HAS WORK") // the box wrote from-box.txt (uncommitted)
+	wantContains(t, out, "has work") // the box wrote from-box.txt (uncommitted)
 
 	out, code = run("dabs rm " + name + " -y")
 	if code == 0 {
@@ -845,7 +845,7 @@ func TestWorktreesDiffShowsUntrackedFiles(t *testing.T) {
 
 // TestRmWorktreeGuardsUnreviewedWork (finding B26/B27): the git-work guard is not
 // the property of one verb. `dabs rm <worktree> -y` must honour it — the same guard
-// `dabs rm --clean-worktrees` applies: -y consents to the ephemeral space, but discarding
+// `dabs rm --clean-worktrees` applies: -y consents to the held space, but discarding
 // unreviewed git work needs the stronger --force. A childless worktree LEAF (no
 // cascade) is the case B27 slipped through: it reaps with no prompt at all, so it
 // is precisely where a plain `rm -y` would silently destroy work.
@@ -890,7 +890,7 @@ func TestRmWorktreeGuardsUnreviewedWork(t *testing.T) {
 
 // TestRmWorktreeDeregistersFromGit: reaping a worktree node must leave git
 // clean — no prunable worktree registration and no orphan branch. The checkout
-// lives in the node's ephemeral space, so the reap has to deregister the
+// lives in the node's held space, so the reap has to deregister the
 // worktree from git BEFORE deleting that space, while git can still resolve the
 // repo from the checkout.
 func TestRmWorktreeDeregistersFromGit(t *testing.T) {
@@ -909,7 +909,7 @@ func TestRmWorktreeDeregistersFromGit(t *testing.T) {
 	name := wts[0]
 
 	// Before: git registers the worktree and holds its branch.
-	if list, _ := run("git -C " + repo + " worktree list"); !strings.Contains(list, "ephemeral/worktree") {
+	if list, _ := run("git -C " + repo + " worktree list"); !strings.Contains(list, "held/worktree") {
 		t.Fatalf("git did not register the worktree:\n%s", list)
 	}
 	if b, _ := run("git -C " + repo + " branch --list dabs/*"); !strings.Contains(b, "dabs/") {
@@ -923,7 +923,7 @@ func TestRmWorktreeDeregistersFromGit(t *testing.T) {
 
 	// After: no registration left behind (prunable or otherwise), no orphan branch.
 	list, _ := run("git -C " + repo + " worktree list")
-	if strings.Contains(list, "ephemeral/worktree") || strings.Contains(list, "prunable") {
+	if strings.Contains(list, "held/worktree") || strings.Contains(list, "prunable") {
 		t.Fatalf("reap left a worktree registration behind:\n%s", list)
 	}
 	if b, _ := run("git -C " + repo + " branch --list dabs/*"); strings.TrimSpace(b) != "" {
@@ -950,7 +950,7 @@ func TestRmCleanWorktreeNeedsNoForce(t *testing.T) {
 	// Drop the box's untracked write so the checkout is clean and not ahead.
 	gitOut(t, worktreeData(name), "clean", "-fdx")
 	ls, _ := run("dabs worktrees")
-	if strings.Contains(ls, "HAS WORK") {
+	if strings.Contains(ls, "has work") {
 		t.Fatalf("worktree still reads as having work after clean:\n%s", ls)
 	}
 
@@ -1150,7 +1150,7 @@ func worktreeDirs(t *testing.T) []string {
 
 // worktreeData is the checkout a worktree node owns — what a recipe's `.` sees.
 func worktreeData(name string) string {
-	return filepath.Join(home, ".dabs", "nodes", name, "ephemeral", "worktree")
+	return filepath.Join(home, ".dabs", "nodes", name, "held", "worktree")
 }
 
 // journalPath is the box-lifecycle journal.
@@ -1245,7 +1245,7 @@ func TestUpFromDabsYamlPath(t *testing.T) {
 	out, code := run("dabs recipe " + filepath.Join(dir, "dabs.yaml") + " --detach") // a FILE path
 	wantExit(t, 0, code)
 	wantContains(t, out, sandboxName+"-")
-	wantContains(t, out, " up")
+	wantContains(t, out, "recipe booted:")
 }
 
 // TestRecipesPrintShowsFormat: `dabs recipes --print` dumps the authoring YAML,

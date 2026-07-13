@@ -40,7 +40,7 @@ know what is in it:
    the recipe's command. Capture the instance name it prints:
 
    ```bash
-   dabs recipe [recipe|path] --detach     # → myproj-a3f9c21d4e02 up
+   dabs recipe [recipe|path] --detach     # recipe booted: myproj (id: myproj-a3f9c21d4e02)
    ```
 
    The instance is named after the recipe's **image**, not the recipe. Recipes
@@ -136,7 +136,7 @@ know what is in it:
 
    ```
    $NODE_VOLUME      survives `rm --keep`  — this box's caches
-   $NODE_EPHEMERAL   `rm` asks first       — work you would miss
+   $NODE_HELD       `rm` asks first       — work you would miss  ($NODE_EPHEMERAL: alias)
    $NODE_TMP         `rm` reaps quietly    — scratch
    ```
 
@@ -169,7 +169,7 @@ know what is in it:
    ```
 
 5. **Reap boxes when done — `dabs rm` is the single reaper.** It stops the box
-   AND removes its node and spaces. Stopping a live box, or losing held data,
+   AND removes its node and spaces. Stopping a live box, or losing data a space holds,
    needs consent: `-y`/`--yes` (or an interactive y/N). Without it, rm prints
    what it WOULD reap and exits nonzero — it never silently tears a box down.
 
@@ -181,7 +181,7 @@ know what is in it:
    ```
 
    Flags: `-y`/`--yes` skips the consent prompt (stop a live box, reap a held
-   ephemeral); `--keep` archives instead of removing; `--multiple` authorizes a
+   space); `--keep` archives instead of removing; `--multiple` authorizes a
    prefix matching several nodes; `--volume` also reaps the volume; `--dry`
    previews; `--force` is ONLY for discarding a worktree's unreviewed git work —
    a different risk than the prompt `-y` skips, so it stays its own flag.
@@ -237,9 +237,9 @@ already started, without cutting a new branch.
   parent listed after its child silently masks it) while apple/docker resolve
   nesting themselves. Declaration order is yours to choose.
 - `dabs rm --keep` archives a box: it stops the box and reaps its spaces (`tmp/`
-  silently, `ephemeral/` only with consent when it holds files, `volume/` never)
+  silently, `held/` only with consent when it holds files, `volume/` never)
   but LEAVES the node record. A worktree's checkout lives in its OWN node's
-  ephemeral space, so archiving a box never touches it — `dabs rm <wt>` (or `dabs
+  held space, so archiving a box never touches it — `dabs rm <wt>` (or `dabs
   rm --clean-worktrees`) does, and it still refuses unreviewed work.
 - Everything dabs owns is namespaced: it only ever sees or removes its own
   boxes.

@@ -57,7 +57,7 @@ func (r Real) Ls(p params.Ls) error {
 	// An ARCHIVED node is a box no driver holds any more. It is kept — what ran,
 	// and from where, is the question a node exists to answer — but it is not what
 	// you are looking at when you type `ls`, and it never goes away, so by default
-	// it is not shown. Its SPACES are already gone: `down` reaps them.
+	// it is not shown. Its SPACES are already gone: `rm` reaps them.
 	nodes := make([]Node, 0, len(all))
 	archived := 0
 	for _, n := range all {
@@ -168,10 +168,10 @@ func (r Real) Ls(p params.Ls) error {
 		fmt.Fprint(os.Stdout, renderForest(r.viewNodes(sections[key], state), lsColumns, 2))
 	}
 
-	// Archived boxes with no living parent context — their place is gone from
-	// the records — have nowhere to nest, so they list flat under `no box`.
+	// Archived boxes with no living parent context — their place record is gone —
+	// have nowhere to nest, so they list flat under `no place`.
 	if len(orphans) > 0 {
-		fmt.Fprintln(os.Stdout, tui.Heading("no box"))
+		fmt.Fprintln(os.Stdout, tui.Heading("no place"))
 		fmt.Fprint(os.Stdout, renderForest(r.viewNodes(orphans, state), lsColumns, 2))
 	}
 
@@ -320,7 +320,7 @@ func (r Real) boxStates() map[string]boxState {
 
 // lsColumns are the columns `ls` draws for every node: the tree, its kind, the
 // three space cells, its live/gone or merged/unmerged state, and where it is.
-var lsColumns = []Column{ColNode, ColKind, ColVol, ColEph, ColTmp, ColState, ColWhere}
+var lsColumns = []Column{ColNode, ColKind, ColVol, ColHeld, ColTmp, ColState, ColWhere}
 
 // tilde shortens a path under the home directory, so a tree of them reads at a
 // glance.

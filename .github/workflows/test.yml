@@ -22,11 +22,10 @@ jobs:
   # VM, so no outer box is needed. The suite's guard accepts GITHUB_ACTIONS as
   # that sandbox.
   #
-  # The suite never names a driver — dabs picks the platform's own. This job is
-  # the LINUX flavor, so the driver dabs will pick is bubblewrap, and the steps
-  # provision what THAT driver needs. Other platforms would be sibling jobs
-  # (e.g. a macOS runner exercising the apple driver) with their own provisioning.
-  e2e-linux-bubblewrap:
+  # The suite never names a driver — dabs picks the platform's own; this job's
+  # steps provision whatever that currently needs on Linux. Other platforms
+  # would be sibling jobs with their own provisioning.
+  e2e-linux:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

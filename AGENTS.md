@@ -7,6 +7,34 @@ recipe mounts in, not the rest of your host. Reach in with `dabs exec <node>
 agent inside via a recipe
 (`dabs recipe claude`, defined in this repo's `dabs.yaml`).
 
+## The vocabulary
+
+One word, one meaning. This table is mirrored from `GLOSSARY.md` and a guard
+test keeps the two byte-identical — edit them together or the build goes red.
+Entries marked ⚠ are deprecated: never use them in new code, output, docs, or
+comments (the CLI may still print them; that is scheduled debt, not licence).
+
+| word | meaning | where you meet it |
+|---|---|---|
+| **box** | the disposable, host-isolated environment a command or agent runs in | the user-facing noun in `AGENTS.md`/`README.md`; `recipe --detach` boots one |
+| **instance** | the driver's name for one running box, `<name>-<hex>` | `dabs ls` INSTANCE-in-parens, `Driver.Up/Run/Down` |
+| **node** | the record dabs wrote for one thing it provisioned; its `id` is the canonical handle | `~/.dabs/nodes/<id>/`, `actions.Node` |
+| **place** | the directories a node offers; a box uses them only if the recipe says so | `provisionPlaces`, the ls chain |
+| **space** | one of a node's three directories — `volume`/`held`/`tmp` — that decides what `rm` does with the bytes | `SpaceVolume`/`SpaceHeld`/`SpaceTmp`, `reapSpaces` |
+| **recipe** | a fully declarative schema to provision spaces | `recipe.Recipe`, `dabs.yaml` |
+| **image** | the frozen template a driver builds and boots a box from | `recipe.ImageRef`, `Driver.Build` |
+| **reap** | to remove a node and the spaces it holds (what `dabs rm` does) | `Rm`, `reapSpaces` |
+| **confirmation** | the explicit go-ahead a losing action needs — four flags for four risks | `-y` / `--multiple` / `--force` / `--volume` |
+| **archived** ⚠ | a box whose node record is kept but whose instance is gone (`rm --keep`) | `archive`, `dabs ls --all` |
+| **live / gone** | a box's STATE: its driver holds it, or it does not (**gone** ⚠) | `CellLive`/`CellGone` |
+| **no-diff / has work / unmerged** | a worktree's STATE: clean · uncommitted-or-untracked · commits ahead | `worktreeState` |
+| **target** | the named driver configuration a recipe uses to bring up a box | `recipe.Recipe.Target`, `driverFor` |
+| **server** | a registered remote machine with dabs installed, reached over ssh | `dabs servers`, `config` |
+| **driver** | one sandboxing mechanism behind the `sandbox.Driver` contract | `core/sandbox/<kind>` |
+| **fleet** ⚠ | deprecated — use **drivers** | `Real.drivers`, `dabs ls` |
+| **worktree** | a fresh git branch off HEAD, cut into a node's held space and mounted live | the `worktree:` source, `dabs worktrees` |
+| **--detach** | boot a box and leave it up without running the recipe's command (⚠ prose: **--no-command**) | `recipe --detach`, `upDetached` |
+
 ## Read `dabs.yaml` first
 
 Before you run or test anything with dabs in this repo, **read `./dabs.yaml`**.

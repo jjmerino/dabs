@@ -179,3 +179,37 @@ func TestGuardFailsClosedOnUnparseablePayload(t *testing.T) {
 		})
 	}
 }
+
+// The canonical vocabulary table lives in GLOSSARY.md and is mirrored into
+// AGENTS.md so a boxed agent (which only gets the embedded AGENTS.md) still
+// meets it. Two copies of one truth only stay one truth under guard: this test
+// fails the build the moment they differ by a byte.
+func TestAgentsVocabularyMirrorsGlossary(t *testing.T) {
+	table := func(path string) string {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		lines := strings.Split(string(data), "\n")
+		start := -1
+		for i, l := range lines {
+			if strings.HasPrefix(l, "| word | meaning |") {
+				start = i
+				break
+			}
+		}
+		if start < 0 {
+			t.Fatalf("%s has no canonical vocabulary table (header '| word | meaning |')", path)
+		}
+		end := start
+		for end < len(lines) && strings.HasPrefix(lines[end], "|") {
+			end++
+		}
+		return strings.Join(lines[start:end], "\n")
+	}
+
+	g, a := table("GLOSSARY.md"), table("AGENTS.md")
+	if g != a {
+		t.Fatalf("the vocabulary tables have forked — edit GLOSSARY.md and AGENTS.md together.\nGLOSSARY.md:\n%s\n\nAGENTS.md:\n%s", g, a)
+	}
+}

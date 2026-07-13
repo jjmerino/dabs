@@ -1,3 +1,14 @@
+<p align="center">
+  <img src=".github/assets/header.png" alt="dabs" width="640">
+</p>
+
+<p align="center">
+  <a href="https://github.com/jjmerino/dabs/actions/workflows/test.yml"><img src="https://github.com/jjmerino/dabs/actions/workflows/test.yml/badge.svg" alt="test"></a>
+  <a href="https://github.com/jjmerino/dabs/releases/latest"><img src="https://img.shields.io/github/v/release/jjmerino/dabs" alt="release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/jjmerino/dabs" alt="license"></a>
+  <a href="go.mod"><img src="https://img.shields.io/github/go-mod/go-version/jjmerino/dabs" alt="go"></a>
+</p>
+
 # dabs — dumb agent boxes
 
 Disposable sandboxes you can hand to an AI agent. Each box is a pristine

@@ -26,15 +26,19 @@ func (r Real) Build(p params.Build) error {
 	if err != nil {
 		return err
 	}
-	if _, err := r.ensureImage(drv, name, rec.Image); err != nil {
-		return err
-	}
-	// A recipe with an inline Dockerfile is what `build` actually builds. A
-	// bare-name image has no Dockerfile to build — say so honestly rather than
-	// claiming a build that did not happen.
+	// The `build` verb FORCES a rebuild of an inline-Dockerfile image — it is how
+	// an edited Dockerfile is rebuilt, so it must not reuse an existing image the
+	// way recipe/up do. A bare-name image has nothing of its own to build; it goes
+	// through ensureImage, which builds it from the bundled recipe only if missing.
 	if rec.Image.Dockerfile != "" {
+		if _, err := r.buildDockerImage(drv, name, rec.Image); err != nil {
+			return err
+		}
 		fmt.Fprintln(os.Stdout, tui.Success("%s built", tui.Accent(name)))
 	} else {
+		if _, err := r.ensureImage(drv, name, rec.Image); err != nil {
+			return err
+		}
 		fmt.Fprintln(os.Stdout, tui.Success("using image %s (nothing to build)", tui.Accent(rec.Image.Name)))
 	}
 	return nil

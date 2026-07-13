@@ -40,6 +40,25 @@ recipes:
 	}
 }
 
+// CONTRACT: `dabs build` FORCES a rebuild of an inline-Dockerfile image even
+// when it already exists — that is how an edited Dockerfile is rebuilt. Only
+// recipe/up reuse an existing image; build never skips.
+func TestBuildForcesRebuildWhenImageExists(t *testing.T) {
+	y := `default: base
+recipes:
+  base:
+    image: { dockerfile: Dockerfile, context: . }
+`
+	fd := baseData()
+	drv := &fakeDriver{built: map[string]bool{"base": true}} // already built
+	if err := newReal(y, fd, drv).Build(params.Build{}); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(drv.builds) != 1 || drv.builds[0].Name != "base" {
+		t.Fatalf("build must force a rebuild even when built, got %+v", drv.builds)
+	}
+}
+
 // CONTRACT: `dabs build <name>` (a bare recipe name) resolves and builds that
 // named recipe's image — the review's blocker was build erroring on a name.
 func TestBuildNamedRecipe(t *testing.T) {

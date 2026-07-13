@@ -33,16 +33,19 @@ var (
 // --- fake driver: records every op, returns canned results -------------------
 
 type fakeDriver struct {
-	built  map[string]bool // name -> HasImage answer
-	builds []sandbox.BuildSpec
-	ups    []sandbox.Spec
-	upErr  error
-	execs  [][]string
-	runs   [][]string
-	runErr error
-	downs  []string
-	nInst  int
-	infos  []sandbox.Info // what Ls reports (for name resolution in Down)
+	built   map[string]bool // name -> HasImage answer
+	builds  []sandbox.BuildSpec
+	ups     []sandbox.Spec
+	upErr   error
+	execs   [][]string
+	runs    [][]string
+	runErr  error
+	downs   []string
+	nInst   int
+	infos   []sandbox.Info // what Ls reports (for name resolution in Down)
+	kind    string         // Kind() override; "" → "fake" (a local, non-server driver)
+	lsCall  *bool          // if non-nil, set true when Ls is called (proves contact)
+	lsPanic bool           // if true, Ls panics — proves it was never called when the test passes
 }
 
 func (d *fakeDriver) Build(s sandbox.BuildSpec) error { d.builds = append(d.builds, s); return nil }
@@ -62,9 +65,22 @@ func (d *fakeDriver) Exec(_ string, cmd []string) (string, error) {
 	d.execs = append(d.execs, cmd)
 	return "", nil
 }
-func (d *fakeDriver) Down(inst string) error      { d.downs = append(d.downs, inst); return nil }
-func (d *fakeDriver) Ls() ([]sandbox.Info, error) { return d.infos, nil }
-func (d *fakeDriver) Kind() string                { return "fake" }
+func (d *fakeDriver) Down(inst string) error { d.downs = append(d.downs, inst); return nil }
+func (d *fakeDriver) Ls() ([]sandbox.Info, error) {
+	if d.lsPanic {
+		panic("Ls called on a driver that must not be contacted")
+	}
+	if d.lsCall != nil {
+		*d.lsCall = true
+	}
+	return d.infos, nil
+}
+func (d *fakeDriver) Kind() string {
+	if d.kind != "" {
+		return d.kind
+	}
+	return "fake"
+}
 
 // --- fake data: canned fs/env/git, records mutations -------------------------
 
@@ -399,6 +415,54 @@ func TestRecipeAmbiguousSourceErrors(t *testing.T) {
 	}
 	if len(drv.ups) != 0 {
 		t.Errorf("invalid recipe still brought a box up: %v", drv.ups)
+	}
+}
+
+// CONTRACT: a Dockerfile-backed recipe whose image is ALREADY built is not
+// rebuilt on `dabs recipe` — the box boots the existing image. Rebuilding an
+// edited Dockerfile is the `dabs build` verb's job, not every run's.
+func TestRecipeDockerfileImageAlreadyBuiltDoesNotBuild(t *testing.T) {
+	y := `recipes:
+  d:
+    image: { dockerfile: Dockerfile, context: . }
+    command: [run, it]
+    sources:
+      - mount: /data
+        path: /work
+`
+	fd := baseData()
+	fd.exists["/data"] = true
+	drv := &fakeDriver{built: map[string]bool{"d": true}} // image "d" already built
+	if err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "d"}); err != nil {
+		t.Fatalf("Recipe: %v", err)
+	}
+	if len(drv.builds) != 0 {
+		t.Errorf("image already built — want no Build, got %+v", drv.builds)
+	}
+	if len(drv.ups) != 1 || drv.ups[0].Name != "d" {
+		t.Fatalf("want the box booted from image d, got ups=%+v", drv.ups)
+	}
+}
+
+// CONTRACT: a Dockerfile-backed recipe whose image is MISSING is built once, on
+// its own name, before the box boots.
+func TestRecipeDockerfileImageMissingBuildsOnce(t *testing.T) {
+	y := `recipes:
+  d:
+    image: { dockerfile: Dockerfile, context: . }
+    command: [run, it]
+    sources:
+      - mount: /data
+        path: /work
+`
+	fd := baseData()
+	fd.exists["/data"] = true
+	drv := &fakeDriver{built: map[string]bool{"d": false}} // not built yet
+	if err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "d"}); err != nil {
+		t.Fatalf("Recipe: %v", err)
+	}
+	if len(drv.builds) != 1 || drv.builds[0].Name != "d" {
+		t.Fatalf("image missing — want one Build of d, got %+v", drv.builds)
 	}
 }
 

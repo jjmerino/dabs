@@ -50,10 +50,12 @@ func lsTimeout(d sandbox.Driver, timeout time.Duration) ([]sandbox.Info, error) 
 // git-style: an exact match wins outright, otherwise every instance the
 // prefix matches, on any target. Domain logic: drivers only see exact names.
 //
-// Fast path: a LOCAL exact match returns before any remote is queried, so
-// addressing a local box by its full name never pays an ssh round-trip or
-// risks hanging on a slow server. Remote drivers are queried
-// concurrently, each bounded by remoteTimeout.
+// Fast path: every LOCAL driver (any non-server driver — apple, docker) is
+// queried FIRST, synchronously, and an exact match among them returns before
+// any remote is contacted, so addressing a local box by its full name never
+// pays an ssh round-trip or risks hanging on a slow server. Only when no local
+// driver holds an exact match are the remote servers queried — concurrently,
+// each bounded by remoteTimeout.
 func (r Real) matches(instance string) ([]match, error) {
 	// A name is REQUIRED: an empty/blank name is a prefix of EVERY instance, so
 	// without this it would "match" the whole fleet (reported as ambiguous, one
@@ -64,24 +66,31 @@ func (r Real) matches(instance string) ([]match, error) {
 	}
 	var out []match
 
-	// Local first, synchronously — its exact match short-circuits the fleet.
-	if drv, ok := r.drivers["local"]; ok {
+	// Local drivers first, synchronously and in fleet order — an exact match on
+	// any of them short-circuits the whole fleet, so a docker box resolves
+	// without ever contacting a server.
+	for _, key := range r.order {
+		drv := r.drivers[key]
+		if isServer(drv.Kind()) {
+			continue
+		}
 		infos, err := lsTimeout(drv, remoteTimeout)
 		if err != nil {
-			return nil, fmt.Errorf("local: %w", err)
+			return nil, fmt.Errorf("%s: %w", key, err)
 		}
 		for _, in := range infos {
 			if in.Name == instance {
-				return []match{{name: in.Name, target: "local", driver: drv}}, nil
+				return []match{{name: in.Name, target: key, driver: drv}}, nil
 			}
 			if strings.HasPrefix(in.Name, instance) {
-				out = append(out, match{name: in.Name, target: "local", driver: drv})
+				out = append(out, match{name: in.Name, target: key, driver: drv})
 			}
 		}
 	}
 
-	// Remote servers concurrently; a timed-out/failed server warns and is
-	// skipped rather than failing or hanging the whole resolution.
+	// No local exact match — query the remote servers concurrently; a timed-out/
+	// failed server warns and is skipped rather than failing or hanging the whole
+	// resolution.
 	type reply struct {
 		key   string
 		infos []sandbox.Info
@@ -89,7 +98,7 @@ func (r Real) matches(instance string) ([]match, error) {
 	ch := make(chan reply, len(r.order))
 	remotes := 0
 	for _, key := range r.order {
-		if key == "local" {
+		if !isServer(r.drivers[key].Kind()) {
 			continue
 		}
 		remotes++
@@ -111,7 +120,7 @@ func (r Real) matches(instance string) ([]match, error) {
 
 	// Process remotes in r.order for deterministic results; exact still wins.
 	for _, key := range r.order {
-		if key == "local" {
+		if !isServer(r.drivers[key].Kind()) {
 			continue
 		}
 		for _, in := range byKey[key] {

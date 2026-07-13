@@ -1,0 +1,71 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test ./...
+
+  # The e2e suite drives the real dabs CLI and rewrites $HOME/.dabs — so it only
+  # runs somewhere sandboxed. Locally that is the dabseption docker box
+  # (./run_e2e.sh); here the runner itself is the sandbox: a throwaway hermetic
+  # VM, so no outer box is needed. The suite's guard accepts GITHUB_ACTIONS as
+  # that sandbox.
+  #
+  # The suite never names a driver — dabs picks the platform's own; this job's
+  # steps provision whatever that currently needs on Linux. Other platforms
+  # would be sibling jobs with their own provisioning.
+  e2e-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build overlay-enabled bubblewrap, and let it have user namespaces
+        run: |
+          # Ubuntu's packaged bubblewrap (0.9) has no overlay support; the bwrap
+          # driver needs it. Build 0.11 from source exactly as the dabseption
+          # box image does (non-setuid, overlay-enabled).
+          sudo apt-get update
+          sudo apt-get install -y meson ninja-build libcap-dev pkg-config
+          curl -fsSL https://github.com/containers/bubblewrap/releases/download/v0.11.0/bubblewrap-0.11.0.tar.xz -o /tmp/bw.tar.xz
+          cd /tmp && tar xf bw.tar.xz && cd bubblewrap-0.11.0
+          meson setup _build --prefix=/usr/local -Dtests=false -Dman=disabled
+          ninja -C _build && sudo ninja -C _build install
+          bwrap --version
+          # Ubuntu 24.04 restricts unprivileged user namespaces via AppArmor,
+          # which is exactly what bwrap needs. The runner is disposable.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Build dabs onto PATH
+        run: go build -o /usr/local/bin/dabs .
+        env:
+          CGO_ENABLED: "0"
+
+      - name: Stage the suite's inner-box image
+        # Locally the dabseption box Dockerfile stages this with a COPY --from;
+        # here the same stage is built directly and exported as the flattened
+        # rootfs a bwrap image is — identical bytes, no outer box.
+        run: |
+          docker build --target e2ebase -t dabs-e2ebase -f test/e2e/box/Dockerfile .
+          id=$(docker create dabs-e2ebase)
+          mkdir -p "$HOME/.dabs/images/dabs-e2e/rootfs"
+          docker export "$id" | tar -x -C "$HOME/.dabs/images/dabs-e2e/rootfs"
+          docker rm "$id" >/dev/null
+          printf '%s' '{"env":["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"],"workdir":"/work"}' \
+            > "$HOME/.dabs/images/dabs-e2e/image.json"
+
+      - name: Run the e2e suite
+        run: go test -tags e2e -v ./test/e2e

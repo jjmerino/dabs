@@ -2,6 +2,7 @@ package actions
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/jjmerino/dabs/core/params"
 	"github.com/jjmerino/dabs/core/recipe"
@@ -1070,7 +1072,34 @@ func (r Real) ensureProjectNode(recipeName string) (string, error) {
 			return n.ID, nil
 		}
 	}
-	id, _ := mintNodeID(filepath.Base(cwd))
+	// A project node's name is a pure function of the directory it marks, so
+	// every boot racing in one directory computes the SAME name, and the
+	// exclusive create of that node dir is the lock: exactly one boot mints the
+	// node, the others find the dir taken and read the winner's record.
+	id := projectNodeID(cwd)
+	root, err := r.resolveNodesRoot()
+	if err != nil {
+		return "", err
+	}
+	if err := r.data.MkdirAll(root, 0o755); err != nil {
+		return "", err
+	}
+	dir, err := r.resolveNodeDir(id)
+	if err != nil {
+		return "", err
+	}
+	if err := r.data.Mkdir(dir, 0o755); err != nil {
+		if !errors.Is(err, fs.ErrExist) {
+			return "", err
+		}
+		// Another boot holds the lock; its record lands right after the dir.
+		for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+			if n, err := r.readNode(id); err == nil {
+				return n.ID, nil
+			}
+		}
+		return "", fmt.Errorf("project node %s: its dir exists but no readable record appeared", id)
+	}
 	if err := r.writeNode(Node{
 		ID:      id,
 		Kind:    KindProject,
@@ -1081,6 +1110,16 @@ func (r Real) ensureProjectNode(recipeName string) (string, error) {
 		return "", err
 	}
 	return id, nil
+}
+
+// projectNodeID names a project node deterministically from the directory it
+// marks: <basename>-<8 hex of sha256(path)>. Determinism is what makes
+// ensureProjectNode race-free — concurrent boots in one directory all reach for
+// one name — and the hash keeps same-named directories in different places
+// distinct.
+func projectNodeID(dir string) string {
+	sum := sha256.Sum256([]byte(dir))
+	return filepath.Base(dir) + "-" + hex.EncodeToString(sum[:4])
 }
 
 // bindWorktree rewrites a recipe's sources to bind an existing dabs worktree

@@ -27,6 +27,7 @@ func (OS) AppendFile(p string, b []byte, m fs.FileMode) error {
 }
 func (OS) Stat(path string) (fs.FileInfo, error)         { return os.Stat(path) }
 func (OS) MkdirAll(path string, m fs.FileMode) error     { return os.MkdirAll(path, m) }
+func (OS) Mkdir(path string, m fs.FileMode) error        { return os.Mkdir(path, m) }
 func (OS) MkdirTemp(dir, pattern string) (string, error) { return os.MkdirTemp(dir, pattern) }
 func (OS) Getwd() (string, error)                        { return os.Getwd() }
 func (OS) RemoveAll(path string) error                   { return os.RemoveAll(path) }

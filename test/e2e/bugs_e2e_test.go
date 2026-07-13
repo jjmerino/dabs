@@ -18,9 +18,11 @@
 package e2e
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -447,5 +449,60 @@ func TestRecipeSourcePathCannotEscapeNodeTreeE2E(t *testing.T) {
 	}
 	if _, err := os.Stat(escape); err == nil {
 		t.Fatalf("dabs provisioned a directory outside its node tree at %s (E2-14)", escape)
+	}
+}
+
+// E2-31: several `dabs recipe --detach` boots racing in the SAME directory each
+// scanned the node store, saw no project node for the cwd, and each minted one —
+// duplicate project nodes for a single path. The resolve-or-create must be
+// atomic: however many boots race, exactly ONE project node marks the directory.
+func TestConcurrentDetachMintsOneProjectNode(t *testing.T) {
+	clean(t)
+	dir := filepath.Join(home, "e2e-proj-race")
+	bugRecipe(t, dir, "race", "")
+
+	const boots = 6
+	outs := make([]string, boots)
+	codes := make([]int, boots)
+	var wg sync.WaitGroup
+	for i := 0; i < boots; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			outs[i], codes[i] = runIn(dir, "dabs recipe race --detach")
+		}(i)
+	}
+	wg.Wait()
+	for i := range codes {
+		if codes[i] != 0 {
+			t.Fatalf("boot %d failed (%d): %s", i, codes[i], outs[i])
+		}
+	}
+
+	// Read the store itself: exactly one record of kind "project" whose Dir is
+	// the directory the boots ran from.
+	names, err := os.ReadDir(nodesDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var projects []string
+	for _, e := range names {
+		b, err := os.ReadFile(filepath.Join(nodesDir(), e.Name(), "dabs-node.json"))
+		if err != nil {
+			continue // not a node record
+		}
+		var n struct {
+			Kind string `json:"kind"`
+			Dir  string `json:"dir"`
+		}
+		if json.Unmarshal(b, &n) != nil {
+			continue
+		}
+		if n.Kind == "project" && n.Dir == dir {
+			projects = append(projects, e.Name())
+		}
+	}
+	if len(projects) != 1 {
+		t.Fatalf("want exactly 1 project node for %s, got %d: %v (E2-31)", dir, len(projects), projects)
 	}
 }

@@ -99,6 +99,7 @@ type fakeData struct {
 	noCommits map[string]bool   // GitHasCommits false for these tops
 	worktrees []string          // recorded GitAddWorktree dests
 	mkdirs    []string
+	made      []string // exclusive Mkdir creations
 	dirs      map[string][]string // ReadDir results
 	states    map[string]wtState  // GitState by worktree path
 	removed   []string            // recorded GitRemoveWorktree
@@ -176,6 +177,19 @@ func (dirFileInfo) ModTime() time.Time { return time.Time{} }
 func (dirFileInfo) IsDir() bool        { return true }
 func (dirFileInfo) Sys() any           { return nil }
 func (f *fakeData) MkdirAll(p string, _ fs.FileMode) error {
+	f.mkdirs = append(f.mkdirs, p)
+	return nil
+}
+
+// Mkdir mirrors the exclusive create: a second Mkdir of the same path fails
+// with fs.ErrExist, as the OS does.
+func (f *fakeData) Mkdir(p string, _ fs.FileMode) error {
+	for _, have := range f.made {
+		if have == p {
+			return fs.ErrExist
+		}
+	}
+	f.made = append(f.made, p)
 	f.mkdirs = append(f.mkdirs, p)
 	return nil
 }

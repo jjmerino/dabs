@@ -22,6 +22,10 @@ type Data interface {
 	AppendFile(path string, b []byte, perm fs.FileMode) error
 	Stat(path string) (fs.FileInfo, error)
 	MkdirAll(path string, perm fs.FileMode) error
+	// Mkdir creates one directory (its parent must exist) and FAILS with
+	// fs.ErrExist if it is already there — the exclusive create that lets a
+	// directory serve as a cross-process lock.
+	Mkdir(path string, perm fs.FileMode) error
 	MkdirTemp(dir, pattern string) (string, error)
 	RemoveAll(path string) error
 	// CopyDir copies the contents of src into dst, which must exist. A node that

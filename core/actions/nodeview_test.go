@@ -57,6 +57,7 @@ func (f *vFakeData) ReadFile(string) ([]byte, error)              { return nil, 
 func (f *vFakeData) WriteFile(string, []byte, fs.FileMode) error  { return nil }
 func (f *vFakeData) AppendFile(string, []byte, fs.FileMode) error { return nil }
 func (f *vFakeData) MkdirAll(string, fs.FileMode) error           { return nil }
+func (f *vFakeData) Mkdir(string, fs.FileMode) error              { return nil }
 func (f *vFakeData) MkdirTemp(string, string) (string, error)     { return "", nil }
 func (f *vFakeData) RemoveAll(string) error                       { return nil }
 func (f *vFakeData) CopyDir(string, string) error                 { return nil }

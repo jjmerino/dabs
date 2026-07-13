@@ -6,6 +6,13 @@ name: release
 on:
   push:
     tags: ["v*"]
+  # Rebuild any existing tag's assets from CI — replaces anything attached by
+  # hand with binaries whose provenance is this workflow's own run log.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "existing tag to (re)build assets for"
+        required: true
 
 permissions:
   contents: write
@@ -15,6 +22,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -24,8 +33,9 @@ jobs:
             GOOS=$os GOARCH=$arch CGO_ENABLED=0 \
               go build -trimpath -ldflags="-s -w" -o "dist/dabs_${os}_${arch}" .
           done; done
+          (cd dist && shasum -a 256 dabs_* > SHA256SUMS)
           ls -la dist/
       - name: Attach to the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+        run: gh release upload "${{ github.event.inputs.tag || github.ref_name }}" dist/* --clobber

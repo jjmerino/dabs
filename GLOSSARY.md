@@ -8,9 +8,12 @@ learned an old name can find the new one.
 References point at the function or type that owns a concept, not a line number,
 so they age with the code rather than drifting from it.
 
-**Deprecation legend.** An entry marked **⚠ deprecated — use `<successor>`** names
-a word the vocabulary is moving away from. The rule: a deprecated term never appears
-in anything new — new code, output, docs, or comments — use its successor instead.
+**Deprecation legend.** Two tags, two situations:
+**⚠ deprecated — use `<successor>`** means the successor EXISTS today: never use
+the old term in anything new — code, output, docs, comments.
+**⚠ future name recorded** means the successor is decided but NOT yet implemented:
+keep using the current term in new work until the successor ships — a doc must
+never instruct a word the CLI cannot honor.
 The word may still be printed by the current CLI; where it is, the entry says so.
 Deprecation is docs-first: the term keeps working until code catches up, and the
 glossary records where the vocabulary is going so new work simply avoids the old word.
@@ -38,7 +41,7 @@ glossary records where the vocabulary is going so new work simply avoids the old
 | **driver** | one sandboxing mechanism behind the `sandbox.Driver` contract | `core/sandbox/<kind>` |
 | **fleet** ⚠ | deprecated — use **drivers** | `Real.drivers`, `dabs ls` |
 | **worktree** | a fresh git branch off HEAD, cut into a node's held space and mounted live | the `worktree:` source, `dabs worktrees` |
-| **--detach** | boot a box and leave it up without running the recipe's command (⚠ prose: **--no-command**) | `recipe --detach`, `upDetached` |
+| **--detach** | boot a box and leave it up without running the recipe's command (alias: **--detach** ⚠) | `recipe --no-command`, `upDetached` |
 
 ---
 
@@ -103,10 +106,10 @@ residue of `rm --keep`. `dabs ls` still prints it — do not lean on it in new w
 A box node's STATE cell: **live** when a driver holds its instance, **gone** when
 none does (it is archived, or its instance died).
 
-**gone** ⚠ is deprecated as a state word — it says only what a box is *not*. The
-future splits it into box-specific statuses: **idling** / **running** (its main
-command, past the default infinity sleep) / **stopped**. `dabs ls` still prints
-`gone`.
+**gone** ⚠ future name recorded — it says only what a box is *not*; the decided
+direction splits it into box-specific statuses (**idling** / **running** /
+**stopped**), which do NOT exist yet. Until they ship, `gone` remains the word,
+in output and in new code alike.
 *Where:* `CellLive`/`CellGone`, `viewNode`.
 
 ### sandbox
@@ -140,9 +143,9 @@ handle) and prints the driver instance on its own line; the box is yours to reac
 with `exec` and to reap with `rm`. A boxless recipe (no image) detaches cleanly —
 it provisions its places and stops.
 
-The flag `--detach` ⚠ is deprecated in prose — use **--no-command**. "Detach"
-wrongly implies running something in the background; the point is that no command
-runs. The flag itself is still `--detach` in the CLI.
+The flag `--detach` ⚠ is deprecated — use **--no-command**, which the CLI
+accepts. "Detach" wrongly implies running something in the background; the point
+is that no command runs. `--detach` remains a working alias.
 *Where:* `upDetached`, `printUp`.
 
 ### recipe --worktree \<wt>
@@ -363,16 +366,17 @@ Where an archived box whose place record is gone lists — its place is gone, so
 has nowhere to nest and lists flat. (Not to be confused with a worktree's
 DETAIL cell reading `no box`, which means "no live box on this worktree".)
 
-Future: **orphaned** — one heading for anything not correctly connected to the node
-tree.
+⚠ future name recorded: **orphaned** — one heading for anything not correctly
+connected to the node tree. Not implemented yet; `no place` remains the heading.
 *Where:* the `no place` heading in `Ls`.
 
 ### `boxes with no node` (heading)
 Where a box a driver holds but no node claims lists — booted by an older dabs or
 by hand. Still yours, so still shown and still reapable by its instance name.
 
-Future: **orphaned** — one heading for anything not correctly connected to the node
-tree.
+⚠ future name recorded: **orphaned** — one heading for anything not correctly
+connected to the node tree. Not implemented yet; `boxes with no node` remains the
+heading.
 *Where:* the `boxes with no node` heading in `Ls`.
 
 ### the worktree states

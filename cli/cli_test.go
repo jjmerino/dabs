@@ -351,3 +351,19 @@ func TestAliasesDispatch(t *testing.T) {
 		t.Error("alias leaked into the command table; help would list it twice")
 	}
 }
+
+// The glossary names --no-command as the successor of --detach, and the
+// deprecation rule tells everyone to use successors — so the successor must
+// actually parse. Both spellings boot a detached box.
+func TestNoCommandIsDetach(t *testing.T) {
+	for _, flag := range []string{"--no-command", "--detach"} {
+		f := &fakeActions{}
+		c := New(f)
+		if err := c.Run([]string{"recipe", "m", flag}); err != nil {
+			t.Fatalf("recipe m %s: %v", flag, err)
+		}
+		if len(f.recipe) != 1 || !f.recipe[0].Detach {
+			t.Fatalf("recipe m %s: got %+v, want Detach:true", flag, f.recipe)
+		}
+	}
+}

@@ -88,7 +88,7 @@ func createsBox(args []string) bool {
 		if a == "--" {
 			break
 		}
-		if a == "--detach" {
+		if a == "--detach" || a == "--no-command" {
 			return false
 		}
 	}

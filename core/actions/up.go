@@ -121,7 +121,7 @@ func printUp(name, nodeID, instance string, rec recipe.Recipe) {
 	fmt.Fprintln(os.Stdout, tui.Success("%s", head))
 	fmt.Fprintf(os.Stdout, "%s %s\n", tui.Muted("id:"), tui.Accent(nodeID))
 	fmt.Fprintf(os.Stdout, "%s %s\n", tui.Muted("instance:"), instance)
-	fmt.Fprintln(os.Stdout, tui.Muted("(no command was run — the recipe's command is not started by `--detach`)"))
+	fmt.Fprintln(os.Stdout, tui.Muted("(no command was run — the recipe's command is not started by `--no-command`)"))
 	fmt.Fprintf(os.Stdout, "%s dabs rm %s\n", tui.Muted("reap:"), nodeID)
 	// The "sh in:" line runs `dabs exec <id> -- sh`. When the recipe's own
 	// command IS exactly `sh`, the "run recipe command:" line below renders the

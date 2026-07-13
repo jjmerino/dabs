@@ -134,7 +134,7 @@ dabs servers rm homelab             # unregister (remote sandboxes untouched)
 ```
 
 Route a recipe to a server with `target: homelab` (omit for local). `dabs
-build`/`recipe` then run there; `dabs ls` aggregates the whole fleet with a target
+build`/`recipe` then run there; `dabs ls` aggregates every driver with a target
 column; `exec`/`rm` address any instance by name wherever it lives.
 
 ## Recipe fields (dabs.yaml)
@@ -151,7 +151,7 @@ no name.
 | `command` | — | what runs in the box |
 | `env` | — | environment inside the box |
 | `sources` | — | what lands in the box, and how |
-| `target` | local | which fleet driver runs it |
+| `target` | local | which driver runs it |
 | `keep` | `false` | keep the box alive after the command finishes |
 
 Paths given to `build`/`recipe` may be a `dabs.yaml` or a directory containing one.

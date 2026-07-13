@@ -8,6 +8,13 @@ learned an old name can find the new one.
 References point at the function or type that owns a concept, not a line number,
 so they age with the code rather than drifting from it.
 
+**Deprecation legend.** An entry marked **⚠ deprecated — use `<successor>`** names
+a word the vocabulary is moving away from. The rule: a deprecated term never appears
+in anything new — new code, output, docs, or comments — use its successor instead.
+The word may still be printed by the current CLI; where it is, the entry says so.
+Deprecation is docs-first: the term keeps working until code catches up, and the
+glossary records where the vocabulary is going so new work simply avoids the old word.
+
 ---
 
 ## Vocabulary at a glance
@@ -17,21 +24,21 @@ so they age with the code rather than drifting from it.
 | **box** | the disposable, host-isolated environment a command or agent runs in | the user-facing noun in `AGENTS.md`/`README.md`; `recipe --detach` boots one |
 | **instance** | the driver's name for one running box, `<name>-<hex>` | `dabs ls` INSTANCE-in-parens, `Driver.Up/Run/Down` |
 | **node** | the record dabs wrote for one thing it provisioned; its `id` is the canonical handle | `~/.dabs/nodes/<id>/`, `actions.Node` |
-| **place** | a node a box can stand on — a project, workdir, or worktree (everything that is not a box) | `provisionPlaces`, the ls chain |
+| **place** | the directories a node offers; a box uses them only if the recipe says so | `provisionPlaces`, the ls chain |
 | **space** | one of a node's three directories — `volume`/`held`/`tmp` — that decides what `rm` does with the bytes | `SpaceVolume`/`SpaceHeld`/`SpaceTmp`, `reapSpaces` |
-| **recipe** | a fully declarative box (image, sources, env, command, target, keep) | `recipe.Recipe`, `dabs.yaml` |
+| **recipe** | a fully declarative schema to provision spaces | `recipe.Recipe`, `dabs.yaml` |
 | **image** | the frozen template a driver builds and boots a box from | `recipe.ImageRef`, `Driver.Build` |
 | **reap** | to remove a node and the spaces it holds (what `dabs rm` does) | `Rm`, `reapSpaces` |
-| **consent** | the explicit permission a losing action needs — four flags for four risks | `-y` / `--multiple` / `--force` / `--volume` |
-| **archived** | a box whose node record is kept but whose instance is gone (`rm --keep`) | `archive`, `dabs ls --all` |
-| **live / gone** | a box's STATE: its driver holds it, or it does not | `CellLive`/`CellGone` |
+| **confirmation** | the explicit go-ahead a losing action needs — four flags for four risks | `-y` / `--multiple` / `--force` / `--volume` |
+| **archived** ⚠ | a box whose node record is kept but whose instance is gone (`rm --keep`) | `archive`, `dabs ls --all` |
+| **live / gone** | a box's STATE: its driver holds it, or it does not (**gone** ⚠) | `CellLive`/`CellGone` |
 | **no-diff / has work / unmerged** | a worktree's STATE: clean · uncommitted-or-untracked · commits ahead | `worktreeState` |
-| **target** | which fleet member runs a box — `""` (local) or a named server/driver | `recipe.Recipe.Target`, `driverFor` |
+| **target** | the named driver configuration a recipe uses to bring up a box | `recipe.Recipe.Target`, `driverFor` |
 | **server** | a registered remote machine with dabs installed, reached over ssh | `dabs servers`, `config` |
 | **driver** | one sandboxing mechanism behind the `sandbox.Driver` contract | `core/sandbox/<kind>` |
-| **fleet** | the whole set of drivers dabs dispatches across | `Real.drivers`, `dabs ls` |
+| **fleet** ⚠ | deprecated — use **drivers** | `Real.drivers`, `dabs ls` |
 | **worktree** | a fresh git branch off HEAD, cut into a node's held space and mounted live | the `worktree:` source, `dabs worktrees` |
-| **detach** | boot a box and leave it up without running the recipe's command | `recipe --detach`, `upDetached` |
+| **--detach** | boot a box and leave it up without running the recipe's command (⚠ prose: **--no-command**) | `recipe --detach`, `upDetached` |
 
 ---
 
@@ -45,18 +52,23 @@ host. The primary user-facing noun.
 `sandbox.Spec` describes one to a driver.
 
 ### instance
-The driver's name for one concrete, running box, minted after boot and shaped
-`<name>-<hex>`. It is distinct from the node id (which is minted first, before
-the box exists), so a box has two names and its node record links them. `ls`
-shows the instance in parentheses beside the box's node id; `exec`/`rm` resolve
-either.
-*Where:* `sandbox.Info`, `Driver.Up/Run/Down`, `viewNode` (box WHERE cell).
+One concrete, running box as its driver holds it — the live thing, minted at boot.
+`exec`/`rm` reach it; `ls` shows it under its node.
+*Where:* `sandbox.Info`, `Driver.Up/Run/Down`.
+
+### instance id
+The driver's name for an instance, shaped `<name>-<hex>`, minted after boot. It is
+distinct from the node id (minted first, before the box exists), so a box has two
+names and its node record links them. `ls` shows the instance id in parentheses
+beside the box's node id; `exec`/`rm` resolve either.
+*Where:* `sandbox.Info`, `viewNode` (box WHERE cell).
 
 ### node
 The record dabs wrote for one thing it provisioned, at
 `~/.dabs/nodes/<id>/dabs-node.json`. It carries a `kind`, a `parent`, and the
 recipe that made it, so listing and reaping read what dabs wrote rather than
-sniffing the filesystem.
+sniffing the filesystem. It is what lets dabs, and tools built on dabs, track
+provenance from a space back to its originator.
 *Where:* `actions.Node`, `writeNode`/`readNode`/`listNodes`.
 
 ### handle / node id
@@ -66,10 +78,10 @@ box instance name resolves only as a fallback, for a box no node claims.
 *Where:* `mintNodeID`, `rmMatches`, `matches`.
 
 ### place
-A node a box stands ON — a project, workdir, or worktree; everything that is not
-a box. A box mounts what a place owns, and a place is re-entered by every later
-box, which is why what a box wants back next time belongs in the place's volume,
-not the box's own. The chain is `project → (workdir | worktree)? → box`.
+The directories a node offers. A box uses a place's spaces only if the recipe says
+so, named in recipe words — `mount:`, `copy:`, `mkmount:`. Prefer naming the
+directory directly (the space's volume, its held directory, its tmp/scratchpad) over
+the umbrella word.
 *Where:* `provisionPlaces`, the ls section chain.
 
 ### kind (of node)
@@ -78,15 +90,23 @@ it and never reaps its `Dir`), **workdir** (a host directory a recipe copied as
 `.`), **worktree** (a git worktree dabs cut), **box** (one running sandbox).
 *Where:* `NodeKind` (`KindProject`/`KindWorkdir`/`KindWorktree`/`KindBox`).
 
-### archived
+### archived  ⚠ deprecated
 A box reaped with `--keep`: its instance is stopped but its node record stays, so
 what ran and from where outlives the box. Its spaces are already gone. Archived
 boxes are hidden by default and shown by `dabs ls --all`.
+
+Vocabulary likely to change: nothing performed an "archive" verb; the word is
+residue of `rm --keep`. `dabs ls` still prints it — do not lean on it in new work.
 *Where:* `archive`, the `ls` archived count, `dabs ls --all`.
 
 ### live / gone
-A box node's STATE cell: **live** when a driver in the fleet holds its instance,
-**gone** when none does (it is archived, or its instance died).
+A box node's STATE cell: **live** when a driver holds its instance, **gone** when
+none does (it is archived, or its instance died).
+
+**gone** ⚠ is deprecated as a state word — it says only what a box is *not*. The
+future splits it into box-specific statuses: **idling** / **running** (its main
+command, past the default infinity sleep) / **stopped**. `dabs ls` still prints
+`gone`.
 *Where:* `CellLive`/`CellGone`, `viewNode`.
 
 ### sandbox
@@ -119,13 +139,16 @@ recipe's command. It leads its output with the box's node id (the canonical
 handle) and prints the driver instance on its own line; the box is yours to reach
 with `exec` and to reap with `rm`. A boxless recipe (no image) detaches cleanly —
 it provisions its places and stops.
+
+The flag `--detach` ⚠ is deprecated in prose — use **--no-command**. "Detach"
+wrongly implies running something in the background; the point is that no command
+runs. The flag itself is still `--detach` in the CLI.
 *Where:* `upDetached`, `printUp`.
 
 ### recipe --worktree \<wt>
 Bind an EXISTING dabs worktree (by name from `worktrees ls`) to the recipe's `.`
 source instead of the cwd, mounting the worktree and its parent `.git` live so
-git resolves inside the box. Replaces the deleted `cast` verb. Composes with
-`--detach`.
+git resolves inside the box. Composes with `--detach`.
 *Where:* `bindWorktree`, `Recipe`/`upDetached`.
 
 ### exec
@@ -136,15 +159,15 @@ verb (that shell-line behavior is now `exec` without `--`).
 *Where:* `Exec`, `Driver.Run`.
 
 ### ls
-List what dabs owns as a node tree, grouped by fleet member; `--all` also shows
+List what dabs owns as a node tree, grouped by driver; `--all` also shows
 archived boxes. A place with no live box lists under its machine's heading, not a
-separate bucket. An empty fleet member prints `(nothing running)`.
+separate bucket. A driver with nothing running prints `(nothing running)`.
 *Where:* `Ls`, `renderForest`.
 
 ### rm
 The single reaper: stop a box AND remove its node and the spaces it holds,
-cascading to whatever stands on it. Losing anything needs consent (see
-**consent**); without it, `rm` previews what it would take and exits nonzero — it
+cascading to the nodes nested under it. Losing anything needs confirmation (see
+**confirmation**); without it, `rm` previews what it would take and exits nonzero — it
 never silently tears a box down. `--keep` archives instead of removing.
 `--clean-worktrees` takes no node name: it sweeps EVERY worktree that holds no
 unreviewed work in one shot (`--force` reaps the ones that do), previewing with
@@ -156,7 +179,7 @@ Inspect the worktree nodes recipes provision: `worktrees ls` lists them (STATE i
 the three-value vocabulary, DETAIL carrying branch/recipe/box-liveness) and
 `worktrees diff <name>` shows a review diff that surfaces untracked files. There
 are only these two subcommands — reaping is `dabs rm <name>` or
-`dabs rm --clean-worktrees`.
+`dabs rm --clean-worktrees`. dabs only lists worktrees linked to a dabs node.
 *Where:* `Worktrees`.
 
 ### recipes
@@ -167,6 +190,9 @@ YAML (the authoring format) to copy into `~/.dabs/recipes.yaml`.
 ### prune
 Reclaim built box images (they rebuild on the next build). `--dry` lists what
 exists; `--force` removes even an image a live box depends on.
+
+Open question: if `prune` only ever reclaims images, the future name is
+**prune-images**.
 *Where:* `Prune`.
 
 ### servers
@@ -178,9 +204,9 @@ Manage registered remote servers: `servers [ls] | add <name> [host] | rm <name>`
 ## Recipes and their pieces
 
 ### recipe
-A fully declarative description of a box: image, workdir, command, env, sources,
-target, keep. Resolution order: bundled (`sh`) → `~/.dabs/recipes.yaml` (global)
-→ `./dabs.yaml` (project), later winning.
+A fully declarative schema to provision spaces — image, workdir, command, env,
+sources, target, keep. Resolution order: bundled (`sh`) → `~/.dabs/recipes.yaml`
+(global) → `./dabs.yaml` (project), later winning.
 *Where:* `recipe.Recipe`, `loadRegistry`.
 
 ### registry / default
@@ -208,16 +234,23 @@ Recipe flag: keep the box alive after the command finishes (default: delete it).
 A kept box is yours to reap with `dabs rm`.
 *Where:* `recipe.Recipe.Keep`.
 
-### target / server / driver / fleet
-**target** is which fleet member runs a box — `""` (local) or a named
-server/driver kind. A **server** is one kind of target: a remote machine with
-dabs installed, reached over ssh. A **driver** is one sandboxing mechanism behind
-the `sandbox.Driver` contract (`apple`, `bwrap`, `docker`, `ssh`), plus the
-reserved `INTERNAL-docker-privileged-for-nested-sandboxing` kind used only when a
-box must itself run a nested sandbox. The **fleet** is the whole set of drivers
-dabs dispatches across; the local driver always exists, and instance names
-resolve across the whole fleet.
+### target / server / driver
+**target** is the named driver configuration a recipe uses to bring up a box — `""`
+(local) or a named server/driver kind. A driver can expose multiple named targets,
+each expanding to a driver configuration and its flags. A **server** is one kind of
+target: a remote machine with dabs installed, reached over ssh. A **driver** is one
+sandboxing mechanism behind the `sandbox.Driver` contract (`apple`, `bwrap`,
+`docker`, `ssh`), plus the reserved
+`INTERNAL-docker-privileged-for-nested-sandboxing` kind used only when a box must
+itself run a nested sandbox. Most drivers run with fixed flags; the docker driver
+exposes two targets, for privileged and unprivileged docker.
 *Where:* `recipe.Recipe.Target`, `driverFor`, `Driver.Kind`, `Real.drivers`.
+
+### fleet  ⚠ deprecated
+Deprecated — use **drivers** (or "the drivers dabs dispatches across"). The word
+has been used loosely over time and is being eradicated from prose. Code still
+references `Real.drivers`.
+*Where:* `Real.drivers`.
 
 ### workdir / env
 The cwd (`/work` default) and environment variables inside the box.
@@ -278,8 +311,14 @@ checkout lives here.
 
 **tmp** carries a promise: dabs never READS tmp's contents to decide anything.
 `ls` may draw a display-only ⚠ on a tmp that holds files, but no reap, guard, or
-consent ever branches on what is in tmp — it is the box's scratch and nobody
+confirmation ever branches on what is in tmp — it is the box's scratch and nobody
 else's business.
+
+**Future direction (decided 2026-07-13).** *space* is likely to become the umbrella
+word for a materialized workspace where work can exist — the box itself, a worktree,
+the node's `volume`/`held`/`tmp` directories, or the project's original cwd. Indexed
+by nodes, created from a recipe. Open tension: a node is the pointer to a space, so
+the two words must not blur.
 *Where:* `SpaceVolume`/`SpaceHeld`/`SpaceTmp`, `reapSpaces`, `heldCell`.
 
 ### $NODE_VOLUME / $NODE_HELD / $NODE_TMP
@@ -305,24 +344,35 @@ box (the shipped `claude` recipe stores sessions there so they reload).
 ### the columns
 `ls` draws NODE · KIND · VOL · HELD · TMP · STATE · WHERE. VOL/HELD/TMP are the
 three space cells; STATE is the box or worktree state; WHERE is where the bytes
-live on disk (for a box, its driver instance in parentheses beside its node dir).
+live on disk: a place's path, or — for a box — its node dir plus its instance name
+in parentheses.
 *Where:* `lsColumns`, `columnTitle`, `renderForest`.
 
 ### the space legend (✓ / ⚠)
 Under any tree with a space column: **✓** the space is present and holds nothing
 (safe to reap); **⚠** the space holds files a reap would lose. On `tmp`, the ⚠ is
 display-only (see the tmp promise).
+
+⚠ The glyphs are changing: **✓** only ever made sense in a reap preview, not in
+general listing. The future renders nothing for an empty space and a single mark
+when a space holds bytes. This documents the current rendering.
 *Where:* `Cell.Symbol`, `styleCell`, the `hasSpaceColumn` legend.
 
 ### `no place` (heading)
 Where an archived box whose place record is gone lists — its place is gone, so it
 has nowhere to nest and lists flat. (Not to be confused with a worktree's
 DETAIL cell reading `no box`, which means "no live box on this worktree".)
+
+Future: **orphaned** — one heading for anything not correctly connected to the node
+tree.
 *Where:* the `no place` heading in `Ls`.
 
 ### `boxes with no node` (heading)
 Where a box a driver holds but no node claims lists — booted by an older dabs or
 by hand. Still yours, so still shown and still reapable by its instance name.
+
+Future: **orphaned** — one heading for anything not correctly connected to the node
+tree.
 *Where:* the `boxes with no node` heading in `Ls`.
 
 ### the worktree states
@@ -340,11 +390,13 @@ holding it. Review it with `dabs worktrees diff <name>`.
 
 ---
 
-## Consent
+## Confirmation
 
-Four flags guard four different risks; they are never collapsed into one:
+The explicit go-ahead a losing action needs. Four flags guard four different risks;
+they are never collapsed into one. Use with care — each one authorizes losing
+something:
 
-| flag | consents to |
+| flag | confirms |
 |---|---|
 | `-y` / `--yes` | stop a live box, and reap a held space that holds files |
 | `--volume` | additionally delete the volume — what a place keeps on purpose |
@@ -354,6 +406,10 @@ Four flags guard four different risks; they are never collapsed into one:
 `--multiple` is not `--all`: `--multiple` authorizes acting on the several nodes
 ONE name matched, while `--clean-worktrees` (the sweep) acts on every worktree.
 Without the matching flag, the losing action is refused and previewed first.
+
+The word **consent** ⚠ is deprecated in docs — it carries human meaning, and dabs's
+operators are usually agents; say **confirmation**. Code identifiers still read
+`consent`.
 *Where:* `Rm`, `reapSpaces`, `guardWorktreeWork`, `rmMatches`.
 
 ---
@@ -364,7 +420,7 @@ Without the matching flag, the losing action is refused and previewed first.
 To **reap** is to remove a node and the spaces it holds. **`--keep`** archives
 instead (stop the box, keep the record). A space `rm` declines to reap (a held
 space without `-y`, a volume without `--volume`) is reported **kept**, with its
-path, so nothing is lost silently.
+path, so nothing is lost silently — the word **kept** appears in `dabs rm` output.
 *Where:* `Rm`, `reapSpaces`, `archive`.
 
 ### boxless recipe
@@ -384,8 +440,7 @@ short usage — the entry point an agent reads before driving dabs.
 *Where:* `cli`.
 
 ### CLI aliases
-Names people actually type resolve to the canonical verb: `ps`/`list` → `ls`,
-`remove`/`delete` → `rm`, `worktree` → `worktrees`.
+`ps`/`list` → `ls`, `remove`/`delete` → `rm`, `worktree` → `worktrees`.
 *Where:* the alias map in `cli`.
 
 ---

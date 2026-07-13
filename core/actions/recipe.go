@@ -235,22 +235,24 @@ func (r Real) provisionNodes(name string, rec recipe.Recipe, worktree string) er
 			}
 			fmt.Fprintf(os.Stdout, "%s %s %s %s\n", tui.Success("worktree"), tui.Accent(id), tui.Muted("branch "+branch+" ·"), tui.Muted(wt))
 			made++
-		case "copy", "mount":
-			id, err := r.addWorkdir(host, name, project, kind == "copy")
-			if err != nil {
-				return err
-			}
+		case "copy":
+			id, _ := mintNodeID(filepath.Base(host))
 			dir, err := r.workdirData(id)
 			if err != nil {
 				return err
 			}
-			if kind == "copy" {
-				if err := r.data.CopyDir(host, dir); err != nil {
-					return fmt.Errorf("recipe %q: copy %s: %w", name, host, err)
-				}
+			if err := r.data.CopyDir(host, dir); err != nil {
+				return fmt.Errorf("recipe %q: copy %s: %w", name, host, err)
+			}
+			// Dir is the copy's own location — where it lives, not its source.
+			if err := r.writeNode(Node{ID: id, Kind: KindWorkdir, Parent: project, Recipe: name, Created: stampNow(), Dir: dir}); err != nil {
+				return err
 			}
 			fmt.Fprintf(os.Stdout, "%s %s %s\n", tui.Success("workdir"), tui.Accent(id), tui.Muted(dir))
 			made++
+		case "mount":
+			// A live mount makes no place: without a box there is nothing to mount
+			// it into, and the project already marks the directory.
 		}
 	}
 	if made == 0 {
@@ -370,10 +372,7 @@ func (r Real) provisionPlaces(recipeName string, sources []recipe.Source, castWo
 			// A copy makes a directory, so every run makes ANOTHER one — the way
 			// every worktree run cuts another branch. That is what lets two runs
 			// over one directory be worked in parallel.
-			id, err := r.addWorkdir(host, recipeName, project, true)
-			if err != nil {
-				return "", "", nil, nil, nil, err
-			}
+			id, _ := mintNodeID(filepath.Base(host))
 			at, aerr := r.placeAt(s, id, "work")
 			if aerr != nil {
 				return "", "", nil, nil, nil, fmt.Errorf("recipe %q: %w", recipeName, aerr)
@@ -390,16 +389,19 @@ func (r Real) provisionPlaces(recipeName string, sources []recipe.Source, castWo
 			if err := r.data.CopyDir(host, at); err != nil {
 				return "", "", nil, nil, nil, fmt.Errorf("recipe %q: copy %s: %w", recipeName, host, err)
 			}
+			// A workdir's own directory is where the copy LIVES, not where it was
+			// copied from — that is what `ls` shows and where a user looks. The
+			// source is the parent project's directory.
+			if err := r.writeNode(Node{ID: id, Kind: KindWorkdir, Parent: project, Recipe: recipeName, Created: stampNow(), Dir: at}); err != nil {
+				return "", "", nil, nil, nil, err
+			}
 			tip, hosts[i] = id, at
 			kept = append(kept, "workdir "+at)
 		case "mount":
-			// A live mount does not provision anything: the place IS the host
-			// directory, so reaching it again is the same node.
-			id, err := r.addWorkdir(host, recipeName, project, false)
-			if err != nil {
-				return "", "", nil, nil, nil, err
-			}
-			tip, hosts[i] = id, host
+			// A live mount provisions no middle node: the box stands directly on
+			// the project (the diamond's direct edge). The place IS the live host
+			// directory, so there is nothing to make.
+			tip, hosts[i] = project, host
 		}
 	}
 	return project, tip, hosts, kept, cut, nil
@@ -986,40 +988,6 @@ func (r Real) addWorktree(top, recipeName, parent string) (path, branch, id stri
 func isDotSource(s recipe.Source) bool {
 	_, origin, err := s.Kind()
 	return err == nil && origin == "."
-}
-
-// addWorkdir marks the host directory a recipe's `.` resolved to, and a box
-// stacks on it — so `dabs ls` shows which code a box is holding.
-//
-// fresh decides whether a run makes a NEW place or names an existing one, and it
-// follows what the source does with the bytes:
-//
-//   - copy: dabs makes a directory, so each run makes ANOTHER one — the same way
-//     each worktree run cuts another branch. Two runs over one directory give two
-//     independent copies, which is what lets them work in parallel.
-//   - mount: the place IS the host directory, live. Reaching it again is reaching
-//     the same place, so it is the same node.
-func (r Real) addWorkdir(dir, recipeName, parent string, fresh bool) (string, error) {
-	if !fresh {
-		nodes, err := r.listNodes()
-		if err != nil {
-			return "", err
-		}
-		for _, n := range nodes {
-			if n.Kind == KindWorkdir && n.Dir == dir {
-				return n.ID, nil
-			}
-		}
-	}
-	id, _ := mintNodeID(filepath.Base(dir))
-	return id, r.writeNode(Node{
-		ID:      id,
-		Kind:    KindWorkdir,
-		Parent:  parent,
-		Recipe:  recipeName,
-		Created: stampNow(),
-		Dir:     dir,
-	})
 }
 
 // ensureProjectNode marks the directory a command ran from — the project, the

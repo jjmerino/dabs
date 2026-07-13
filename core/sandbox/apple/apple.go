@@ -7,10 +7,7 @@
 package apple
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -19,6 +16,8 @@ import (
 	"unsafe"
 
 	"github.com/jjmerino/dabs/core/sandbox"
+	"github.com/jjmerino/dabs/core/sandbox/clidriver"
+	"github.com/jjmerino/dabs/core/sandbox/execx"
 )
 
 // prefix namespaces every container dabs manages.
@@ -57,11 +56,10 @@ func (Driver) Build(spec sandbox.BuildSpec) error {
 // Up creates and starts a new pristine instance named <spec.Name>-<id>,
 // id being random hex — unguessable, and addressable by unique prefix.
 func (d Driver) Up(spec sandbox.Spec) (string, error) {
-	id := make([]byte, 6)
-	if _, err := rand.Read(id); err != nil {
-		return "", fmt.Errorf("apple: generating instance id: %w", err)
+	instance, err := clidriver.InstanceName(spec.Name)
+	if err != nil {
+		return "", fmt.Errorf("apple: %w", err)
 	}
-	instance := fmt.Sprintf("%s-%s", spec.Name, hex.EncodeToString(id))
 	args := []string{"run", "-d", "--name", containerName(instance), "-w", spec.Workdir}
 	// DABS_NAME marks the box: anything running inside can detect it is
 	// sandboxed.
@@ -71,15 +69,11 @@ func (d Driver) Up(spec sandbox.Spec) (string, error) {
 	}
 	// Live host mounts: writes pass through to the host and outlive the box.
 	for _, m := range spec.Mounts {
-		mount := fmt.Sprintf("type=bind,source=%s,target=%s", m.Host, m.Path)
-		if m.RO {
-			mount += ",readonly"
-		}
-		args = append(args, "--mount", mount)
+		args = append(args, "--mount", clidriver.MountArg(m))
 	}
 	args = append(args, imageName(spec.Name), "sleep", "infinity")
 	if out, err := exec.Command("container", args...).CombinedOutput(); err != nil {
-		return "", fmt.Errorf("apple: container run %s: %v: %s", containerName(instance), err, strings.TrimSpace(string(out)))
+		return "", execx.WrapOut(fmt.Sprintf("apple: container run %s", containerName(instance)), out, err)
 	}
 	return instance, nil
 }
@@ -144,14 +138,7 @@ func (Driver) Run(instance string, cmd []string) error {
 	c.Stdout = os.Stdout
 	c.Stderr = os.Stderr
 	if err := c.Run(); err != nil {
-		// A non-zero EXIT is the box command's own failure, not dabs's: return it
-		// bare so the caller propagates the code and prints no dabs-error line.
-		// Anything else (the vendor CLI could not spawn the exec) is a driver failure.
-		var ee *exec.ExitError
-		if errors.As(err, &ee) {
-			return ee
-		}
-		return fmt.Errorf("apple: exec in %s: %w", ctn, err)
+		return execx.BoxErr(fmt.Sprintf("apple: exec in %s", ctn), nil, err)
 	}
 	return nil
 }
@@ -178,13 +165,7 @@ func (Driver) Exec(instance string, cmd []string) (string, error) {
 	args = append(args, cmd...)
 	out, err := exec.Command("container", args...).CombinedOutput()
 	if err != nil {
-		// A non-zero EXIT is the box command's own failure: return it bare so the
-		// caller propagates the code. Only a real driver failure is wrapped.
-		var ee *exec.ExitError
-		if errors.As(err, &ee) {
-			return string(out), ee
-		}
-		return string(out), fmt.Errorf("apple: exec in %s: %v: %s", found.ID, err, strings.TrimSpace(string(out)))
+		return string(out), execx.BoxErr(fmt.Sprintf("apple: exec in %s", found.ID), out, err)
 	}
 	return string(out), nil
 }
@@ -277,15 +258,15 @@ func (Driver) Images() ([]sandbox.Image, error) {
 	if err != nil {
 		return nil, fmt.Errorf("apple: image ls: %w", err)
 	}
-	seen := map[string]bool{}
-	var imgs []sandbox.Image
+	var tags []string
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		name := strings.Fields(line)
-		if len(name) == 0 || !strings.HasPrefix(name[0], prefix) || seen[name[0]] {
-			continue
+		if f := strings.Fields(line); len(f) > 0 {
+			tags = append(tags, f[0])
 		}
-		seen[name[0]] = true
-		imgs = append(imgs, sandbox.Image{Name: strings.TrimPrefix(name[0], prefix)})
+	}
+	var imgs []sandbox.Image
+	for _, name := range clidriver.FilterPrefixed(tags) {
+		imgs = append(imgs, sandbox.Image{Name: name})
 	}
 	return imgs, nil
 }

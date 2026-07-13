@@ -5,18 +5,22 @@
 package docker
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
 
 	"github.com/jjmerino/dabs/core/sandbox"
+	"github.com/jjmerino/dabs/core/sandbox/clidriver"
+	"github.com/jjmerino/dabs/core/sandbox/execx"
 	"github.com/mattn/go-isatty"
 )
 
 const prefix = "dabs-"
+
+// command builds a docker subprocess. A unit test swaps it to run a stand-in
+// so the error-surfacing policy can be exercised without a docker daemon.
+var command = exec.Command
 
 // Driver runs boxes as docker containers. When nested is set (the INTERNAL
 // privileged variant), Up adds the elevation a nested bwrap driver needs:
@@ -44,7 +48,7 @@ func containerName(instance string) string { return prefix + instance }
 func imageName(name string) string         { return prefix + name }
 
 func (Driver) Build(spec sandbox.BuildSpec) error {
-	cmd := exec.Command("docker", "build", "-t", imageName(spec.Name), "-f", spec.Dockerfile, spec.Context)
+	cmd := command("docker", "build", "-t", imageName(spec.Name), "-f", spec.Dockerfile, spec.Context)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
@@ -54,11 +58,10 @@ func (Driver) Build(spec sandbox.BuildSpec) error {
 }
 
 func (d Driver) Up(spec sandbox.Spec) (string, error) {
-	id := make([]byte, 6)
-	if _, err := rand.Read(id); err != nil {
-		return "", fmt.Errorf("docker: generating instance id: %w", err)
+	instance, err := clidriver.InstanceName(spec.Name)
+	if err != nil {
+		return "", fmt.Errorf("docker: %w", err)
 	}
-	instance := fmt.Sprintf("%s-%s", spec.Name, hex.EncodeToString(id))
 	args := []string{"run", "-d", "--name", containerName(instance), "-w", spec.Workdir}
 	if d.nested {
 		args = append(args, "--privileged", "-v", "/tmp")
@@ -69,23 +72,19 @@ func (d Driver) Up(spec sandbox.Spec) (string, error) {
 	}
 	// Live host mounts: writes pass through to the host and outlive the box.
 	for _, m := range spec.Mounts {
-		mount := fmt.Sprintf("type=bind,source=%s,target=%s", m.Host, m.Path)
-		if m.RO {
-			mount += ",readonly"
-		}
-		args = append(args, "--mount", mount)
+		args = append(args, "--mount", clidriver.MountArg(m))
 	}
 	// sleep infinity keeps the box alive; docker exec inherits the container's
 	// env and image WORKDIR, so Run/Exec need not re-pass them.
 	args = append(args, imageName(spec.Name), "sleep", "infinity")
-	if out, err := exec.Command("docker", args...).CombinedOutput(); err != nil {
-		return "", fmt.Errorf("docker: docker run %s: %v: %s", containerName(instance), err, strings.TrimSpace(string(out)))
+	if out, err := command("docker", args...).CombinedOutput(); err != nil {
+		return "", execx.WrapOut(fmt.Sprintf("docker: docker run %s", containerName(instance)), out, err)
 	}
 	return instance, nil
 }
 
 func (Driver) exists(instance string) bool {
-	return exec.Command("docker", "inspect", containerName(instance)).Run() == nil
+	return command("docker", "inspect", containerName(instance)).Run() == nil
 }
 
 // execFlags picks the `docker exec` flags for an interactive Run: always -i,
@@ -108,12 +107,12 @@ func (d Driver) Run(instance string, cmd []string) error {
 	args := execFlags(isatty.IsTerminal(os.Stdin.Fd()))
 	args = append(args, containerName(instance))
 	args = append(args, cmd...)
-	c := exec.Command("docker", args...)
+	c := command("docker", args...)
 	c.Stdin = os.Stdin
 	c.Stdout = os.Stdout
 	c.Stderr = os.Stderr
 	if err := c.Run(); err != nil {
-		return fmt.Errorf("docker: exec in %s: %w", instance, err)
+		return execx.BoxErr(fmt.Sprintf("docker: exec in %s", instance), nil, err)
 	}
 	return nil
 }
@@ -123,20 +122,20 @@ func (d Driver) Exec(instance string, cmd []string) (string, error) {
 		return "", fmt.Errorf("docker: no instance %q (see dabs ls)", instance)
 	}
 	args := append([]string{"exec", containerName(instance)}, cmd...)
-	out, err := exec.Command("docker", args...).CombinedOutput()
+	out, err := command("docker", args...).CombinedOutput()
 	if err != nil {
-		return string(out), fmt.Errorf("docker: exec in %s: %v: %s", instance, err, strings.TrimSpace(string(out)))
+		return string(out), execx.BoxErr(fmt.Sprintf("docker: exec in %s", instance), out, err)
 	}
 	return string(out), nil
 }
 
 func (Driver) Down(instance string) error {
-	_ = exec.Command("docker", "rm", "-f", containerName(instance)).Run()
+	_ = command("docker", "rm", "-f", containerName(instance)).Run()
 	return nil
 }
 
 func (Driver) Ls() ([]sandbox.Info, error) {
-	out, err := exec.Command("docker", "ps", "-a", "--format", "{{.Names}}\t{{.State}}").Output()
+	out, err := command("docker", "ps", "-a", "--format", "{{.Names}}\t{{.State}}").Output()
 	if err != nil {
 		return nil, fmt.Errorf("docker: docker ps: %w", err)
 	}
@@ -156,7 +155,7 @@ func (Driver) Ls() ([]sandbox.Info, error) {
 
 // HasImage reports whether name's image is already built.
 func (Driver) HasImage(name string) (bool, error) {
-	err := exec.Command("docker", "image", "inspect", imageName(name)).Run()
+	err := command("docker", "image", "inspect", imageName(name)).Run()
 	return err == nil, nil
 }
 
@@ -166,18 +165,14 @@ func (Driver) Kind() string { return "docker" }
 // prefix, reported under their recipe image name. Size is left 0 (docker's
 // listing reports a human string, not bytes); a prune reaps by name.
 func (Driver) Images() ([]sandbox.Image, error) {
-	out, err := exec.Command("docker", "images", "--format", "{{.Repository}}").Output()
+	out, err := command("docker", "images", "--format", "{{.Repository}}").Output()
 	if err != nil {
 		return nil, fmt.Errorf("docker: images: %w", err)
 	}
-	seen := map[string]bool{}
+	repos := strings.Split(strings.TrimSpace(string(out)), "\n")
 	var imgs []sandbox.Image
-	for _, repo := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if !strings.HasPrefix(repo, prefix) || seen[repo] {
-			continue
-		}
-		seen[repo] = true
-		imgs = append(imgs, sandbox.Image{Name: strings.TrimPrefix(repo, prefix)})
+	for _, name := range clidriver.FilterPrefixed(repos) {
+		imgs = append(imgs, sandbox.Image{Name: name})
 	}
 	return imgs, nil
 }
@@ -186,7 +181,7 @@ func (Driver) Images() ([]sandbox.Image, error) {
 // an image still used by a container is (docker refuses it) so the caller can
 // report it rather than reap silently.
 func (Driver) RemoveImage(name string) error {
-	out, err := exec.Command("docker", "rmi", imageName(name)).CombinedOutput()
+	out, err := command("docker", "rmi", imageName(name)).CombinedOutput()
 	if err != nil {
 		if strings.Contains(string(out), "No such image") {
 			return nil

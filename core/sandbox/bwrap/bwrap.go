@@ -13,10 +13,7 @@
 package bwrap
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -25,6 +22,8 @@ import (
 	"syscall"
 
 	"github.com/jjmerino/dabs/core/sandbox"
+	"github.com/jjmerino/dabs/core/sandbox/clidriver"
+	"github.com/jjmerino/dabs/core/sandbox/execx"
 )
 
 // Driver stores images and instances under root (~/.dabs).
@@ -144,11 +143,10 @@ func (d Driver) Up(spec sandbox.Spec) (string, error) {
 	if err := readJSON(filepath.Join(d.imageDir(spec.Name), "image.json"), &im); err != nil {
 		return "", fmt.Errorf("bwrap: no image for %q (run dabs build first): %w", spec.Name, err)
 	}
-	id := make([]byte, 6)
-	if _, err := rand.Read(id); err != nil {
-		return "", fmt.Errorf("bwrap: generating instance id: %w", err)
+	instance, err := clidriver.InstanceName(spec.Name)
+	if err != nil {
+		return "", fmt.Errorf("bwrap: %w", err)
 	}
-	instance := fmt.Sprintf("%s-%s", spec.Name, hex.EncodeToString(id))
 	dir := d.instanceDir(instance)
 	for _, sub := range []string{"upper", "work"} {
 		if err := os.MkdirAll(filepath.Join(dir, sub), 0o755); err != nil {
@@ -270,14 +268,7 @@ func (d Driver) Run(instance string, cmd []string) error {
 	c.Stdout = os.Stdout
 	c.Stderr = os.Stderr
 	if err := c.Run(); err != nil {
-		// A non-zero EXIT is the box command's own failure, not dabs's: return it
-		// bare so the caller propagates the code and prints no dabs-error line.
-		// Everything else (bwrap could not spawn, no rootfs) is a driver failure.
-		var ee *exec.ExitError
-		if errors.As(err, &ee) {
-			return ee
-		}
-		return fmt.Errorf("bwrap: run in %s: %w", instance, err)
+		return execx.BoxErr(fmt.Sprintf("bwrap: run in %s", instance), nil, err)
 	}
 	return nil
 }
@@ -296,13 +287,7 @@ func (d Driver) Exec(instance string, cmd []string) (string, error) {
 	defer unlock()
 	out, err := c.CombinedOutput()
 	if err != nil {
-		// A non-zero EXIT is the box command's own failure: return it bare so the
-		// caller propagates the code. Only a real driver failure is wrapped.
-		var ee *exec.ExitError
-		if errors.As(err, &ee) {
-			return string(out), ee
-		}
-		return string(out), fmt.Errorf("bwrap: exec in %s: %v: %s", instance, err, strings.TrimSpace(string(out)))
+		return string(out), execx.BoxErr(fmt.Sprintf("bwrap: exec in %s", instance), out, err)
 	}
 	return string(out), nil
 }

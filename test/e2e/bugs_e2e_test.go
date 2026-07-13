@@ -755,3 +755,14 @@ func TestEphemeralVarAliasStillWorksE2E(t *testing.T) {
 		t.Fatalf("$NODE_EPHEMERAL resurrected a legacy ephemeral/ dir: %v", eph)
 	}
 }
+
+// The glossary names --no-command as --detach's successor, and the deprecation
+// rule says successors are what new work types — so the successor must be a
+// real flag, end to end: it boots a detached box exactly as --detach does.
+func TestNoCommandFlagBootsDetachedE2E(t *testing.T) {
+	clean(t)
+	out, code := run("dabs recipe " + baseDir + " --no-command")
+	wantExit(t, 0, code)
+	wantContains(t, out, "instance:")
+	wantContains(t, out, "no command was run")
+}

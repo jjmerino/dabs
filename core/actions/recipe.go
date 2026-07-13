@@ -844,26 +844,19 @@ func (r Real) mergeRecipeFile(reg *recipe.Registry, path string) error {
 
 // ensureImage makes the recipe's image available and returns the name to run.
 // A bare name reuses an already-built image, building it from the bundled recipe
-// (images/<name>) if missing. An inline {dockerfile,context} is built as the
-// recipe's own name.
+// (images/<name>) if missing. An inline {dockerfile,context} reuses an
+// already-built image too, and is built as the recipe's own name only when
+// missing — an edited Dockerfile is rebuilt by the explicit `dabs build` verb.
 func (r Real) ensureImage(drv sandbox.Driver, recipeName string, img recipe.ImageRef) (string, error) {
 	if img.Dockerfile != "" {
-		ctx := img.Context
-		if ctx == "" {
-			ctx = filepath.Dir(img.Dockerfile)
-		}
-		dockerfile, err := r.absPath(img.Dockerfile)
+		built, err := drv.HasImage(recipeName)
 		if err != nil {
 			return "", err
 		}
-		ctxAbs, err := r.absPath(ctx)
-		if err != nil {
-			return "", err
+		if built {
+			return recipeName, nil
 		}
-		if err := drv.Build(sandbox.BuildSpec{Name: recipeName, Dockerfile: dockerfile, Context: ctxAbs}); err != nil {
-			return "", err
-		}
-		return recipeName, nil
+		return r.buildDockerImage(drv, recipeName, img)
 	}
 	name := img.Name
 	if name == "" {
@@ -883,6 +876,29 @@ func (r Real) ensureImage(drv sandbox.Driver, recipeName string, img recipe.Imag
 		return "", err
 	}
 	return name, nil
+}
+
+// buildDockerImage builds a recipe's inline {dockerfile,context} image as the
+// recipe's own name, unconditionally. `dabs build` calls it to force a rebuild
+// even when the image already exists; ensureImage calls it only when the image
+// is missing.
+func (r Real) buildDockerImage(drv sandbox.Driver, recipeName string, img recipe.ImageRef) (string, error) {
+	ctx := img.Context
+	if ctx == "" {
+		ctx = filepath.Dir(img.Dockerfile)
+	}
+	dockerfile, err := r.absPath(img.Dockerfile)
+	if err != nil {
+		return "", err
+	}
+	ctxAbs, err := r.absPath(ctx)
+	if err != nil {
+		return "", err
+	}
+	if err := drv.Build(sandbox.BuildSpec{Name: recipeName, Dockerfile: dockerfile, Context: ctxAbs}); err != nil {
+		return "", err
+	}
+	return recipeName, nil
 }
 
 func (r Real) hasBundledImage(name string) bool {

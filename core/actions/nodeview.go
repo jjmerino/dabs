@@ -1,0 +1,365 @@
+package actions
+
+// A NodeView is what a node's state LOOKS LIKE, computed once and drawn many
+// ways. `ls` and `rm` both need to show a node and what stands on it, and they
+// must agree about what "empty", "held" and "gone" mean. So the state is
+// resolved in one place — viewNodes — into a tree of view-models, and a
+// renderer draws that tree without ever touching the filesystem or a driver
+// again. The split is the point: deciding is separate from drawing.
+
+import (
+	"path/filepath"
+	"sort"
+	"strings"
+
+	"github.com/charmbracelet/lipgloss"
+
+	"github.com/jjmerino/dabs/core/tui"
+)
+
+// Cell is one column's resolved display state.
+type Cell int
+
+const (
+	CellNA       Cell = iota // "—"  not applicable to this node kind
+	CellEmpty                // "✓"  space present, holds nothing (safe to reap)
+	CellHeld                 // "⚠"  space holds files a reap would lose
+	CellLive                 // box:      running
+	CellGone                 // box:      archived (no live instance)
+	CellNoDiff               // worktree: no unreviewed work
+	CellUnmerged             // worktree: uncommitted or unpushed work
+)
+
+// Symbol is the plain glyph or word a cell shows. Piped output keeps it, so a
+// script reading the columns sees the same tokens a terminal draws.
+func (c Cell) Symbol() string {
+	switch c {
+	case CellEmpty:
+		return "✓"
+	case CellHeld:
+		return "⚠"
+	case CellLive:
+		return "live"
+	case CellGone:
+		return "gone"
+	case CellNoDiff:
+		return "no-diff"
+	case CellUnmerged:
+		return "unmerged"
+	default:
+		return "—"
+	}
+}
+
+func (c Cell) String() string { return c.Symbol() }
+
+// NodeView is a display-ready snapshot of a node and its subtree — a TRUE tree,
+// computed once, so any renderer consumes it with no further fs/driver call.
+type NodeView struct {
+	ID        string
+	Kind      NodeKind
+	Where     string // the "where": cwd (project) / on-disk folder (workdir, worktree) / instance (box)
+	Volume    Cell   // CellEmpty / CellHeld
+	Ephemeral Cell
+	Tmp       Cell
+	State     Cell // box: live/gone · worktree: no-diff/unmerged · else CellNA
+	Children  []*NodeView
+}
+
+// viewNodes turns a SET of nodes into view trees. It is the ONE place node
+// state becomes a view. It reads each node's OWN spaces (local stat, fast) and,
+// for a box, its liveness from the caller's pre-fetched `state` map — NEVER a
+// fresh driver/server query. So building a view for a set that omits some
+// server's box never contacts that server. Nodes whose parent is not in the set
+// are roots.
+func (r Real) viewNodes(nodes []Node, state map[string]boxState) []*NodeView {
+	views := make(map[string]*NodeView, len(nodes))
+	created := make(map[string]string, len(nodes))
+	inSet := make(map[string]bool, len(nodes))
+	for _, n := range nodes {
+		views[n.ID] = r.viewNode(n, state)
+		created[n.ID] = n.Created
+		inSet[n.ID] = true
+	}
+
+	var roots []*NodeView
+	for _, n := range nodes {
+		v := views[n.ID]
+		if n.Parent != "" && inSet[n.Parent] {
+			p := views[n.Parent]
+			p.Children = append(p.Children, v)
+			continue
+		}
+		roots = append(roots, v)
+	}
+
+	// Oldest-first everywhere, so a listing keeps a stable order however the
+	// records come off disk.
+	oldest := func(vs []*NodeView) {
+		sort.SliceStable(vs, func(i, j int) bool { return created[vs[i].ID] < created[vs[j].ID] })
+	}
+	oldest(roots)
+	for _, v := range views {
+		oldest(v.Children)
+	}
+	return roots
+}
+
+// viewNode resolves one node's cells. Spaces are always local; box liveness
+// comes only from the passed map; worktree state comes from local git.
+func (r Real) viewNode(n Node, state map[string]boxState) *NodeView {
+	v := &NodeView{
+		ID:        n.ID,
+		Kind:      n.Kind,
+		Volume:    r.spaceCell(n.ID, SpaceVolume),
+		Ephemeral: r.spaceCell(n.ID, SpaceEphemeral),
+		Tmp:       r.spaceCell(n.ID, SpaceTmp),
+		State:     CellNA,
+	}
+	switch n.Kind {
+	case KindBox:
+		// A box marks a sandbox, not a directory, so its "where" is the instance
+		// name — the identity run/exec/down take.
+		v.Where = n.Instance
+		if _, live := state[n.Instance]; live {
+			v.State = CellLive
+		} else {
+			v.State = CellGone
+		}
+	case KindWorktree:
+		v.Where = tilde(r.nodeFolder(n))
+		v.State = r.worktreeState(n)
+	case KindWorkdir:
+		v.Where = tilde(r.nodeFolder(n))
+	default: // project
+		v.Where = tilde(n.Dir)
+	}
+	return v
+}
+
+// nodeFolder is where a node's working bytes actually live on disk — a
+// worktree's checkout, a workdir's copy — resolved from the node's own storage
+// rather than a recorded source path, which for a workdir is its parent project.
+// It falls back to the recorded Dir (a live mount's target has no node-local
+// copy).
+func (r Real) nodeFolder(n Node) string {
+	if data, err := r.resolveNodeData(n.ID); err == nil && r.dataExists(data) {
+		return data
+	}
+	if eph, err := r.resolveNodeSpace(n.ID, SpaceEphemeral); err == nil {
+		if work := filepath.Join(eph, "work"); r.dataExists(work) {
+			return work
+		}
+	}
+	return n.Dir
+}
+
+// spaceCell reports whether a node's own space holds anything. A resolve error
+// reads as empty: one unreadable node must not crash a whole listing.
+func (r Real) spaceCell(id, space string) Cell {
+	dir, err := r.resolveNodeSpace(id, space)
+	if err != nil {
+		return CellEmpty
+	}
+	held, err := r.spaceHolds(dir)
+	if err != nil || !held {
+		return CellEmpty
+	}
+	return CellHeld
+}
+
+// worktreeState answers the same question `worktrees` HAS WORK does, from local
+// git: uncommitted changes or unpushed commits are unmerged work. A git error
+// leaves the state unknown rather than guessing.
+func (r Real) worktreeState(n Node) Cell {
+	path, err := r.resolveNodeData(n.ID)
+	if err != nil {
+		return CellNA
+	}
+	_, dirty, ahead, err := r.data.GitState(path)
+	if err != nil {
+		return CellNA
+	}
+	if dirty || ahead > 0 {
+		return CellUnmerged
+	}
+	return CellNoDiff
+}
+
+// Column names a drawable field. A renderer is told which to draw and in what
+// order, so `rm`'s preview and `ls` share one renderer and differ only in the
+// columns they ask for.
+type Column int
+
+const (
+	ColNode Column = iota
+	ColKind
+	ColVol
+	ColEph
+	ColTmp
+	ColState
+	ColWhere
+)
+
+// columnTitle is the header label for a column.
+func columnTitle(c Column) string {
+	switch c {
+	case ColKind:
+		return "KIND"
+	case ColVol:
+		return "VOL"
+	case ColEph:
+		return "EPH"
+	case ColTmp:
+		return "TMP"
+	case ColState:
+		return "STATE"
+	case ColWhere:
+		return "WHERE"
+	default:
+		return "NODE"
+	}
+}
+
+// renderForest draws view trees in the nested ├─/└─ style, aligning exactly the
+// columns requested. Column widths are computed across the whole forest so deep
+// nodes still line up. The result ends with a trailing newline.
+func renderForest(roots []*NodeView, cols []Column, indent int) string {
+	type row struct {
+		v     *NodeView
+		label string // the ColNode cell: tree prefix + id, plain (for measuring)
+	}
+	var rows []row
+
+	// Walk the tree once, building each row's node-column label with its branch
+	// glyphs. The rest of a row's cells are read from the view when we draw.
+	var walk func(v *NodeView, prefix string, last bool, depth int)
+	walk = func(v *NodeView, prefix string, last bool, depth int) {
+		stem := ""
+		if depth > 0 {
+			stem = "├─ "
+			if last {
+				stem = "└─ "
+			}
+		}
+		rows = append(rows, row{v: v, label: prefix + stem + v.ID})
+		next := prefix
+		if depth > 0 {
+			if last {
+				next += "   "
+			} else {
+				next += "│  "
+			}
+		}
+		for i, k := range v.Children {
+			walk(k, next, i == len(v.Children)-1, depth+1)
+		}
+	}
+	for _, v := range roots {
+		walk(v, "", true, 0)
+	}
+
+	// cellText renders one column of one row into its styled string.
+	cellText := func(r row, c Column) string {
+		switch c {
+		case ColNode:
+			return tui.Accent(r.label)
+		case ColKind:
+			return tui.Muted(string(r.v.Kind))
+		case ColVol:
+			return styleCell(r.v.Volume)
+		case ColEph:
+			return styleCell(r.v.Ephemeral)
+		case ColTmp:
+			return styleCell(r.v.Tmp)
+		case ColState:
+			return styleState(r.v.State)
+		case ColWhere:
+			return tui.Muted(r.v.Where)
+		default:
+			return ""
+		}
+	}
+
+	// One width per column across the whole forest, measured by visible width so
+	// ANSI-styled cells still line up.
+	widths := make([]int, len(cols))
+	for i, c := range cols {
+		widths[i] = lipgloss.Width(columnTitle(c))
+	}
+	for _, r := range rows {
+		for i, c := range cols {
+			if w := lipgloss.Width(cellText(r, c)); w > widths[i] {
+				widths[i] = w
+			}
+		}
+	}
+
+	pad := strings.Repeat(" ", indent)
+	var b strings.Builder
+	writeLine := func(cells []string) {
+		b.WriteString(pad)
+		for i, cell := range cells {
+			b.WriteString(cell)
+			if i < len(cells)-1 {
+				b.WriteString(strings.Repeat(" ", widths[i]-lipgloss.Width(cell)+2))
+			}
+		}
+		b.WriteByte('\n')
+	}
+
+	header := make([]string, len(cols))
+	for i, c := range cols {
+		header[i] = tui.Muted(columnTitle(c))
+	}
+	writeLine(header)
+	if hasSpaceColumn(cols) {
+		b.WriteString(pad)
+		b.WriteString(tui.Muted("✓ empty  ⚠ holds files  — n/a"))
+		b.WriteByte('\n')
+	}
+	for _, r := range rows {
+		cells := make([]string, len(cols))
+		for i, c := range cols {
+			cells[i] = cellText(r, c)
+		}
+		writeLine(cells)
+	}
+	return b.String()
+}
+
+// hasSpaceColumn reports whether any space column is drawn, so the legend that
+// explains ✓ ⚠ — is only printed when those glyphs actually appear.
+func hasSpaceColumn(cols []Column) bool {
+	for _, c := range cols {
+		if c == ColVol || c == ColEph || c == ColTmp {
+			return true
+		}
+	}
+	return false
+}
+
+// styleCell colors a space cell: a held space is warned (amber), an empty or
+// n/a space recedes (muted).
+func styleCell(c Cell) string {
+	switch c {
+	case CellHeld:
+		if w := tui.Warn(""); lipgloss.Width(w) > 0 {
+			return w // a terminal: amber warn glyph
+		}
+		return c.Symbol() // piped: the plain glyph, still parsable
+	default:
+		return tui.Muted(c.Symbol())
+	}
+}
+
+// styleState colors a box or worktree state cell: what draws the eye (a live
+// box, unmerged work) is accented; what recedes (gone, merged, n/a) is muted.
+func styleState(c Cell) string {
+	switch c {
+	case CellLive, CellUnmerged:
+		return tui.Accent(c.Symbol())
+	default:
+		return tui.Muted(c.Symbol())
+	}
+}

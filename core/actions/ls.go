@@ -120,7 +120,7 @@ func (r Real) Ls(p params.Ls) error {
 			fmt.Fprintln(os.Stdout, tui.Indent(tui.Muted("(nothing running)"), 2))
 			continue
 		}
-		printNodeForest(live[key], state, work, 2)
+		fmt.Fprint(os.Stdout, renderForest(r.viewNodes(live[key], state), lsColumns, 2))
 	}
 
 	// Everything dabs marked that is not running anywhere: the places, and the
@@ -152,7 +152,7 @@ func (r Real) Ls(p params.Ls) error {
 			head += tui.Muted("   * has work you have not reviewed — dabs worktrees diff <name>")
 		}
 		fmt.Fprintln(os.Stdout, tui.Heading(head))
-		printNodeForest(idle, state, work, 2)
+		fmt.Fprint(os.Stdout, renderForest(r.viewNodes(idle, state), lsColumns, 2))
 	}
 
 	// A box a driver holds that no node claims — booted by an older dabs, or by
@@ -276,101 +276,9 @@ func anyWork(nodes []Node, work map[string]bool) bool {
 // is part of what it is.
 type boxState struct{ status, where string }
 
-// printNodeForest writes every root and its descendants. A root is a node whose
-// parent is not present — a project, or a node whose parent was reaped.
-func printNodeForest(nodes []Node, state map[string]boxState, work map[string]bool, indent int) {
-	byID := make(map[string]Node, len(nodes))
-	for _, n := range nodes {
-		byID[n.ID] = n
-	}
-	kids := map[string][]Node{}
-	var roots []Node
-	for _, n := range nodes {
-		if _, ok := byID[n.Parent]; n.Parent != "" && ok {
-			kids[n.Parent] = append(kids[n.Parent], n)
-			continue
-		}
-		roots = append(roots, n)
-	}
-	oldestFirst := func(ns []Node) {
-		sort.SliceStable(ns, func(i, j int) bool { return ns[i].Created < ns[j].Created })
-	}
-	oldestFirst(roots)
-	for _, ns := range kids {
-		oldestFirst(ns)
-	}
-
-	// One column width for the whole forest, so kind and detail line up however
-	// deep a node sits.
-	width := 0
-	var measure func(n Node, depth int)
-	measure = func(n Node, depth int) {
-		if w := depth*3 + len([]rune(n.ID)); w > width {
-			width = w
-		}
-		for _, k := range kids[n.ID] {
-			measure(k, depth+1)
-		}
-	}
-	for _, n := range roots {
-		measure(n, 0)
-	}
-
-	var walk func(n Node, prefix string, last bool, depth int)
-	walk = func(n Node, prefix string, last bool, depth int) {
-		stem := ""
-		if depth > 0 {
-			stem = "├─ "
-			if last {
-				stem = "└─ "
-			}
-		}
-		label := prefix + stem + n.ID
-		pad := strings.Repeat(" ", maxInt(1, width+2-len([]rune(label))))
-		fmt.Fprintf(os.Stdout, "%s%s%s%-9s %s\n", strings.Repeat(" ", indent), label, pad, string(n.Kind), nodeDetail(n, state, work))
-
-		next := prefix
-		if depth > 0 {
-			if last {
-				next += "   "
-			} else {
-				next += "│  "
-			}
-		}
-		ks := kids[n.ID]
-		for i, k := range ks {
-			walk(k, next, i == len(ks)-1, depth+1)
-		}
-	}
-	for _, n := range roots {
-		walk(n, "", true, 0)
-	}
-}
-
-// nodeDetail says what a node is right now: where a project points, which branch
-// a worktree carries, whether a box is still running.
-func nodeDetail(n Node, state map[string]boxState, work map[string]bool) string {
-	switch n.Kind {
-	case KindProject, KindWorkdir:
-		return tui.Muted("%s", tilde(n.Dir))
-	case KindWorktree:
-		if n.Worktree != nil {
-			if work[n.ID] {
-				// A worktree holding work is the one line here that can cost you
-				// something, so it is the one line that is not muted.
-				return tui.Accent("* branch " + n.Worktree.Branch)
-			}
-			return tui.Muted("branch %s", n.Worktree.Branch)
-		}
-	case KindBox:
-		st, up := state[n.Instance]
-		if !up {
-			return tui.Muted("%s · gone", n.Instance)
-		}
-		return fmt.Sprintf("%s %s", tui.Muted("%s ·", n.Instance), tui.Status(st.status))
-	}
-	return tui.Muted("%s", n.Recipe)
-}
+// lsColumns are the columns `ls` draws for every node: the tree, its kind, the
+// three space cells, its live/gone or merged/unmerged state, and where it is.
+var lsColumns = []Column{ColNode, ColKind, ColVol, ColEph, ColTmp, ColState, ColWhere}
 
 // tilde shortens a path under the home directory, so a tree of them reads at a
 // glance.
@@ -380,11 +288,4 @@ func tilde(p string) string {
 		return p
 	}
 	return filepath.Join("~", strings.TrimPrefix(p, home))
-}
-
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }

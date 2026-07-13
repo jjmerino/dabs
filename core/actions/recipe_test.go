@@ -1158,11 +1158,13 @@ func TestRecipeEmptyCommandWithAppendedArgvRejected(t *testing.T) {
 // CONTRACT: `dabs up` on a boxless (imageless) recipe provisions the place(s) and
 // stops — the SAME outcome as `dabs recipe`, not a spurious "has no path" error.
 func TestUpOnBoxlessRecipeProvisionsLikeRecipe(t *testing.T) {
+	// A boxless recipe must have a source that MAKES a place: copy or worktree.
+	// A live mount makes none (the box, which there is not, would be the thing
+	// that mounts it), so a copy source is what a boxless recipe uses.
 	y := `recipes:
   place:
     sources:
-      - mount: /data
-        path: /work
+      - copy: /data
 `
 	run := func(do func(actions.Real) error) *fakeDriver {
 		fd := baseData()
@@ -1571,7 +1573,8 @@ func TestCopyRecipeMintsAFreshWorkdirEveryRunWithoutGit(t *testing.T) {
 		t.Fatalf("both runs reused one workdir node %q; parallel runs would share a directory", wds[0])
 	}
 
-	// A LIVE mount names the host dir itself, so a second run is the same place.
+	// A LIVE mount provisions no middle node at all: the box stands directly on
+	// the project, so no run makes a workdir.
 	fd2 := baseData()
 	fd2.exists["/cwd"] = true
 	mountY := `recipes:
@@ -1589,8 +1592,8 @@ func TestCopyRecipeMintsAFreshWorkdirEveryRunWithoutGit(t *testing.T) {
 			t.Fatalf("mount run %d: %v", i, err)
 		}
 	}
-	if got := workdirNodes(t, fd2); len(got) != 1 {
-		t.Errorf("two mount runs made %d workdir nodes, want 1 (the same place): %v", len(got), got)
+	if got := workdirNodes(t, fd2); len(got) != 0 {
+		t.Errorf("mount made %d workdir nodes, want 0 (the box stands on the project): %v", len(got), got)
 	}
 }
 

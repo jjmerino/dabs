@@ -202,10 +202,10 @@ func TestLsStarsWorktreesHoldingWork(t *testing.T) {
 
 	for _, line := range strings.Split(out, "\n") {
 		switch {
-		case strings.Contains(line, dirtyID) && !strings.Contains(line, "*"):
-			t.Errorf("worktree holding work is not starred:\n%s", line)
-		case strings.Contains(line, cleanID) && strings.Contains(line, "*"):
-			t.Errorf("clean worktree is starred; the mark would mean nothing:\n%s", line)
+		case strings.Contains(line, dirtyID) && !strings.Contains(line, "unmerged"):
+			t.Errorf("worktree holding work is not marked unmerged:\n%s", line)
+		case strings.Contains(line, cleanID) && strings.Contains(line, "unmerged"):
+			t.Errorf("clean worktree is marked unmerged; the mark would mean nothing:\n%s", line)
 		}
 	}
 	if !strings.Contains(out, "has work") {

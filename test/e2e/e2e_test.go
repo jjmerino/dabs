@@ -844,6 +844,49 @@ func TestRmWorktreeGuardsUnreviewedWork(t *testing.T) {
 	}
 }
 
+// TestRmWorktreeDeregistersFromGit: reaping a worktree node must leave git
+// clean — no prunable worktree registration and no orphan branch. The checkout
+// lives in the node's ephemeral space, so the reap has to deregister the
+// worktree from git BEFORE deleting that space, while git can still resolve the
+// repo from the checkout.
+func TestRmWorktreeDeregistersFromGit(t *testing.T) {
+	clean(t)
+	installRecipes(t)
+	resetNodes(t)
+	repo := filepath.Join(home, "wtgitcleanup")
+	gitRepo(t, repo)
+	if _, code := runIn(repo, "dabs recipe claude-new-worktree"); code != 0 {
+		t.Fatalf("recipe failed")
+	}
+	wts := worktreeDirs(t)
+	if len(wts) != 1 {
+		t.Fatalf("want one worktree, got %v", wts)
+	}
+	name := wts[0]
+
+	// Before: git registers the worktree and holds its branch.
+	if list, _ := run("git -C " + repo + " worktree list"); !strings.Contains(list, "ephemeral/worktree") {
+		t.Fatalf("git did not register the worktree:\n%s", list)
+	}
+	if b, _ := run("git -C " + repo + " branch --list dabs/*"); !strings.Contains(b, "dabs/") {
+		t.Fatalf("no dabs/ branch after cutting a worktree:\n%s", b)
+	}
+
+	// Reap it (the box left uncommitted work, so --force is required).
+	out, code := run("dabs rm " + name + " -y --force")
+	wantExit(t, 0, code)
+	wantContains(t, out, "removed")
+
+	// After: no registration left behind (prunable or otherwise), no orphan branch.
+	list, _ := run("git -C " + repo + " worktree list")
+	if strings.Contains(list, "ephemeral/worktree") || strings.Contains(list, "prunable") {
+		t.Fatalf("reap left a worktree registration behind:\n%s", list)
+	}
+	if b, _ := run("git -C " + repo + " branch --list dabs/*"); strings.TrimSpace(b) != "" {
+		t.Fatalf("reap left an orphan branch:\n%s", b)
+	}
+}
+
 // TestRmCleanWorktreeNeedsNoForce: the guard is about WORK, not about being a
 // worktree. A clean worktree (nothing uncommitted, nothing ahead) reaps with -y.
 func TestRmCleanWorktreeNeedsNoForce(t *testing.T) {

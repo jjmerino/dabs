@@ -49,10 +49,10 @@ func (r Real) Rm(p params.Rm) error {
 	}
 	if len(doomed) > 1 && !p.Yes {
 		var b strings.Builder
-		fmt.Fprintf(&b, "Removing %s reaps:\n", tui.Accent(p.Node))
-		for _, n := range doomed {
-			fmt.Fprintf(&b, "  %s %s\n", string(n.Kind), n.ID)
-		}
+		fmt.Fprintf(&b, "Removing %s reaps %d nodes:\n", tui.Accent(p.Node), len(doomed))
+		// The set is archived by definition of a cascade preview — no live query is
+		// made, so a downed box reads as gone, which is what it is.
+		b.WriteString(renderForest(r.viewNodes(doomed, nil), rmColumns, 2))
 		// With no terminal there is nobody to ask, and asking anyway would block on
 		// a pipe forever. Say what it would take, and take nothing.
 		if !tui.Interactive() {
@@ -90,6 +90,11 @@ func (r Real) Rm(p params.Rm) error {
 	}
 	return nil
 }
+
+// rmColumns are the columns a cascade preview draws: the tree, each node's
+// kind, its three space cells, and its state. No WHERE column — a reap is about
+// what is lost, not where it ran.
+var rmColumns = []Column{ColNode, ColKind, ColVol, ColEph, ColTmp, ColState}
 
 // guardWorktreeWork refuses to discard a worktree node that holds unreviewed git
 // work — uncommitted changes or commits ahead — unless force approves it. Only a
@@ -147,29 +152,37 @@ func (r Real) reapSpaces(n Node, pol spacePolicy) error {
 	kept := 0
 	for _, sp := range []struct {
 		space   string
-		allowed bool
+		consent func(dir string) bool // asked ONLY when the space actually holds files
 		how     string
 	}{
-		{SpaceEphemeral, pol.yes || r.consentToEphemeral(n), "-y"},
-		{SpaceVolume, pol.yes && pol.volume, "-y --volume"},
+		{SpaceEphemeral, func(dir string) bool { return pol.yes || r.consentToEphemeral(n, dir) }, "-y"},
+		{SpaceVolume, func(string) bool { return pol.yes && pol.volume }, "-y --volume"},
 	} {
 		dir, err := r.resolveNodeSpace(n.ID, sp.space)
 		if err != nil {
 			return err
 		}
+		// spaceHolds is the ONE check for "does this space hold anything" — the
+		// same one `ls`/the reap preview use — so the preview and the reap can
+		// never disagree. Consent is sought only when it is actually held, so an
+		// empty space is reaped silently and never prompts.
 		held, err := r.spaceHolds(dir)
 		if err != nil {
 			return err
 		}
-		if !held {
-			_ = r.data.RemoveAll(dir) // empty: nothing to keep, nothing to ask
-			continue
-		}
-		if !sp.allowed {
+		if held && !sp.consent(dir) {
 			kept++
 			fmt.Fprintln(os.Stdout, tui.Warn("%s kept: %s", sp.space, dir)+
 				tui.Muted("   (dabs rm %s %s to reap it)", n.ID, sp.how))
 			continue
+		}
+		// About to reap this space. A worktree's checkout lives in ephemeral, so
+		// deregister it from git FIRST — while git can still resolve the repo from
+		// the live checkout — or the reap strands a prunable registration + branch.
+		if sp.space == SpaceEphemeral && pol.removeNode && n.Worktree != nil {
+			if wt, e := r.resolveNodeData(n.ID); e == nil {
+				_ = r.data.GitRemoveWorktree(wt)
+			}
 		}
 		if err := r.data.RemoveAll(dir); err != nil {
 			return fmt.Errorf("rm %s: %s: %w", n.ID, dir, err)
@@ -183,14 +196,6 @@ func (r Real) reapSpaces(n Node, pol spacePolicy) error {
 	if err != nil {
 		return err
 	}
-	if n.Worktree != nil {
-		// git owns the checkout's registration; remove it before the directory, or
-		// the parent repo keeps a worktree pointing at nothing.
-		wt, err := r.resolveNodeData(n.ID)
-		if err == nil {
-			_ = r.data.GitRemoveWorktree(wt)
-		}
-	}
 	if err := r.data.RemoveAll(dir); err != nil {
 		return fmt.Errorf("rm %s: %w", n.ID, err)
 	}
@@ -202,12 +207,12 @@ func (r Real) reapSpaces(n Node, pol spacePolicy) error {
 // no one, and silence is not consent: the space is kept, and the caller is told
 // where it is. Asking anyway would block on a pipe forever — a reap that hangs
 // waiting for an answer nobody can give is worse than one that keeps the files.
-func (r Real) consentToEphemeral(n Node) bool {
+// consentToEphemeral asks before reaping a node's ephemeral space. It is called
+// only when the space actually holds files (the loop checks spaceHolds first),
+// so the prompt never fires for an empty space and never contradicts the reap
+// preview. dir is the already-resolved space path.
+func (r Real) consentToEphemeral(n Node, dir string) bool {
 	if !tui.Interactive() {
-		return false
-	}
-	dir, err := r.resolveNodeSpace(n.ID, SpaceEphemeral)
-	if err != nil {
 		return false
 	}
 	return r.confirm(fmt.Sprintf("%s holds files in its ephemeral space.\n%s\nReap them?",

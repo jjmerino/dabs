@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jjmerino/dabs/core/sandbox"
+	"github.com/jjmerino/dabs/core/sandbox/server"
 	"github.com/jjmerino/dabs/core/tui"
 )
 
@@ -17,7 +18,9 @@ var warnf = os.Stderr
 // remoteTimeout bounds how long a single remote driver's Ls may take during
 // resolution. A slow or dead server degrades to "no matches from there"
 // (with a warning) instead of hanging every command that resolves a name.
-const remoteTimeout = 6 * time.Second
+// It is the transport's one connect timeout, so a dead host fails the same
+// way whether ls, boot, or build reached for it.
+const remoteTimeout = server.ConnectTimeout
 
 // match is one instance found somewhere in the fleet.
 type match struct {

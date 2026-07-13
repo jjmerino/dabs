@@ -12,14 +12,30 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/jjmerino/dabs/core/sandbox"
 )
+
+// ConnectTimeout bounds how long any ssh/scp to a server may spend CONNECTING
+// before giving up — the one remote timeout in dabs (fleet resolution bounds
+// its remote calls by the same constant). Only the connect is bounded: an
+// established session may legitimately run for minutes (a remote build).
+const ConnectTimeout = 6 * time.Second
+
+// sshOpts are the options every ssh/scp invocation carries: never prompt, and
+// never hang on a dead host — a boot or build routed to an unreachable server
+// must fail within ConnectTimeout, not block forever.
+var sshOpts = []string{
+	"-o", "BatchMode=yes",
+	"-o", fmt.Sprintf("ConnectTimeout=%d", int(ConnectTimeout/time.Second)),
+}
 
 // Driver proxies dabs verbs to a remote machine running dabs. The TRANSPORT
 // (how we reach it) is decoupled from the server noun: ssh today, a future
@@ -55,9 +71,10 @@ func New(via, host string) (*Driver, error) {
 // dabsPath resolves (once) where dabs lives on the remote.
 func (d *Driver) dabsPath() (string, error) {
 	d.once.Do(func() {
-		out, err := exec.Command("ssh", "-o", "BatchMode=yes", d.host, `bash -lc "command -v dabs"`).Output()
+		args := append(append([]string{}, sshOpts...), d.host, `bash -lc "command -v dabs"`)
+		out, err := exec.Command("ssh", args...).Output()
 		if err != nil {
-			d.dabsErr = fmt.Errorf("ssh: cannot run dabs on %s (needs pubkey auth and dabs installed): %w", d.host, err)
+			d.dabsErr = fmt.Errorf("ssh: cannot run dabs on %s (needs pubkey auth and dabs installed): %s", d.host, sshErr(err))
 			return
 		}
 		d.dabs = strings.TrimSpace(string(out))
@@ -77,7 +94,7 @@ func (d *Driver) remote(extraSSH []string, argv ...string) *exec.Cmd {
 	for _, a := range argv {
 		quoted = append(quoted, quote(a))
 	}
-	args := append([]string{"-o", "BatchMode=yes"}, extraSSH...)
+	args := append(append([]string{}, sshOpts...), extraSSH...)
 	args = append(args, d.host, strings.Join(quoted, " "))
 	return exec.Command("ssh", args...)
 }
@@ -97,7 +114,8 @@ func (d *Driver) Build(spec sandbox.BuildSpec) error {
 	}
 
 	// Ship the Dockerfile (it may live outside the context).
-	if err := runQuiet(exec.Command("scp", "-q", "-o", "BatchMode=yes", spec.Dockerfile, d.host+":"+stage+"/Dockerfile.dabs")); err != nil {
+	scpArgs := append(append([]string{"-q"}, sshOpts...), spec.Dockerfile, d.host+":"+stage+"/Dockerfile.dabs")
+	if err := runQuiet(exec.Command("scp", scpArgs...)); err != nil {
 		return fmt.Errorf("ssh: ship Dockerfile to %s: %w", d.host, err)
 	}
 
@@ -176,7 +194,7 @@ func (d *Driver) Up(spec sandbox.Spec) (string, error) {
 	}
 	out, err := d.remote(nil, dabs, "recipe", d.stagingDir(spec.Name), "--detach").Output()
 	if err != nil {
-		return "", fmt.Errorf("ssh: dabs recipe --detach on %s: %w", d.host, err)
+		return "", fmt.Errorf("ssh: dabs recipe --detach on %s: %s", d.host, sshErr(err))
 	}
 	// printUp emits the instance on its own line: "instance: <name>".
 	for _, line := range strings.Split(string(out), "\n") {
@@ -248,7 +266,7 @@ func (d *Driver) Ls() ([]sandbox.Info, error) {
 	}
 	out, err := d.remote(nil, dabs, "ls").Output()
 	if err != nil {
-		return nil, fmt.Errorf("ssh: ls on %s: %w", d.host, err)
+		return nil, fmt.Errorf("ssh: ls on %s: %s", d.host, sshErr(err))
 	}
 	var infos []sandbox.Info
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
@@ -259,6 +277,17 @@ func (d *Driver) Ls() ([]sandbox.Info, error) {
 		infos = append(infos, sandbox.Info{Name: parts[0], Status: parts[1], Driver: parts[2]})
 	}
 	return infos, nil
+}
+
+// sshErr renders an ssh failure with ssh's own stderr (which names the host
+// and says "Connection timed out" / "Connection refused"), lost by Output()
+// unless surfaced from the ExitError.
+func sshErr(err error) string {
+	var ee *exec.ExitError
+	if errors.As(err, &ee) && len(bytes.TrimSpace(ee.Stderr)) > 0 {
+		return fmt.Sprintf("%v: %s", err, bytes.TrimSpace(ee.Stderr))
+	}
+	return err.Error()
 }
 
 func runQuiet(c *exec.Cmd) error {

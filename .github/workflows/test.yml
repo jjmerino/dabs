@@ -29,10 +29,18 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Install bubblewrap, and let it have user namespaces
+      - name: Build overlay-enabled bubblewrap, and let it have user namespaces
         run: |
+          # Ubuntu's packaged bubblewrap (0.9) has no overlay support; the bwrap
+          # driver needs it. Build 0.11 from source exactly as the dabseption
+          # box image does (non-setuid, overlay-enabled).
           sudo apt-get update
-          sudo apt-get install -y bubblewrap
+          sudo apt-get install -y meson ninja-build libcap-dev pkg-config
+          curl -fsSL https://github.com/containers/bubblewrap/releases/download/v0.11.0/bubblewrap-0.11.0.tar.xz -o /tmp/bw.tar.xz
+          cd /tmp && tar xf bw.tar.xz && cd bubblewrap-0.11.0
+          meson setup _build --prefix=/usr/local -Dtests=false -Dman=disabled
+          ninja -C _build && sudo ninja -C _build install
+          bwrap --version
           # Ubuntu 24.04 restricts unprivileged user namespaces via AppArmor,
           # which is exactly what bwrap needs. The runner is disposable.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0

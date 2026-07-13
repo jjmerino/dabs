@@ -13,9 +13,12 @@ exactly as written — an agent may rely on it without checking anything else.
 Two tags mark the exceptions:
 **deprecated**: still works today, but do not rely on it in anything new — the
 successor exists and is what new code, output, docs, and comments use.
-**unstable**: the concept has not fully landed and is subject to revision. What
-the entry describes is what works today; any future name or shape noted
-alongside is direction, not instruction.
+**unstable**: the concept has been marked for revision and may change its
+meaning or be deprecated later. What the entry describes is what works today;
+any future name or shape noted alongside is direction, not instruction.
+
+Note: before 1.0 we make no backwards compatibility guarantees. This file and
+the changelog should be referenced by agents migrating across versions.
 The word may still be printed by the current CLI; where it is, the entry says so.
 Deprecation is docs-first: the term keeps working until code catches up, and the
 glossary records where the vocabulary is going so new work simply avoids the old word.

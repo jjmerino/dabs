@@ -229,3 +229,19 @@ func TestViewNodesWorkdirWhereIsItsCopyFolder(t *testing.T) {
 		t.Errorf("workdir Where leaked the source path: %q", v.Where)
 	}
 }
+
+// countHeldSpaces walks the whole forest (into Children) and tallies data per
+// space — the aggregate a cascade reap asks about once.
+func TestCountHeldSpaces(t *testing.T) {
+	roots := []*NodeView{
+		{Ephemeral: CellHeld, Children: []*NodeView{
+			{Ephemeral: CellHeld, Volume: CellHeld},
+			{Tmp: CellHeld},
+		}},
+		{Volume: CellHeld},
+	}
+	eph, vol, tmp := countHeldSpaces(roots)
+	if eph != 2 || vol != 2 || tmp != 1 {
+		t.Errorf("counts = eph %d vol %d tmp %d, want 2/2/1", eph, vol, tmp)
+	}
+}

@@ -42,17 +42,6 @@ func (r Real) treeHoldsFile(dir string, entries []string) (bool, error) {
 	return false, nil
 }
 
-// boxIsLive reports whether an instance is still held by some driver in the
-// fleet. `rm` uses it to decide consent: stopping a running box is a loss the
-// user must approve, the same as losing held data.
-func (r Real) boxIsLive(instance string) bool {
-	if instance == "" {
-		return false
-	}
-	m, err := r.matches(instance)
-	return err == nil && len(m) > 0
-}
-
 // downInstance brings one box down by exact name, wherever in the fleet it is.
 // It is what `rm` uses on a box node: a place cannot be pulled out from under a
 // running box.

@@ -27,7 +27,8 @@ const (
 	CellLive                 // box:      running
 	CellGone                 // box:      archived (no live instance)
 	CellNoDiff               // worktree: no unreviewed work
-	CellUnmerged             // worktree: uncommitted or unpushed work
+	CellUnmerged             // worktree: commits ahead of the base branch
+	CellHasWork              // worktree: uncommitted/untracked work, nothing ahead
 )
 
 // Symbol is the plain glyph or word a cell shows. Piped output keeps it, so a
@@ -46,6 +47,8 @@ func (c Cell) Symbol() string {
 		return "no-diff"
 	case CellUnmerged:
 		return "unmerged"
+	case CellHasWork:
+		return "has work"
 	default:
 		return "—"
 	}
@@ -62,7 +65,7 @@ type NodeView struct {
 	Volume    Cell   // CellEmpty / CellHeld
 	Ephemeral Cell
 	Tmp       Cell
-	State     Cell // box: live/gone · worktree: no-diff/unmerged · else CellNA
+	State     Cell // box: live/gone · worktree: no-diff/has work/unmerged · else CellNA
 	Children  []*NodeView
 }
 
@@ -185,9 +188,10 @@ func (r Real) spaceCell(id, space string) Cell {
 	return CellHeld
 }
 
-// worktreeState answers the same question `worktrees` HAS WORK does, from local
-// git: uncommitted changes or unpushed commits are unmerged work. A git error
-// leaves the state unknown rather than guessing.
+// worktreeState reads a worktree's git state the way `worktrees` does, and
+// keeps its vocabulary: commits ahead of the base are UNMERGED; uncommitted or
+// untracked changes with nothing ahead are work in progress (HAS WORK), not an
+// unmerged branch. A git error leaves the state unknown rather than guessing.
 func (r Real) worktreeState(n Node) Cell {
 	path, err := r.resolveNodeData(n.ID)
 	if err != nil {
@@ -197,8 +201,11 @@ func (r Real) worktreeState(n Node) Cell {
 	if err != nil {
 		return CellNA
 	}
-	if dirty || ahead > 0 {
+	if ahead > 0 {
 		return CellUnmerged
+	}
+	if dirty {
+		return CellHasWork
 	}
 	return CellNoDiff
 }
@@ -396,7 +403,7 @@ func styleState(c Cell) string {
 	switch c {
 	case CellNA:
 		return ""
-	case CellLive, CellUnmerged:
+	case CellLive, CellUnmerged, CellHasWork:
 		return tui.Accent(c.Symbol())
 	default:
 		return tui.Muted(c.Symbol())

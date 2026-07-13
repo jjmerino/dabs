@@ -52,9 +52,17 @@ func (r Real) Rm(p params.Rm) error {
 	}
 	// Build the view once: it is BOTH the preview and the source of the data
 	// summary below, so the preview and the reap can never disagree about what
-	// holds data. Space state comes from the view; liveness is queried
-	// separately (a box the driver still holds), since a stop is a loss too.
-	views := r.viewNodes(doomed, nil)
+	// holds data. Space state comes from the view; box liveness comes from the
+	// same fleet query `ls` runs, so the preview and `ls` say the same thing
+	// about which boxes are running — a stop is a loss the preview must show.
+	state := map[string]boxState{}
+	for _, n := range doomed {
+		if n.Kind == KindBox {
+			state = r.boxStates()
+			break
+		}
+	}
+	views := r.viewNodes(doomed, state)
 	eph, vol, tmp := countHeldSpaces(views)
 
 	// --keep archives instead of removing: stop the box(es) but leave the node
@@ -71,7 +79,7 @@ func (r Real) Rm(p params.Rm) error {
 
 	live := false
 	for _, n := range doomed {
-		if n.Kind == KindBox && r.boxIsLive(n.Instance) {
+		if _, up := state[n.Instance]; n.Kind == KindBox && up {
 			live = true
 			break
 		}

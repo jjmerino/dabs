@@ -506,3 +506,56 @@ func TestConcurrentDetachMintsOneProjectNode(t *testing.T) {
 		t.Fatalf("want exactly 1 project node for %s, got %d: %v (E2-31)", dir, len(projects), projects)
 	}
 }
+
+// E2-32: a recipe (or build) whose `target:` names an unreachable server hung
+// forever — the server driver's ssh invocations carried no connect timeout,
+// even though `dabs ls` already bounds remote calls at 6s. Every remote verb
+// must give up on a dead host within the shared connect timeout and say which
+// host was unreachable. The host is 203.0.113.1 (TEST-NET-3, guaranteed
+// unroutable), so no real machine is ever contacted.
+func TestRecipeToUnreachableServerFailsFastE2E(t *testing.T) {
+	clean(t)
+	if out, code := run("dabs servers add ghost 203.0.113.1"); code != 0 {
+		t.Fatalf("servers add failed (%d): %s", code, out)
+	}
+	t.Cleanup(func() { run("dabs servers rm ghost") })
+
+	dir := filepath.Join(home, "e2e-ghost")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	yaml := "default: ghostbox\nrecipes:\n  ghostbox:\n" +
+		"    image: { dockerfile: Dockerfile, context: . }\n" +
+		"    target: ghost\n    command: [sh]\n"
+	if err := os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "Dockerfile"), []byte("FROM scratch\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// The fix bounds the ssh connect at the same 6s `dabs ls` uses, so a
+	// generous 30s deadline separates "returned with an error" from "hung".
+	start := time.Now()
+	out, hung := runTimeout(30*time.Second, "dabs recipe "+dir+" --detach")
+	if hung {
+		t.Fatalf("recipe --detach to an unreachable target hung past 30s (E2-32):\n%s", out)
+	}
+	t.Logf("recipe --detach returned in %s", time.Since(start).Round(time.Second))
+	if !containsFold(out, "203.0.113.1") ||
+		!(containsFold(out, "timed out") || containsFold(out, "unreachable")) {
+		t.Fatalf("unreachable-target error names neither the host nor a timeout (E2-32):\n%s", out)
+	}
+
+	// `dabs build` walks the same remote path and must fail fast too.
+	start = time.Now()
+	out, hung = runTimeout(30*time.Second, "dabs build "+dir)
+	if hung {
+		t.Fatalf("build against an unreachable target hung past 30s (E2-32):\n%s", out)
+	}
+	t.Logf("build returned in %s", time.Since(start).Round(time.Second))
+	if !containsFold(out, "203.0.113.1") ||
+		!(containsFold(out, "timed out") || containsFold(out, "unreachable")) {
+		t.Fatalf("unreachable-target build error names neither the host nor a timeout (E2-32):\n%s", out)
+	}
+}

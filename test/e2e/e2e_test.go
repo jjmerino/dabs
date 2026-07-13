@@ -1372,3 +1372,15 @@ func TestDabsNamePresentInBox(t *testing.T) {
 	out, _ := run("dabs exec " + i + " -- sh -c 'echo DABS_NAME=$DABS_NAME'")
 	wantContains(t, out, "DABS_NAME="+i)
 }
+
+// A fresh machine that cannot fetch anything fails the first thing anyone
+// does on a fresh machine. The bundled shell box carries curl (with CA
+// certs); this drives the real box and asks it, no network required.
+func TestShellBoxCarriesCurlE2E(t *testing.T) {
+	clean(t)
+	i := up(t)
+	out, code := run("dabs exec " + i + " -- sh -c 'command -v curl && test -d /etc/ssl/certs && echo certs-ok'")
+	wantExit(t, 0, code)
+	wantContains(t, out, "curl")
+	wantContains(t, out, "certs-ok")
+}

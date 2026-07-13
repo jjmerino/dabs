@@ -8,12 +8,15 @@ learned an old name can find the new one.
 References point at the function or type that owns a concept, not a line number,
 so they age with the code rather than drifting from it.
 
-**Deprecation legend.** Two tags, two situations:
-**⚠ deprecated — use `<successor>`** means the successor EXISTS today: never use
-the old term in anything new — code, output, docs, comments.
-**⚠ future name recorded** means the successor is decided but NOT yet implemented:
-keep using the current term in new work until the successor ships — a doc must
-never instruct a word the CLI cannot honor.
+**What this glossary guarantees.** An untagged entry describes what works TODAY,
+exactly as written — an agent may rely on it without checking anything else.
+Two tags mark the exceptions:
+**⚠ deprecated — use `<successor>`**: still works today, but do not rely on it in
+anything new — the successor exists and is what new code, output, docs, and
+comments use.
+**⚠ unstable**: the concept has not fully landed and is subject to revision. What
+the entry describes is what works today — keep using it — and any future
+name/shape noted alongside is direction, not instruction.
 The word may still be printed by the current CLI; where it is, the entry says so.
 Deprecation is docs-first: the term keeps working until code catches up, and the
 glossary records where the vocabulary is going so new work simply avoids the old word.
@@ -93,7 +96,7 @@ it and never reaps its `Dir`), **workdir** (a host directory a recipe copied as
 `.`), **worktree** (a git worktree dabs cut), **box** (one running sandbox).
 *Where:* `NodeKind` (`KindProject`/`KindWorkdir`/`KindWorktree`/`KindBox`).
 
-### archived  ⚠ deprecated
+### archived  ⚠ unstable
 A box reaped with `--keep`: its instance is stopped but its node record stays, so
 what ran and from where outlives the box. Its spaces are already gone. Archived
 boxes are hidden by default and shown by `dabs ls --all`.
@@ -106,10 +109,9 @@ residue of `rm --keep`. `dabs ls` still prints it — do not lean on it in new w
 A box node's STATE cell: **live** when a driver holds its instance, **gone** when
 none does (it is archived, or its instance died).
 
-**gone** ⚠ future name recorded — it says only what a box is *not*; the decided
-direction splits it into box-specific statuses (**idling** / **running** /
-**stopped**), which do NOT exist yet. Until they ship, `gone` remains the word,
-in output and in new code alike.
+**gone** ⚠ unstable — it says only what a box is *not*; the noted direction
+splits it into box-specific statuses (**idling** / **running** / **stopped**),
+which do NOT exist yet. `gone` is what works today, in output and new code alike.
 *Where:* `CellLive`/`CellGone`, `viewNode`.
 
 ### sandbox
@@ -366,17 +368,18 @@ Where an archived box whose place record is gone lists — its place is gone, so
 has nowhere to nest and lists flat. (Not to be confused with a worktree's
 DETAIL cell reading `no box`, which means "no live box on this worktree".)
 
-⚠ future name recorded: **orphaned** — one heading for anything not correctly
-connected to the node tree. Not implemented yet; `no place` remains the heading.
+⚠ unstable — noted direction: **orphaned**, one heading for anything not
+correctly connected to the node tree. Not implemented; `no place` is the heading
+that works today.
 *Where:* the `no place` heading in `Ls`.
 
 ### `boxes with no node` (heading)
 Where a box a driver holds but no node claims lists — booted by an older dabs or
 by hand. Still yours, so still shown and still reapable by its instance name.
 
-⚠ future name recorded: **orphaned** — one heading for anything not correctly
-connected to the node tree. Not implemented yet; `boxes with no node` remains the
-heading.
+⚠ unstable — noted direction: **orphaned**, one heading for anything not
+correctly connected to the node tree. Not implemented; `boxes with no node` is
+the heading that works today.
 *Where:* the `boxes with no node` heading in `Ls`.
 
 ### the worktree states

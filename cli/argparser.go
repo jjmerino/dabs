@@ -66,6 +66,12 @@ func parseExec(args []string) (params.Exec, error) {
 	if wantsHelp(args) {
 		return p, HelpRequestedError{helpText("exec", newFlagSet("exec"))}
 	}
+	// A leading `--` is the argv separator, not a node name: `exec -- echo hi`
+	// names no box. Reject it as a usage error rather than letting `--` reach the
+	// resolver as the node to match.
+	if len(args) > 0 && args[0] == "--" {
+		return p, BadArgsError{Cmd: "exec", Reason: "usage: exec <node> [--] <cmd…> — name the box before `--` (see dabs ls)"}
+	}
 	if len(args) < 2 {
 		return p, BadArgsError{Cmd: "exec", Reason: "usage: exec <instance> [--] <cmd…> — `--` runs an exact argv, otherwise args join into one `sh -c` line (see dabs ls)"}
 	}

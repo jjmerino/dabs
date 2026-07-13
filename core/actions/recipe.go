@@ -62,6 +62,16 @@ func (r Real) Recipe(p params.Recipe) error {
 		return r.runRecipe(reg, name, "", p.Args, true)
 	}
 	name := p.Args[0]
+	// A first positional whose SHAPE is a path names a dabs.yaml to load and run,
+	// the same resolution `--detach` and `build` use — so `dabs recipe .` runs the
+	// recipe in the cwd's dabs.yaml instead of being rejected as an unknown name.
+	if _, ok := reg.Recipes[name]; !ok && looksLikePath(name) {
+		pathReg, pathName, err := r.resolveRecipe(name)
+		if err != nil {
+			return err
+		}
+		return r.runRecipe(pathReg, pathName, p.Worktree, p.Args[1:], false)
+	}
 	if _, ok := reg.Recipes[name]; !ok {
 		return fmt.Errorf("no recipe %q (known: %s) — or `dabs recipe -- %s` to run it as a command on the default recipe", name, strings.Join(reg.Names(), ", "), name)
 	}
@@ -622,11 +632,14 @@ func (r Real) resolveRecipe(arg string) (recipe.Registry, string, error) {
 		}
 		return reg, reg.Default, nil
 	}
-	// An arg naming an existing file or directory is a dabs.yaml to load and
-	// take the default (or sole recipe) from.
-	if fi, statErr := r.data.Stat(arg); statErr == nil {
+	// An arg whose SHAPE is a path is a dabs.yaml to load and take the default (or
+	// sole recipe) from — resolved against the process cwd when relative. Path
+	// shape, not a stat probe, decides this: a bare word is never guessed onto
+	// disk (so a recipe named `foo` still resolves when a `foo/` dir sits in the
+	// cwd), and a path that is missing errors AS a path, not as an unknown name.
+	if looksLikePath(arg) {
 		path := arg
-		if fi != nil && fi.IsDir() {
+		if fi, statErr := r.data.Stat(arg); statErr == nil && fi != nil && fi.IsDir() {
 			path = filepath.Join(arg, "dabs.yaml")
 		}
 		b, err := r.data.ReadFile(path)
@@ -938,6 +951,21 @@ func (r Real) absPath(p string) (string, error) {
 		return "", err
 	}
 	return filepath.Join(wd, p), nil
+}
+
+// looksLikePath reports whether a recipe-or-path argument names a dabs.yaml on
+// disk rather than a recipe in the registry. It keys on SHAPE alone so a bare
+// word is never guessed onto the filesystem: an argument is a path when it is
+// absolute, contains a path separator, is exactly ".", starts with "./", "../"
+// or "~", or ends in "dabs.yaml". Everything else is a recipe name.
+func looksLikePath(arg string) bool {
+	return filepath.IsAbs(arg) ||
+		strings.ContainsRune(arg, filepath.Separator) ||
+		arg == "." ||
+		strings.HasPrefix(arg, "./") ||
+		strings.HasPrefix(arg, "../") ||
+		strings.HasPrefix(arg, "~") ||
+		strings.HasSuffix(arg, "dabs.yaml")
 }
 
 // isHostRelative reports whether a source origin is a plain relative path — one

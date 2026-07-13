@@ -2,11 +2,38 @@ package cli
 
 import (
 	"errors"
+	"flag"
 	"strings"
 	"testing"
 
 	"github.com/jjmerino/dabs/core/params"
 )
+
+// A single-character flag is written with ONE dash (-y), a multi-character flag
+// with two (--yes). The flags block used to prepend "--" to every name, so a
+// short flag rendered as "--y" — a token no shell accepts — while the usage line
+// correctly showed "-y". The renderer must match the dash count to the name.
+func TestFlagRowsSingleCharUsesOneDash(t *testing.T) {
+	fs := flag.NewFlagSet("t", flag.ContinueOnError)
+	var b bool
+	fs.BoolVar(&b, "y", false, "short")
+	fs.BoolVar(&b, "yes", false, "long")
+	fs.BoolVar(&b, "force", false, "multi")
+
+	want := map[string]string{"short": "-y", "long": "--yes", "multi": "--force"}
+	for _, row := range flagRows(fs) {
+		name, usage := row[0], row[1]
+		if exp, ok := want[usage]; ok {
+			if name != exp {
+				t.Errorf("flag with usage %q rendered as %q, want %q", usage, name, exp)
+			}
+			delete(want, usage)
+		}
+	}
+	for usage := range want {
+		t.Errorf("flag with usage %q not found in rendered rows", usage)
+	}
+}
 
 // fakeActions records every delegation so tests can assert the cli parsed
 // argv into the right action call with the right params.

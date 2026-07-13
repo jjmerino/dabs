@@ -52,7 +52,13 @@ func flagRows(fs *flag.FlagSet) [][]string {
 	}
 	var rows [][]string
 	fs.VisitAll(func(f *flag.Flag) {
-		rows = append(rows, []string{tui.Accent("--" + f.Name), f.Usage})
+		// A single-character flag takes one dash (-y); a longer name takes two
+		// (--yes). The dash count is part of what the reader must type.
+		dash := "--"
+		if len(f.Name) == 1 {
+			dash = "-"
+		}
+		rows = append(rows, []string{tui.Accent(dash + f.Name), f.Usage})
 	})
 	return rows
 }

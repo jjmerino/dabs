@@ -38,13 +38,19 @@ const sandboxName = "dabs-e2e"
 func TestMain(m *testing.M) { os.Exit(setupAndRun(m)) }
 
 func setupAndRun(m *testing.M) int {
-	// Only run inside the supported box — a dabs-created docker container.
-	// Two checks: DABS_NAME marks a dabs box; /.dockerenv reliably marks a
-	// docker container (deliberate coupling — the supported box is docker).
-	_, inDocker := os.Stat("/.dockerenv")
-	if os.Getenv("DABS_NAME") == "" || inDocker != nil {
-		fmt.Fprintln(os.Stderr, "e2e: this suite runs only inside its dabs docker box; "+
-			"run ./run_e2e.sh (running `go test` directly won't work)")
+	// Only run somewhere sandboxed. The suite reaps boxes, rewrites ~/.dabs,
+	// and drives whatever dabs it finds on PATH — a developer's host is not a
+	// place for that. Two sandboxes qualify: the suite's own dabs docker box
+	// (DABS_NAME + /.dockerenv — run_e2e.sh builds it), and a hermetic CI
+	// runner (GITHUB_ACTIONS), already a throwaway machine that needs no
+	// outer box.
+	_, dockerErr := os.Stat("/.dockerenv")
+	inDabsBox := os.Getenv("DABS_NAME") != "" && dockerErr == nil
+	inCI := os.Getenv("GITHUB_ACTIONS") == "true"
+	if !inDabsBox && !inCI {
+		fmt.Fprintln(os.Stderr, "e2e: this suite runs only somewhere sandboxed — "+
+			"its dabs docker box (./run_e2e.sh) or a CI runner; "+
+			"running `go test` on your own machine won't work")
 		return 1
 	}
 	// The box IS the isolation, so the box's own $HOME is this run's $HOME: every

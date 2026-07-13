@@ -274,6 +274,9 @@ A recipe is the whole box spec — image, env, workdir, target, sources.
 
 If you are changing dabs itself, not just using it:
 
+Deprecated glossary terms never appear in new code, output, docs, or comments —
+check `GLOSSARY.md`'s tags.
+
 **Build, test, verify**
 
 ```bash
@@ -353,7 +356,7 @@ None of this involves worktrees. Nesting and worktrees are independent knobs.
 **Layout**
 
 ```
-main.go / driver*.go   composition root: build the driver fleet, wire deps
+main.go / driver*.go   composition root: build the drivers, wire deps
                        one per line, no nested New. driver_<os>.go is
                        build-tagged; OS code never compiles into a foreign
                        binary.
@@ -362,10 +365,10 @@ cli/                   argv → typed params. Pure parsers (one stdlib
 core/params/           leaf contract: params structs + Actions interface.
                        Litmus: if it can't become a .proto (logic, deps,
                        funcs), it doesn't belong here.
-core/config/           ~/.dabs/config.json (servers/fleet) load + save.
+core/config/           ~/.dabs/config.json (servers/drivers) load + save.
 core/recipe/           dabs.yaml recipe registry: parse + merge + defaults.
 core/actions/          ALL policy: recipe resolution, instance-name
-                       resolution across the fleet, --force/--dry, routing
+                       resolution across the drivers, --force/--dry, routing
                        by target, user-facing messages.
 core/sandbox/          mechanical driver contract — exact names in, state
                        out. Zero vendor imports, zero logic.

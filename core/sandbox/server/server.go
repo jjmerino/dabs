@@ -12,7 +12,6 @@ package server
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -21,6 +20,7 @@ import (
 	"time"
 
 	"github.com/jjmerino/dabs/core/sandbox"
+	"github.com/jjmerino/dabs/core/sandbox/execx"
 )
 
 // ConnectTimeout bounds how long any ssh/scp to a server may spend CONNECTING
@@ -74,7 +74,7 @@ func (d *Driver) dabsPath() (string, error) {
 		args := append(append([]string{}, sshOpts...), d.host, `bash -lc "command -v dabs"`)
 		out, err := exec.Command("ssh", args...).Output()
 		if err != nil {
-			d.dabsErr = fmt.Errorf("ssh: cannot run dabs on %s (needs pubkey auth and dabs installed): %s", d.host, sshErr(err))
+			d.dabsErr = fmt.Errorf("ssh: cannot run dabs on %s (needs pubkey auth and dabs installed): %s", d.host, execx.Stderr(err))
 			return
 		}
 		d.dabs = strings.TrimSpace(string(out))
@@ -107,10 +107,10 @@ func (d *Driver) Build(spec sandbox.BuildSpec) error {
 
 	reset := d.remote(nil, "rm", "-rf", stage)
 	if out, err := reset.CombinedOutput(); err != nil {
-		return fmt.Errorf("ssh: reset staging on %s: %v: %s", d.host, err, strings.TrimSpace(string(out)))
+		return execx.WrapOut(fmt.Sprintf("ssh: reset staging on %s", d.host), out, err)
 	}
 	if out, err := d.remote(nil, "mkdir", "-p", stage+"/context").CombinedOutput(); err != nil {
-		return fmt.Errorf("ssh: staging on %s: %v: %s", d.host, err, strings.TrimSpace(string(out)))
+		return execx.WrapOut(fmt.Sprintf("ssh: staging on %s", d.host), out, err)
 	}
 
 	// Ship the Dockerfile (it may live outside the context).
@@ -176,7 +176,7 @@ func (d *Driver) writeRecipe(name string, env map[string]string, workdir string)
 	w := d.remote(nil, "sh", "-c", "mkdir -p "+d.stagingDir(name)+" && cat > "+d.stagingDir(name)+"/dabs.yaml")
 	w.Stdin = bytes.NewReader(raw)
 	if out, err := w.CombinedOutput(); err != nil {
-		return fmt.Errorf("ssh: write recipe on %s: %v: %s", d.host, err, strings.TrimSpace(string(out)))
+		return execx.WrapOut(fmt.Sprintf("ssh: write recipe on %s", d.host), out, err)
 	}
 	return nil
 }
@@ -194,7 +194,7 @@ func (d *Driver) Up(spec sandbox.Spec) (string, error) {
 	}
 	out, err := d.remote(nil, dabs, "recipe", d.stagingDir(spec.Name), "--detach").Output()
 	if err != nil {
-		return "", fmt.Errorf("ssh: dabs recipe --detach on %s: %s", d.host, sshErr(err))
+		return "", fmt.Errorf("ssh: dabs recipe --detach on %s: %s", d.host, execx.Stderr(err))
 	}
 	// printUp emits the instance on its own line: "instance: <name>".
 	for _, line := range strings.Split(string(out), "\n") {
@@ -238,7 +238,7 @@ func (d *Driver) Exec(instance string, cmd []string) (string, error) {
 	argv := append([]string{dabs, "exec", instance, "--"}, cmd...)
 	out, err := d.remote(nil, argv...).CombinedOutput()
 	if err != nil {
-		return string(out), fmt.Errorf("ssh: exec on %s: %v: %s", d.host, err, strings.TrimSpace(string(out)))
+		return string(out), execx.WrapOut(fmt.Sprintf("ssh: exec on %s", d.host), out, err)
 	}
 	return string(out), nil
 }
@@ -251,7 +251,7 @@ func (d *Driver) Down(instance string) error {
 		return err
 	}
 	if out, err := d.remote(nil, dabs, "rm", instance, "--keep", "-y").CombinedOutput(); err != nil {
-		return fmt.Errorf("ssh: down on %s: %v: %s", d.host, err, strings.TrimSpace(string(out)))
+		return execx.WrapOut(fmt.Sprintf("ssh: down on %s", d.host), out, err)
 	}
 	return nil
 }
@@ -266,7 +266,7 @@ func (d *Driver) Ls() ([]sandbox.Info, error) {
 	}
 	out, err := d.remote(nil, dabs, "ls").Output()
 	if err != nil {
-		return nil, fmt.Errorf("ssh: ls on %s: %s", d.host, sshErr(err))
+		return nil, fmt.Errorf("ssh: ls on %s: %s", d.host, execx.Stderr(err))
 	}
 	var infos []sandbox.Info
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
@@ -279,21 +279,10 @@ func (d *Driver) Ls() ([]sandbox.Info, error) {
 	return infos, nil
 }
 
-// sshErr renders an ssh failure with ssh's own stderr (which names the host
-// and says "Connection timed out" / "Connection refused"), lost by Output()
-// unless surfaced from the ExitError.
-func sshErr(err error) string {
-	var ee *exec.ExitError
-	if errors.As(err, &ee) && len(bytes.TrimSpace(ee.Stderr)) > 0 {
-		return fmt.Sprintf("%v: %s", err, bytes.TrimSpace(ee.Stderr))
-	}
-	return err.Error()
-}
-
 func runQuiet(c *exec.Cmd) error {
 	out, err := c.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
+		return execx.WrapOut("", out, err)
 	}
 	return nil
 }

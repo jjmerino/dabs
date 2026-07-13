@@ -2,7 +2,7 @@
 
 You are (presumably) a capable agent with host access. dabs lets you run a
 command — or a whole agent — inside a disposable box that sees only what its
-recipe mounts in, not the rest of your host. Reach in with `dabs run <node>
+recipe mounts in, not the rest of your host. Reach in with `dabs exec <node>
 <shell…>` (or `dabs exec <node> -- <cmd>` for an exact argv), or run a whole
 agent inside via a recipe
 (`dabs recipe claude`, defined in this repo's `dabs.yaml`).
@@ -13,12 +13,14 @@ Before you run or test anything with dabs in this repo, **read `./dabs.yaml`**.
 It decides what every bare command does. Nothing below is meaningful until you
 know what is in it:
 
-- **`default:`** is what `dabs build`, `dabs up`, `dabs recipe`, and `dabs do`
-  resolve to when you pass no name. It is NOT a shell. A `default:` naming a
-  `claude -p` agent turns a bare `dabs do -c 'echo hi'` into your argv appended
-  to Claude's — an agent that boots and prints nothing for minutes. This repo
-  sets no `default:`, so `build`/`up`/`recipe` with no name list the choices and
-  `dabs do` falls back to the bundled `sh` box. Name the recipe you mean:
+- **`default:`** is what `dabs build`, `dabs recipe --detach`, and `dabs recipe`
+  resolve to when you pass no name — and, for `recipe`, also when the first token
+  is not a known recipe (then ALL tokens are appended to the default's command).
+  It is NOT a shell. A `default:` naming a `claude -p` agent turns a bare
+  `dabs recipe -c 'echo hi'` into your argv appended to Claude's — an agent that
+  boots and prints nothing for minutes. This repo sets no `default:`, so
+  `build`/`recipe --detach` with no name list the choices, and `recipe` with an
+  unknown/absent name falls back to the bundled `sh` box. Name the recipe you mean:
   `dabs recipe sh -c 'echo hi'`.
 - **Which recipes exist**, and what each one mounts, copies, and runs. `dabs
   recipes` lists them; `dabs recipes --print` dumps the bundled ones.
@@ -33,12 +35,12 @@ know what is in it:
    dabs build [recipe|path]
    ```
 
-2. **Boot a fresh instance** — every `up` is a NEW pristine DETACHED box (same
-   recipe resolution as `build`); it brings the box up but does NOT run the
-   recipe's command. Capture the instance name it prints:
+2. **Boot a fresh instance** — every `recipe --detach` is a NEW pristine DETACHED
+   box (same recipe resolution as `build`); it brings the box up but does NOT run
+   the recipe's command. Capture the instance name it prints:
 
    ```bash
-   dabs up [recipe|path]     # → myproj-a3f9c21d4e02 up
+   dabs recipe [recipe|path] --detach     # → myproj-a3f9c21d4e02 up
    ```
 
    The instance is named after the recipe's **image**, not the recipe. Recipes
@@ -77,7 +79,7 @@ know what is in it:
        sources:
          - mkmount: ~/.dabs/shared/claude       # the login dir, shared by every box that names it
            path: /root/.claude
-         - mkmount: $PARENT_VOLUME/claude/projects # this place's sessions; reload on the next box, survive `down`
+         - mkmount: $PARENT_VOLUME/claude/projects # this place's sessions; reload on the next box, survive `rm`
            path: /root/.claude/projects
          - mount: .                             # your cwd, live — edits persist on the host
            path: /work
@@ -91,24 +93,31 @@ know what is in it:
    Recipes resolve **bundled (`sh`) → `~/.dabs/recipes.yaml` (global) →
    `./dabs.yaml` (project)**, later winning. A project's `dabs.yaml` can add
    recipes and set a `default:`; `dabs recipe` with no name runs that default (no
-   default set → it errors and lists the choices, so an agent must pick). The
-   same registry backs `dabs build`/`up`: a recipe carries the image, env,
-   workdir, and target, so `build`/`up` resolve a recipe just like `recipe`/`do`.
+   default set → the bundled `sh` box). The same registry backs `dabs
+   build`/`recipe`: a recipe carries the image, env, workdir, and target, so
+   `build` resolves a recipe just like `recipe`.
 
-   **Run a one-off command in a box — `dabs do <cmd…>`.** `dabs do` is the quick
-   "just run this in a sandbox": it resolves the project `default:` recipe (or
-   the bundled `sh` box if there's no `dabs.yaml`/default), APPENDS your command
-   to that recipe's command, and runs it in a throwaway box. `dabs recipe <name>
-   <cmd…>` does the same for a named recipe. Because you're handing a box an
-   arbitrary command, dabs first prints the recipe and the exact command and asks
-   for a **y/N** confirmation before it builds or runs anything.
+   **Run a one-off command in a box — `dabs recipe -- <cmd…>`.** Three shapes:
+   - `dabs recipe <name> [cmd…]` — a KNOWN recipe; any trailing tokens are
+     appended to its command.
+   - `dabs recipe -- <cmd…>` — the project `default:` recipe (the bundled `sh` box
+     if there's no `dabs.yaml`/default) with everything after `--` appended. This
+     is the replacement for the old `dabs do`.
+   - `dabs recipe` (no args) — the default recipe with its OWN command.
 
-   **`do` appends — it does not give you a shell.** What you get depends entirely
-   on the default recipe's own `command`. Against the bundled `sh` box,
-   `dabs do -c 'echo hi'` runs `sh -c 'echo hi'`. Against a recipe whose command
-   is `claude -p '…'`, the same argv is appended to *Claude's* command line, which
-   is almost never what you meant. Read `dabs.yaml`, then pick the recipe
-   explicitly.
+   A first token that is neither `--` nor a known recipe is an ERROR listing the
+   known recipes — a typo never silently becomes a command. Because you're handing
+   a box an arbitrary command, dabs prints the recipe and the exact command and
+   asks for a **y/N** confirmation before it builds or runs anything (the
+   default-recipe path always confirms; a named recipe confirms only when you
+   append a command).
+
+   **`recipe` appends — it does not give you a shell.** What a trailing command
+   yields depends entirely on the recipe's own `command`. Against the bundled `sh`
+   box, `dabs recipe sh -c 'echo hi'` runs `sh -c 'echo hi'`. Against a recipe
+   whose command is `claude -p '…'`, the same argv is appended to *Claude's*
+   command line, which is almost never what you meant. Read `dabs.yaml`, then pick
+   the recipe explicitly.
 
    **Sources — four kinds.** Each entry names its origin with exactly one of:
 
@@ -117,29 +126,29 @@ know what is in it:
    | `mount` | a live bind; the box's writes hit the host | must exist — a missing origin is a typo, and dabs refuses it |
    | `mkmount` | a live bind | created (0700) if absent — say it where you mean "provision this" |
    | `worktree` | a fresh git branch off HEAD, mounted live | your tree is untouched; reap with `dabs worktrees` |
-   | `copy` | a snapshot taken at `up` | untouched |
+   | `copy` | a snapshot taken at box start | untouched |
 
    **Nodes and their three spaces.** A node is a marker for a place dabs
    provisioned — kind `project | workdir | worktree | box`, chained
    `project → (workdir | worktree)? → box`. Every node has three directories, and
-   the one a recipe mounts declares what happens to the bytes (`down` reads the
+   the one a recipe mounts declares what happens to the bytes (`rm` reads the
    space, not the recipe). A source path may name the box node's spaces:
 
    ```
-   $NODE_VOLUME      survives `down`       — this box's caches
-   $NODE_EPHEMERAL   `down` asks first     — work you would miss
-   $NODE_TMP         `down` reaps quietly  — scratch
+   $NODE_VOLUME      survives `rm --keep`  — this box's caches
+   $NODE_EPHEMERAL   `rm` asks first       — work you would miss
+   $NODE_TMP         `rm` reaps quietly    — scratch
    ```
 
    The `$PARENT_*` family names the same three spaces of the box's PARENT place
    (the project/workdir/worktree it stands on) instead of the box's own node.
-   Use `$PARENT_VOLUME` for what a box wants back on the NEXT `up`: a fresh box
+   Use `$PARENT_VOLUME` for what a box wants back on the NEXT box: a fresh box
    is a fresh node with an empty `$NODE_VOLUME`, but its parent place persists,
    so sessions written to `$PARENT_VOLUME` reload next time. Both families
    substitute into source paths only; they are not environment variables inside
    the box. An `mkmount:` into `$PARENT_VOLUME` nested over a shared mount gives
    one box its own persistent slice of an otherwise shared tree — that is how the
-   `claude` recipe keeps its sessions across re-ups and a `down`.
+   `claude` recipe keeps its sessions across re-ups and an `rm --keep`.
 
    **Recipes provision; skills prompt.** A recipe describes how the box is
    provisioned (image, sources, command) and must NOT bake agent instructions
@@ -155,30 +164,44 @@ know what is in it:
    ```bash
    dabs worktrees               # list them; HAS WORK vs clean
    dabs worktrees diff <name>   # what the agent changed
-   dabs worktrees rm <name>     # or `prune`; refuses unreviewed work unless --force
+   dabs rm <name>               # reap ONE (refuses unreviewed work unless --force)
+   dabs rm --clean-worktrees    # sweep every worktree with no unreviewed work
    ```
 
-5. **Reap boxes when done:**
+5. **Reap boxes when done — `dabs rm` is the single reaper.** It stops the box
+   AND removes its node and spaces. Stopping a live box, or losing held data,
+   needs consent: `-y`/`--yes` (or an interactive y/N). Without it, rm prints
+   what it WOULD reap and exits nonzero — it never silently tears a box down.
 
    ```bash
-   dabs down <instance>            # exactly one match required
-   dabs down <name> --multiple     # act on ALL matches (needed for >1)
-   dabs down <name> --dry          # preview what a name matches
+   dabs rm <node> -y               # stop the box and remove its node+spaces
+   dabs rm <node> --keep -y        # stop the box but ARCHIVE its node (keep the record)
+   dabs rm <name> --multiple -y    # act on ALL matches (needed for >1; the count is shown first)
+   dabs rm <name> --dry            # preview what would be reaped; remove nothing
    ```
 
-**Re-attaching to an existing worktree — `dabs cast <recipe> <worktree>`.** A
-recipe's `worktree:`/`mount:`/`copy:` `.` source normally means "the cwd". `cast`
-binds it to an EXISTING worktree instead (by name from `dabs worktrees ls`):
-`worktree:`/`mount:` mount that worktree live — and also mount its parent `.git`,
-so **git works inside the box** and the agent's commits reconcile straight into
-the shared store (no push). Use it to point a fresh agent (or a different recipe,
-e.g. review) at work another agent already started, without cutting a new branch.
+   Flags: `-y`/`--yes` skips the consent prompt (stop a live box, reap a held
+   ephemeral); `--keep` archives instead of removing; `--multiple` authorizes a
+   prefix matching several nodes; `--volume` also reaps the volume; `--dry`
+   previews; `--force` is ONLY for discarding a worktree's unreviewed git work —
+   a different risk than the prompt `-y` skips, so it stays its own flag.
+   `--clean-worktrees` takes no node name: it sweeps EVERY worktree that holds no
+   unreviewed work in one shot (add `--force` to reap the ones that do).
+
+**Re-attaching to an existing worktree — `dabs recipe <recipe> --worktree
+<wt>`.** A recipe's `worktree:`/`mount:`/`copy:` `.` source normally means "the
+cwd". `--worktree` binds it to an EXISTING worktree instead (by name from `dabs
+worktrees ls`): `worktree:`/`mount:` mount that worktree live — and also mount its
+parent `.git`, so **git works inside the box** and the agent's commits reconcile
+straight into the shared store (no push). It composes with `--detach`. Use it to
+point a fresh agent (or a different recipe, e.g. review) at work another agent
+already started, without cutting a new branch.
 
 ## Notes
 
 - Tell the in-box agent the shape of its world: a fresh machine, no host
   access, whatever the Dockerfile installed. It only sees the box.
-- One instance per agent: instances are cheap (`dabs up` again) and isolated;
+- One instance per agent: instances are cheap (`dabs recipe --detach` again) and isolated;
   sharing a box couples runs.
 - Boxes are copies, not mounts — rebuild after editing source, and a box
   only contains what its Dockerfile installed.
@@ -189,7 +212,7 @@ e.g. review) at work another agent already started, without cutting a new branch
   `dabs build`. If you edited the program, rebuild before the next run —
   otherwise you run stale code.
 - Writes inside a box persist for that instance's lifetime; pristine again
-  means a NEW `up`, not reusing the old instance.
+  means a NEW box, not reusing the old instance.
 - Isolation is filesystem and process, NOT network: a box has open outbound
   network access and dabs has no `--no-network` switch yet. Do not rely on a box
   to contain code that should not reach the network — it can phone home.
@@ -197,25 +220,27 @@ e.g. review) at work another agent already started, without cutting a new branch
   lack tools like `ps`; if a journey needs one, it belongs in the
   Dockerfile, not worked around.
 - Instance names accept unambiguous prefixes (git-style) everywhere:
-  `dabs exec myproj-a3f -- ls`. Ambiguity is an error for exec/run; for down
-  it is refused too — a name matching more than one instance downs NOTHING and
+  `dabs exec myproj-a3f -- ls`. Ambiguity is an error for exec; for rm
+  it is refused too — a name matching more than one node reaps NOTHING and
   lists the matches, and you must pass `--multiple` to act on all of them. An
-  empty/blank name matches nothing (never "all"). `--force` only skips
-  confirmation; it does not authorize multi-match reaping.
-- Three levels reach into an existing box, low to high:
-  `dabs exec <instance> -- <cmd…>` runs an EXACT argv (no shell); `dabs run
-  <instance> <shell…>` runs a shell command line (wrapped in `sh -c`, so
-  pipes/globs/`&&` work, no `--` needed); `dabs do <cmd…>` appends to a recipe
-  (see below). exec/run are your direct peek into a box (inspection, setup,
-  planting fixtures).
+  empty/blank name matches nothing (never "all"). `-y`/`--yes` only skips the
+  consent prompt; it does not authorize multi-match reaping — the count is shown
+  first and `--multiple` is the scope opt-in.
+- `dabs exec` is your direct peek into a box (inspection, setup, planting
+  fixtures), and the `--` separator picks the mode: `dabs exec <instance> --
+  <cmd…>` runs an EXACT argv (no shell), while `dabs exec <instance> <shell…>`
+  (no `--`) runs a shell command line (wrapped in `sh -c`, so pipes/globs/`&&`
+  work). The tier above it, `dabs recipe [name] <cmd…>`, appends to a recipe
+  (see above).
 - Mounts land parent-before-child whatever order the recipe declares them in:
   actions sort them by box-path depth, because bwrap binds in argv order (a
   parent listed after its child silently masks it) while apple/docker resolve
   nesting themselves. Declaration order is yours to choose.
-- `dabs down` reaps a box node's spaces: `tmp/` silently, `ephemeral/` only with
-  consent when it holds files, `volume/` never. A worktree's checkout lives in
-  its OWN node's ephemeral space, so `down` never touches it — `dabs worktrees
-  rm` does, and it still refuses unreviewed work.
+- `dabs rm --keep` archives a box: it stops the box and reaps its spaces (`tmp/`
+  silently, `ephemeral/` only with consent when it holds files, `volume/` never)
+  but LEAVES the node record. A worktree's checkout lives in its OWN node's
+  ephemeral space, so archiving a box never touches it — `dabs rm <wt>` (or `dabs
+  rm --clean-worktrees`) does, and it still refuses unreviewed work.
 - Everything dabs owns is namespaced: it only ever sees or removes its own
   boxes.
 - Keep the build context under your home directory. A context under
@@ -236,12 +261,12 @@ recipes:
     sources:
       - mount: .                   # what lands in the box
         path: /work                #   kinds: mount | mkmount | worktree | copy
-      - mkmount: $NODE_VOLUME/cache  # a box-private dir that survives `down`
+      - mkmount: $NODE_VOLUME/cache  # a box-private dir that survives `rm --keep`
         path: /root/.cache
 ```
 
-`dabs build [recipe|path]` builds a recipe's image; `dabs up [recipe|path]`
-boots a detached box from it (no command). Both take no arg (the registry
+`dabs build [recipe|path]` builds a recipe's image; `dabs recipe [recipe|path]
+--detach` boots a detached box from it (no command). Both take no arg (the registry
 `default:`), a recipe name, or a path to a `dabs.yaml` (or a dir holding one).
 A recipe is the whole box spec — image, env, workdir, target, sources.
 
@@ -272,11 +297,11 @@ reach in:
 ```bash
 dabs recipe dabseption                   # → box kept: dabseption-482e37bd203c
 dabs exec <instance> -- dabs recipes     # exercise its CLI, no host install
-dabs run  <instance> 'dabs up sh'        # the dabs in the box boots its OWN box
+dabs exec <instance> 'dabs recipe sh --detach' # the dabs in the box boots its OWN box
 ```
 
 **The box boots nested boxes.** Its image stages a ready-built `shell` rootfs, so
-`dabs up sh` and `dabs do` work inside with no builder. Only `dabs build` cannot
+`dabs recipe sh --detach` and `dabs recipe sh` work inside with no builder. Only `dabs build` cannot
 run in there — it shells out to `docker`, which the box does not carry — and
 nothing needs it to.
 
@@ -291,12 +316,12 @@ A Dockerfile-backed image is named after its RECIPE, so these build two image
 tags from the one Dockerfile — `dabs build dabseption` does not also ready
 `dabseptionwt` (the layer cache makes the second build cheap).
 
-`dabs cast dabseptionwt <worktree>` binds an EXISTING worktree instead, and also
-mounts its parent `.git` — so git works in-box. Plain `dabs recipe dabseptionwt`
-cuts a new worktree but does NOT mount the parent `.git`, so git is blind in-box;
-cast when a test needs in-box git.
+`dabs recipe dabseptionwt --worktree <wt>` binds an EXISTING worktree instead, and
+also mounts its parent `.git` — so git works in-box. Plain `dabs recipe
+dabseptionwt` cuts a new worktree but does NOT mount the parent `.git`, so git is
+blind in-box; use `--worktree` when a test needs in-box git.
 
-This covers CLI behaviour, recipe resolution, cast/worktree/keep/down logic, git
+This covers CLI behaviour, recipe resolution, worktree/keep/rm logic, git
 in-box, nested boots, and error paths — the fast inner loop for changing dabs.
 `./run_e2e.sh` remains the full suite.
 

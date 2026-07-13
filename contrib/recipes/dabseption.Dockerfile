@@ -29,15 +29,15 @@ RUN curl -fsSL https://github.com/containers/bubblewrap/releases/download/v0.11.
     && ninja -C _build && ninja -C _build install && ldconfig
 
 # NOT /root: /root is docker's overlayfs, and bwrap cannot stack an overlay on
-# one — the inner `dabs up` dies with "Can't make overlay mount … Invalid
+# one — the inner `dabs recipe --detach` dies with "Can't make overlay mount … Invalid
 # argument". The privileged target runs the box with a non-overlay volume at
 # /tmp, so dabs's state lives there. Docker seeds that volume from the image's
 # own /tmp, which is what carries the staged image below into the box.
 ENV HOME=/tmp/h
 
 # The `shell` image as dabs stores one: a flattened rootfs plus the env/workdir
-# recorded alongside. With it present, `dabs up sh` and `dabs do` work in the box
-# with no builder. `dabs build` cannot run here — it needs docker.
+# recorded alongside. With it present, `dabs recipe sh --detach` and `dabs recipe sh`
+# work in the box with no builder. `dabs build` cannot run here — it needs docker.
 COPY --from=shellimg / /tmp/h/.dabs/images/shell/rootfs
 RUN printf '%s' '{"env":["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"],"workdir":"/work"}' \
       > /tmp/h/.dabs/images/shell/image.json

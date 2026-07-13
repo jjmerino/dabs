@@ -18,6 +18,9 @@ import (
 // A box is brought down first: a place cannot be taken out from under a running
 // box, and a box holding a mount is a box using the thing being removed.
 func (r Real) Rm(p params.Rm) error {
+	if p.CleanWorktrees {
+		return r.rmCleanWorktrees(p)
+	}
 	nodes, err := r.listNodes()
 	if err != nil {
 		return err
@@ -27,9 +30,9 @@ func (r Real) Rm(p params.Rm) error {
 		return err
 	}
 	if len(targets) == 0 {
-		// A no-match reap is not an error, the same as `down`: naming a node that
-		// isn't there leaves nothing to do, so a cleanup script can rely on the exit
-		// status either way.
+		// A no-match reap is not an error: naming a node that isn't there leaves
+		// nothing to do, so a cleanup script gets a stable exit status whether or
+		// not the node still exists.
 		fmt.Fprintln(os.Stdout, tui.Muted("no node %s", p.Node))
 		return nil
 	}
@@ -49,28 +52,48 @@ func (r Real) Rm(p params.Rm) error {
 	}
 	// Build the view once: it is BOTH the preview and the source of the data
 	// summary below, so the preview and the reap can never disagree about what
-	// holds data. No live query is made, so a downed box reads as gone.
+	// holds data. Space state comes from the view; liveness is queried
+	// separately (a box the driver still holds), since a stop is a loss too.
 	views := r.viewNodes(doomed, nil)
 	eph, vol, tmp := countHeldSpaces(views)
 
+	// --keep archives instead of removing: stop the box(es) but leave the node
+	// record behind — teardown without forgetting what ran and from where.
+	if p.Keep {
+		return r.archive(targets, p)
+	}
+
+	// --dry previews the reap and touches nothing.
+	if p.Dry {
+		fmt.Fprint(os.Stdout, rmPreview(p.Node, views, eph, vol, tmp, p.Volume))
+		return nil
+	}
+
+	live := false
+	for _, n := range doomed {
+		if n.Kind == KindBox && r.boxIsLive(n.Instance) {
+			live = true
+			break
+		}
+	}
+
 	// ONE question covers the whole set. Consent is needed to remove more than the
-	// named node, or to delete data a reap would lose — a held ephemeral, or a held
-	// volume with --volume. tmp is scratch and never needs asking. On yes the whole
-	// set reaps with no further per-node prompts (batchYes carries that consent).
+	// named node, to stop a live box, or to delete data a reap would lose — a held
+	// ephemeral, or a held volume with --volume. tmp is scratch and never needs
+	// asking. On yes the whole set reaps with no further per-node prompts (batchYes
+	// carries that consent).
 	batchYes := p.Yes
 	showed := false
-	if len(doomed) > 1 && !p.Yes {
-		var b strings.Builder
-		fmt.Fprintf(&b, "Removing %s reaps %d node(s):\n", tui.Accent(p.Node), len(doomed))
-		b.WriteString(renderForest(views, rmColumns, 2))
-		b.WriteString(reapDataSummary(eph, vol, tmp, p.Volume))
+	if (len(doomed) > 1 || live || eph > 0 || vol > 0) && !p.Yes {
+		b := rmPreview(p.Node, views, eph, vol, tmp, p.Volume)
 		// With no terminal there is nobody to ask, and asking anyway would block on
-		// a pipe forever. Say what it would take, and take nothing.
+		// a pipe forever. Say what it would take, and take nothing — exit nonzero so
+		// a script sees the reap did not happen.
 		if !tui.Interactive() {
-			fmt.Fprint(os.Stdout, b.String())
+			fmt.Fprint(os.Stdout, b)
 			return fmt.Errorf("rm %s: kept — pass -y to remove it and what stands on it", p.Node)
 		}
-		if !r.confirm(b.String() + "Proceed?") {
+		if !r.confirm(b + "Proceed?") {
 			return fmt.Errorf("rm %s: kept", p.Node)
 		}
 		batchYes = true
@@ -81,8 +104,7 @@ func (r Real) Rm(p params.Rm) error {
 	// unpushed commits. Discarding that needs the explicit --force, not the -y that
 	// only consents to the ephemeral space. The guard covers every worktree in the
 	// cascade, so a childless leaf and a project reaping its descendants are held to
-	// the same rule as `worktrees rm`. Checked before anything is touched, so a
-	// refusal loses nothing.
+	// the same rule. Checked before anything is touched, so a refusal loses nothing.
 	for _, n := range doomed {
 		if err := r.guardWorktreeWork(n, p.Force); err != nil {
 			return err
@@ -100,6 +122,35 @@ func (r Real) Rm(p params.Rm) error {
 		if err := r.reapSpaces(n, spacePolicy{yes: batchYes, volume: p.Volume, removeNode: true, quiet: showed}); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// rmCleanWorktrees sweeps EVERY worktree node in one shot, reaping the ones that
+// hold no unreviewed git work and keeping the rest. It is the batch `dabs rm`
+// over worktrees: each node reaps through the ordinary Rm path, so the same
+// space rules and the same unreviewed-work guard apply. A worktree that holds
+// work is refused (its reap returns an error) and reported at the end, unless
+// --force approves discarding it. --dry previews each without removing anything.
+func (r Real) rmCleanWorktrees(p params.Rm) error {
+	nodes, err := r.listWorktreeNodes()
+	if err != nil {
+		return err
+	}
+	var kept []string
+	for _, n := range nodes {
+		one := params.Rm{Node: n.ID, Yes: true, Dry: p.Dry, Volume: false, Force: p.Force}
+		if err := r.Rm(one); err != nil {
+			if strings.Contains(err.Error(), "unreviewed work") {
+				kept = append(kept, n.ID)
+				continue
+			}
+			return fmt.Errorf("rm %s: %w", n.ID, err)
+		}
+	}
+	if len(kept) > 0 {
+		fmt.Fprintln(os.Stdout, tui.Warn("kept %d worktree(s) with unreviewed work: %s", len(kept), strings.Join(kept, ", ")))
+		fmt.Fprintln(os.Stdout, tui.Muted("review with `dabs worktrees diff <name>`, then `dabs rm <name> --force` to discard"))
 	}
 	return nil
 }
@@ -150,6 +201,56 @@ func reapDataSummary(eph, vol, tmp int, volume bool) string {
 	return b.String()
 }
 
+// rmPreview renders what a reap would take: the forest of doomed nodes and the
+// per-space data summary under it. It is shown by --dry, and as the body of the
+// consent prompt, so the preview and the question can never disagree.
+func rmPreview(name string, views []*NodeView, eph, vol, tmp int, volume bool) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Removing %s reaps %d node(s):\n", tui.Accent(name), countViews(views))
+	b.WriteString(renderForest(views, rmColumns, 2))
+	b.WriteString(reapDataSummary(eph, vol, tmp, volume))
+	return b.String()
+}
+
+// countViews counts nodes across a view forest — the number a preview reports.
+func countViews(views []*NodeView) int {
+	n := 0
+	var walk func(v *NodeView)
+	walk = func(v *NodeView) {
+		n++
+		for _, c := range v.Children {
+			walk(c)
+		}
+	}
+	for _, v := range views {
+		walk(v)
+	}
+	return n
+}
+
+// archive stops the matched box(es) but leaves their node records behind — the
+// teardown `dabs rm --keep` performs. Only a box can be archived: a place has
+// nothing to stop, and keeping it would be a no-op. tmp is reaped, a held
+// ephemeral is kept unless -y consents, and the node dir stays.
+func (r Real) archive(targets []Node, p params.Rm) error {
+	for _, n := range targets {
+		if n.Kind != KindBox {
+			return fmt.Errorf("rm --keep %s: only a box can be archived (it is a %s)", n.ID, n.Kind)
+		}
+	}
+	for _, n := range targets {
+		if err := r.reapSpaces(n, spacePolicy{yes: p.Yes, volume: p.Volume, removeNode: false}); err != nil {
+			return err
+		}
+		if n.Instance != "" {
+			if err := r.downInstance(n.Instance); err != nil {
+				return fmt.Errorf("rm --keep %s: %w", n.ID, err)
+			}
+		}
+	}
+	return nil
+}
+
 // rmColumns are the columns a cascade preview draws: the tree, each node's
 // kind, its three space cells, and its state. No WHERE column — a reap is about
 // what is lost, not where it ran.
@@ -158,8 +259,8 @@ var rmColumns = []Column{ColNode, ColKind, ColVol, ColEph, ColTmp, ColState}
 // guardWorktreeWork refuses to discard a worktree node that holds unreviewed git
 // work — uncommitted changes or commits ahead — unless force approves it. Only a
 // worktree node can answer this (git owns the state), so non-worktree nodes pass
-// untouched. This is the same rule `worktrees rm` enforces, applied to every path
-// that reaches a worktree, including a plain `dabs rm` and a project-wide cascade.
+// untouched. The one rule applies to every path that reaches a worktree: a named
+// `dabs rm <wt>`, a project-wide cascade, and the `--clean-worktrees` sweep.
 func (r Real) guardWorktreeWork(n Node, force bool) error {
 	if n.Worktree == nil || force {
 		return nil
@@ -178,19 +279,19 @@ func (r Real) guardWorktreeWork(n Node, force bool) error {
 	return nil
 }
 
-// spacePolicy is the consent a caller carries into a reap. `down` reaps a box's
-// spaces with no consent beyond the down itself; `rm -y` consents to the
-// ephemeral space; `rm -y --volume` also to the volume.
+// spacePolicy is the consent a caller carries into a reap. `rm -y` consents to
+// the ephemeral space; `rm -y --volume` also to the volume.
 //
-// removeNode is what separates the two verbs: `rm` takes the marker away, `down`
-// leaves it. A downed box is ARCHIVED — what ran, and from where, outlives the
-// box, and that is the whole reason a node exists.
+// removeNode is what separates a reap from an archive: with it, `rm` takes the
+// marker away; without it, `rm --keep` leaves the record. An archived box holds
+// what ran, and from where, after the box is gone — the whole reason a node
+// exists.
 // quiet suppresses the per-space "kept" line: a cascade reap already reported
 // the aggregate (see reapDataSummary), so repeating it per node is noise.
 type spacePolicy struct{ yes, volume, removeNode, quiet bool }
 
-// reapSpaces applies the ONE rule about node spaces, so `down`, `rm` and
-// `worktrees rm` cannot disagree about what a space means:
+// reapSpaces applies the ONE rule about node spaces, so `rm`, `rm --keep` and
+// the `--clean-worktrees` sweep cannot disagree about what a space means:
 //
 //	tmp/        always goes. It is scratch and it said so.
 //	ephemeral/  goes with consent. Without it, it is KEPT and its path printed —
@@ -282,12 +383,17 @@ func (r Real) consentToEphemeral(n Node, dir string) bool {
 		tui.Accent(n.ID), tui.Muted("%s", dir)))
 }
 
-// rmMatches resolves the nodes a name reaps, git-style: a blank name matches
-// nothing (never everything), an exact id is that one node even when it prefixes
-// others, and a prefix matching several nodes is REFUSED unless multiple is set —
-// mirroring how `down` guards a multi-match. A no-match returns no nodes and no
-// error; the caller reports it and stops, so a reap of a name that isn't there is
-// idempotent rather than a failure.
+// rmMatches resolves the nodes a name reaps, git-style. The NODE id is the
+// canonical handle, so it is tried first: an exact id is that one node even when
+// it prefixes others, then a node-id prefix. Only when neither hits does a raw
+// box INSTANCE name resolve as a FALLBACK (exact, then prefix) — the same handle
+// `exec`/`run` accept, so a box booted by an older dabs or addressed by the name
+// `ls` prints under a plain box is still reachable. A blank name matches nothing
+// (never everything), and a prefix matching several nodes is REFUSED unless
+// multiple is set, so a stray prefix cannot reap several nodes at once — the
+// guard is the same whether the hits came from ids or instance names. A no-match
+// returns no nodes and no error; the caller reports it and stops, so a reap of a
+// name that isn't there is idempotent rather than a failure.
 func rmMatches(name string, nodes []Node, multiple bool) ([]Node, error) {
 	if strings.TrimSpace(name) == "" {
 		return nil, fmt.Errorf("a name is required (see dabs ls)")
@@ -299,6 +405,20 @@ func rmMatches(name string, nodes []Node, multiple bool) ([]Node, error) {
 		}
 		if strings.HasPrefix(n.ID, name) {
 			hits = append(hits, n)
+		}
+	}
+	// Fall back to the box instance name only when no node id matched, so the
+	// canonical handle always wins over the record it turned out to be.
+	if len(hits) == 0 {
+		for _, n := range nodes {
+			if n.Kind == KindBox && n.Instance == name {
+				return []Node{n}, nil
+			}
+		}
+		for _, n := range nodes {
+			if n.Kind == KindBox && n.Instance != "" && strings.HasPrefix(n.Instance, name) {
+				hits = append(hits, n)
+			}
 		}
 	}
 	if len(hits) > 1 && !multiple {

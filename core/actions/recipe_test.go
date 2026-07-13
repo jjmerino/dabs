@@ -38,6 +38,7 @@ type fakeDriver struct {
 	ups     []sandbox.Spec
 	upErr   error
 	execs   [][]string
+	execErr error // if non-nil, Exec fails (simulates a box that cannot be entered)
 	runs    [][]string
 	runErr  error
 	downs   []string
@@ -63,6 +64,9 @@ func (d *fakeDriver) Up(s sandbox.Spec) (string, error) {
 func (d *fakeDriver) Run(_ string, cmd []string) error { d.runs = append(d.runs, cmd); return d.runErr }
 func (d *fakeDriver) Exec(_ string, cmd []string) (string, error) {
 	d.execs = append(d.execs, cmd)
+	if d.execErr != nil {
+		return "bwrap: Can't chdir to /work: No such file or directory", d.execErr
+	}
 	return "", nil
 }
 func (d *fakeDriver) Down(inst string) error { d.downs = append(d.downs, inst); return nil }
@@ -201,7 +205,13 @@ func (f *fakeData) GitAddWorktree(_, _, dest string) error {
 	f.worktrees = append(f.worktrees, dest)
 	return nil
 }
-func (f *fakeData) ReadDir(dir string) ([]string, error) { return f.dirs[dir], nil }
+func (f *fakeData) ReadDir(dir string) ([]string, error) {
+	// A path registered as a file cannot be listed — the OS errors with ENOTDIR.
+	if _, ok := f.files[dir]; ok {
+		return nil, errors.New("not a directory")
+	}
+	return f.dirs[dir], nil
+}
 func (f *fakeData) GitState(wt string) (string, bool, int, error) {
 	s := f.states[wt]
 	return s.branch, s.dirty, s.ahead, nil
@@ -418,6 +428,49 @@ func TestRecipeAmbiguousSourceErrors(t *testing.T) {
 	}
 }
 
+// CONTRACT: two sources landing at the SAME box path are rejected — one would
+// silently mask the other. Nesting at DIFFERENT paths stays legal.
+func TestRecipeDuplicateBoxPathRejected(t *testing.T) {
+	y := `recipes:
+  dup:
+    image: img
+    command: [x]
+    sources:
+      - mount: /a
+        path: /work
+      - mkmount: /b
+        path: /work
+`
+	fd := baseData()
+	fd.exists["/a"] = true
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "dup"})
+	if err == nil || !strings.Contains(err.Error(), "same box path") {
+		t.Fatalf("want duplicate-box-path error, got %v", err)
+	}
+	if len(drv.ups) != 0 {
+		t.Errorf("invalid recipe still brought a box up: %v", drv.ups)
+	}
+
+	// Nested but DISTINCT box paths still pass.
+	ok := `recipes:
+  nest:
+    image: img
+    command: [x]
+    sources:
+      - mount: /a
+        path: /work
+      - mkmount: /b
+        path: /work/sub
+`
+	fd2 := baseData()
+	fd2.exists["/a"] = true
+	drv2 := &fakeDriver{built: map[string]bool{"img": true}}
+	if err := newReal(ok, fd2, drv2).Recipe(params.Recipe{Name: "nest"}); err != nil {
+		t.Fatalf("nested distinct paths must pass, got %v", err)
+	}
+}
+
 // CONTRACT: a Dockerfile-backed recipe whose image is ALREADY built is not
 // rebuilt on `dabs recipe` — the box boots the existing image. Rebuilding an
 // edited Dockerfile is the `dabs build` verb's job, not every run's.
@@ -595,21 +648,12 @@ recipes:
 `)}
 	fd.exists["/d"] = true
 	drv := &fakeDriver{built: map[string]bool{"img": true}}
-	if err := newReal("", fd, drv).Recipe(params.Recipe{}); err != nil { // no name
+	// No name → the default-recipe path, which ALWAYS confirms before running.
+	if err := newReal("", fd, drv).WithConfirm(yes).Recipe(params.Recipe{}); err != nil {
 		t.Fatalf("default recipe: %v", err)
 	}
 	if len(drv.runs) != 1 || drv.runs[0][0] != "devcmd" {
 		t.Errorf("default not run: %v", drv.runs)
-	}
-}
-
-// CONTRACT: no name and no default is an error that forces a choice — never a
-// silent pick.
-func TestRecipeNoNameNoDefaultErrors(t *testing.T) {
-	fd := baseData()
-	err := newReal("", fd, &fakeDriver{}).Recipe(params.Recipe{})
-	if err == nil || !strings.Contains(err.Error(), "no default") {
-		t.Fatalf("want no-default error, got %v", err)
 	}
 }
 
@@ -651,12 +695,12 @@ func TestRecipeDownEvenWhenRunFails(t *testing.T) {
 	}
 }
 
-// --- tests: cast (bind a recipe onto an existing worktree) --------------------
+// --- tests: recipe --worktree (bind a recipe onto an existing worktree) -------
 
-// CONTRACT: `dabs cast <recipe> <worktree>` on a `worktree: .` recipe ATTACHES
-// the existing worktree (mounts it live, never forks a new branch) and also
-// mounts the parent .git so git resolves in-box. Non-`.` sources pass through.
-func TestCastAttachesWorktreeAndGitDir(t *testing.T) {
+// CONTRACT: `dabs recipe <recipe> --worktree <wt>` on a `worktree: .` recipe
+// ATTACHES the existing worktree (mounts it live, never forks a new branch) and
+// also mounts the parent .git so git resolves in-box. Non-`.` sources pass through.
+func TestWorktreeFlagAttachesWorktreeAndGitDir(t *testing.T) {
 	y := `recipes:
   w:
     image: img
@@ -672,12 +716,12 @@ func TestCastAttachesWorktreeAndGitDir(t *testing.T) {
 	fd.exists["/home/t/vault"] = true
 	fd.exists["/repo/.git"] = true // parent store exists (git rev-parse yields a real path)
 	drv := &fakeDriver{built: map[string]bool{"img": true}}
-	if err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "w", Worktree: "wt1"}); err != nil {
-		t.Fatalf("cast: %v", err)
+	if err := newReal(y, fd, drv).Recipe(params.Recipe{Args: []string{"w"}, Worktree: "wt1"}); err != nil {
+		t.Fatalf("recipe --worktree: %v", err)
 	}
 	// It must NOT fork a fresh worktree.
 	if len(fd.worktrees) != 0 {
-		t.Fatalf("cast forked a worktree, want none: %v", fd.worktrees)
+		t.Fatalf("--worktree forked a worktree, want none: %v", fd.worktrees)
 	}
 	up := onlyUp(t, drv)
 	want := []sandbox.Mount{
@@ -703,9 +747,9 @@ func TestCastAttachesWorktreeAndGitDir(t *testing.T) {
 	}
 }
 
-// CONTRACT: casting a recipe that has no `.` source is a user error, not a
-// silent no-op — there's nothing to bind the worktree to.
-func TestCastRecipeWithoutDotSourceErrors(t *testing.T) {
+// CONTRACT: `--worktree` on a recipe that has no `.` source is a user error, not
+// a silent no-op — there's nothing to bind the worktree to.
+func TestWorktreeFlagRecipeWithoutDotSourceErrors(t *testing.T) {
 	y := `recipes:
   v:
     image: img
@@ -717,17 +761,17 @@ func TestCastRecipeWithoutDotSourceErrors(t *testing.T) {
 	fd := baseData()
 	seedWorktreeNode(fd, "wt1", wtState{branch: "dabs/wt1"})
 	drv := &fakeDriver{built: map[string]bool{"img": true}}
-	err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "v", Worktree: "wt1"})
+	err := newReal(y, fd, drv).Recipe(params.Recipe{Args: []string{"v"}, Worktree: "wt1"})
 	if err == nil || !strings.Contains(err.Error(), "no `.` source") {
 		t.Fatalf("want 'no `.` source' error, got %v", err)
 	}
 	if len(drv.ups) != 0 {
-		t.Errorf("box brought up despite bad cast: %v", drv.ups)
+		t.Errorf("box brought up despite bad --worktree: %v", drv.ups)
 	}
 }
 
-// CONTRACT: casting onto a missing worktree fails cleanly before any box work.
-func TestCastMissingWorktreeErrors(t *testing.T) {
+// CONTRACT: `--worktree` onto a missing worktree fails cleanly before any box work.
+func TestWorktreeFlagMissingWorktreeErrors(t *testing.T) {
 	y := `recipes:
   w:
     image: img
@@ -738,7 +782,7 @@ func TestCastMissingWorktreeErrors(t *testing.T) {
 `
 	fd := baseData()
 	drv := &fakeDriver{built: map[string]bool{"img": true}}
-	err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "w", Worktree: "ghost"})
+	err := newReal(y, fd, drv).Recipe(params.Recipe{Args: []string{"w"}, Worktree: "ghost"})
 	if err == nil || !strings.Contains(err.Error(), "no worktree") {
 		t.Fatalf("want 'no worktree' error, got %v", err)
 	}
@@ -773,7 +817,7 @@ func TestRecipeAppendsCommand(t *testing.T) {
 	asked := ""
 	confirm := func(prompt string) bool { asked = prompt; return true }
 	err := newReal(appendRecipe, fd, drv).WithConfirm(confirm).
-		Recipe(params.Recipe{Name: "m", Cmd: []string{"--flag", "x"}})
+		Recipe(params.Recipe{Args: []string{"m", "--flag", "x"}})
 	if err != nil {
 		t.Fatalf("Recipe: %v", err)
 	}
@@ -792,7 +836,7 @@ func TestRecipeCommandDenyAborts(t *testing.T) {
 	fd.exists["/d"] = true
 	drv := &fakeDriver{built: map[string]bool{"img": true}}
 	err := newReal(appendRecipe, fd, drv).WithConfirm(no).
-		Recipe(params.Recipe{Name: "m", Cmd: []string{"rm", "-rf", "/"}})
+		Recipe(params.Recipe{Args: []string{"m", "rm", "-rf", "/"}})
 	if err == nil || !strings.Contains(err.Error(), "aborted") {
 		t.Fatalf("want aborted error, got %v", err)
 	}
@@ -815,9 +859,9 @@ func TestRecipeNoCommandNoConfirm(t *testing.T) {
 	}
 }
 
-// CONTRACT: `dabs do` runs the dabs.yaml default recipe with the command
-// appended.
-func TestDoUsesDefaultRecipe(t *testing.T) {
+// CONTRACT: `dabs recipe -- <cmd…>` runs the dabs.yaml default recipe with the
+// command after `--` appended (the replacement for the old `dabs do`).
+func TestRecipeDefaultAppendsCommand(t *testing.T) {
 	fd := baseData()
 	fd.files = map[string][]byte{"dabs.yaml": []byte(`default: dev
 recipes:
@@ -830,16 +874,16 @@ recipes:
 `)}
 	fd.exists["/d"] = true
 	drv := &fakeDriver{built: map[string]bool{"img": true}}
-	if err := newReal("", fd, drv).WithConfirm(yes).Do(params.Do{Cmd: []string{"ls", "-a"}}); err != nil {
-		t.Fatalf("Do: %v", err)
+	if err := newReal("", fd, drv).WithConfirm(yes).Recipe(params.Recipe{Args: []string{"ls", "-a"}, Default: true}); err != nil {
+		t.Fatalf("Recipe: %v", err)
 	}
 	if len(drv.runs) != 1 || strings.Join(drv.runs[0], " ") != "devcmd ls -a" {
 		t.Errorf("run cmd = %v, want [devcmd ls -a]", drv.runs)
 	}
 }
 
-// CONTRACT: with no default set, `dabs do` falls back to the `sh` recipe.
-func TestDoFallsBackToShell(t *testing.T) {
+// CONTRACT: with no default set, the default-recipe path falls back to `sh`.
+func TestRecipeDefaultFallsBackToShell(t *testing.T) {
 	// A user recipes.yaml overrides the bundled `sh` with a simple, mountable
 	// box (no cwd/git needed), and sets NO default — exercising the fallback.
 	y := `recipes:
@@ -853,11 +897,100 @@ func TestDoFallsBackToShell(t *testing.T) {
 	fd := baseData()
 	fd.exists["/d"] = true
 	drv := &fakeDriver{built: map[string]bool{"img": true}}
-	if err := newReal(y, fd, drv).WithConfirm(yes).Do(params.Do{Cmd: []string{"-c", "echo hi"}}); err != nil {
-		t.Fatalf("Do: %v", err)
+	if err := newReal(y, fd, drv).WithConfirm(yes).Recipe(params.Recipe{Args: []string{"-c", "echo hi"}, Default: true}); err != nil {
+		t.Fatalf("Recipe: %v", err)
 	}
 	if len(drv.runs) != 1 || strings.Join(drv.runs[0], " ") != "sh -c echo hi" {
 		t.Errorf("run cmd = %v, want [sh -c echo hi]", drv.runs)
+	}
+}
+
+// CONTRACT (grammar case 3): a leading `--` forces the default recipe even when
+// the next token names a recipe — so `dabs recipe -- sh …` appends `sh` to the
+// default's command instead of selecting the `sh` recipe.
+func TestRecipeDashDashForcesDefault(t *testing.T) {
+	fd := baseData()
+	fd.files = map[string][]byte{"dabs.yaml": []byte(`default: dev
+recipes:
+  dev:
+    image: img
+    command: [devcmd]
+    sources:
+      - mount: /d
+        path: /work
+  sh:
+    image: img
+    command: [sh]
+    sources:
+      - mount: /d
+        path: /work
+`)}
+	fd.exists["/d"] = true
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	if err := newReal("", fd, drv).WithConfirm(yes).Recipe(params.Recipe{Args: []string{"sh", "-c", "echo hi"}, Default: true}); err != nil {
+		t.Fatalf("Recipe: %v", err)
+	}
+	if len(drv.runs) != 1 || strings.Join(drv.runs[0], " ") != "devcmd sh -c echo hi" {
+		t.Errorf("run cmd = %v, want [devcmd sh -c echo hi]", drv.runs)
+	}
+}
+
+// CONTRACT (grammar case 1): a first token that IS a known recipe selects it and
+// appends only the rest — and without `--`, that recipe wins over the default.
+func TestRecipeKnownNameSelectsIt(t *testing.T) {
+	fd := baseData()
+	fd.files = map[string][]byte{"dabs.yaml": []byte(`default: dev
+recipes:
+  dev:
+    image: img
+    command: [devcmd]
+    sources:
+      - mount: /d
+        path: /work
+  sh:
+    image: img
+    command: [sh]
+    sources:
+      - mount: /d
+        path: /work
+`)}
+	fd.exists["/d"] = true
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	if err := newReal("", fd, drv).WithConfirm(yes).Recipe(params.Recipe{Args: []string{"sh", "-c", "echo hi"}}); err != nil {
+		t.Fatalf("Recipe: %v", err)
+	}
+	if len(drv.runs) != 1 || strings.Join(drv.runs[0], " ") != "sh -c echo hi" {
+		t.Errorf("run cmd = %v, want [sh -c echo hi]", drv.runs)
+	}
+}
+
+// CONTRACT: a bare first token that is neither `--` nor a known recipe is an
+// ERROR listing the known recipes — a typo must never silently become a command
+// on the default recipe. The error hints at the `-- <cmd>` form and touches no box.
+func TestRecipeUnknownFirstTokenErrors(t *testing.T) {
+	y := `recipes:
+  known:
+    image: img
+    command: [run]
+    sources:
+      - mount: /d
+        path: /work
+`
+	fd := baseData()
+	fd.exists["/d"] = true
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	err := newReal(y, fd, drv).WithConfirm(yes).Recipe(params.Recipe{Args: []string{"nope", "-x"}})
+	if err == nil {
+		t.Fatalf("want an error for an unknown first token, got nil")
+	}
+	if !strings.Contains(err.Error(), `no recipe "nope"`) || !strings.Contains(err.Error(), "known:") {
+		t.Errorf("error missing unknown-name/known-list: %v", err)
+	}
+	if !strings.Contains(err.Error(), "dabs recipe -- nope") {
+		t.Errorf("error missing the `-- <cmd>` hint: %v", err)
+	}
+	if len(drv.ups) != 0 || len(drv.runs) != 0 {
+		t.Errorf("box touched despite an unknown-token error: ups=%v runs=%v", drv.ups, drv.runs)
 	}
 }
 
@@ -876,7 +1009,7 @@ func TestConfirmSummaryShowsInvalidSource(t *testing.T) {
 	asked := ""
 	confirm := func(prompt string) bool { asked = prompt; return true }
 	// Appending a command triggers confirm; validation then rejects the source.
-	err := newReal(y, fd, drv).WithConfirm(confirm).Recipe(params.Recipe{Name: "m", Cmd: []string{"x"}})
+	err := newReal(y, fd, drv).WithConfirm(confirm).Recipe(params.Recipe{Args: []string{"m", "x"}})
 	if err == nil {
 		t.Fatalf("want a validation error for the invalid source")
 	}
@@ -885,9 +1018,10 @@ func TestConfirmSummaryShowsInvalidSource(t *testing.T) {
 	}
 }
 
-// CONTRACT: `dabs do` ALWAYS confirms first — even with NO appended command it
-// must not launch a box unprompted, and a denial aborts before anything builds.
-func TestDoConfirmsEvenWithoutCommand(t *testing.T) {
+// CONTRACT: the default-recipe path ALWAYS confirms first — even with NO
+// appended command it must not launch a box unprompted, and a denial aborts
+// before anything builds.
+func TestRecipeDefaultConfirmsEvenWithoutCommand(t *testing.T) {
 	y := `recipes:
   sh:
     image: img
@@ -901,15 +1035,15 @@ func TestDoConfirmsEvenWithoutCommand(t *testing.T) {
 	drv := &fakeDriver{built: map[string]bool{"img": true}}
 	asked := ""
 	confirm := func(prompt string) bool { asked = prompt; return false }
-	err := newReal(y, fd, drv).WithConfirm(confirm).Do(params.Do{}) // no command
+	err := newReal(y, fd, drv).WithConfirm(confirm).Recipe(params.Recipe{}) // no args → default path
 	if err == nil || !strings.Contains(err.Error(), "aborted") {
-		t.Fatalf("`dabs do` must confirm and honor a denial; got err %v", err)
+		t.Fatalf("the default-recipe path must confirm and honor a denial; got err %v", err)
 	}
 	if asked == "" {
-		t.Fatalf("`dabs do` launched without confirming (no prompt shown)")
+		t.Fatalf("the default recipe launched without confirming (no prompt shown)")
 	}
 	if len(drv.ups) != 0 || len(drv.runs) != 0 {
-		t.Errorf("box touched despite a denied `dabs do`: ups=%v runs=%v", drv.ups, drv.runs)
+		t.Errorf("box touched despite a denied run: ups=%v runs=%v", drv.ups, drv.runs)
 	}
 }
 
@@ -961,7 +1095,7 @@ func TestRecipeUnknownTargetErrors(t *testing.T) {
 }
 
 // CONTRACT: keep:true leaves the box alive after the command (the user reaps it
-// with `dabs down`); default deletes it. This is the "give me a box to work in"
+// with `dabs rm --keep`); default deletes it. This is the "give me a box to work in"
 // vs "run this query" distinction.
 func TestRecipeKeepLeavesBoxAlive(t *testing.T) {
 	y := `recipes:
@@ -1148,6 +1282,50 @@ func TestRecipeAbsoluteOriginIsAllowed(t *testing.T) {
 	}
 }
 
+// CONTRACT: a source path built from a dabs space var ($NODE_VOLUME) may not use
+// `..` to climb out of the space it names — that would provision a directory
+// outside the dabs-managed node tree.
+func TestRecipeSpaceVarCannotEscapeItsSpace(t *testing.T) {
+	y := `recipes:
+  m:
+    image: img
+    command: [x]
+    sources:
+      - mkmount: $NODE_VOLUME/../../../../../../etc/dabs-escape
+        path: /work
+`
+	fd := baseData()
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "m"})
+	if err == nil || !strings.Contains(err.Error(), "escapes its $NODE_VOLUME space") {
+		t.Fatalf("want a space-escape error, got %v", err)
+	}
+	if len(drv.ups) != 0 {
+		t.Errorf("box brought up despite an escaping space path: %v", drv.ups)
+	}
+}
+
+// CONTRACT: a `..` that stays inside the space is fine, and a legitimate nested
+// path resolves within the space and the box comes up.
+func TestRecipeSpaceVarNestedPathResolvesInside(t *testing.T) {
+	y := `recipes:
+  m:
+    image: img
+    command: [x]
+    sources:
+      - mkmount: $NODE_VOLUME/ok/sub
+        path: /cache
+`
+	fd := baseData()
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	if err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "m"}); err != nil {
+		t.Fatalf("a nested space path should resolve inside: %v", err)
+	}
+	if len(drv.ups) != 1 {
+		t.Errorf("want the box up with a nested space path: %v", drv.ups)
+	}
+}
+
 // CONTRACT: a recipe with more than one `.` source is rejected — each `.` cuts a
 // chain tip, but a single box can only stand on one place.
 func TestRecipeMultipleDotSourcesRejected(t *testing.T) {
@@ -1210,7 +1388,7 @@ func TestRecipeEmptyCommandWithAppendedArgvRejected(t *testing.T) {
 	fd := baseData()
 	fd.exists["/d"] = true
 	drv := &fakeDriver{built: map[string]bool{"img": true}}
-	err := newReal(y, fd, drv).WithConfirm(yes).Recipe(params.Recipe{Name: "x", Cmd: []string{"-c", "echo hi"}})
+	err := newReal(y, fd, drv).WithConfirm(yes).Recipe(params.Recipe{Args: []string{"x", "-c", "echo hi"}})
 	if err == nil || !strings.Contains(err.Error(), "no command") {
 		t.Fatalf("want a no-command error, got %v", err)
 	}
@@ -1219,8 +1397,9 @@ func TestRecipeEmptyCommandWithAppendedArgvRejected(t *testing.T) {
 	}
 }
 
-// CONTRACT: `dabs up` on a boxless (imageless) recipe provisions the place(s) and
-// stops — the SAME outcome as `dabs recipe`, not a spurious "has no path" error.
+// CONTRACT: `dabs recipe --detach` on a boxless (imageless) recipe provisions the
+// place(s) and stops — the SAME outcome as a plain `dabs recipe`, not a spurious
+// "has no path" error.
 func TestUpOnBoxlessRecipeProvisionsLikeRecipe(t *testing.T) {
 	// A boxless recipe must have a source that MAKES a place: copy or worktree.
 	// A live mount makes none (the box, which there is not, would be the thing
@@ -1243,7 +1422,7 @@ func TestUpOnBoxlessRecipeProvisionsLikeRecipe(t *testing.T) {
 		return drv
 	}
 	run(func(r actions.Real) error { return r.Recipe(params.Recipe{Name: "place"}) })
-	run(func(r actions.Real) error { return r.Up(params.Up{Name: "place"}) })
+	run(func(r actions.Real) error { return r.Recipe(params.Recipe{Detach: true, Args: []string{"place"}}) })
 }
 
 // CONTRACT: running dabs from inside its OWN storage (~/.dabs/...) is refused —
@@ -1299,11 +1478,11 @@ func TestRecipePathInEnvWarns(t *testing.T) {
 	}
 }
 
-// --- tests: cast prefix resolution --------------------------------------------
+// --- tests: --worktree prefix resolution --------------------------------------
 
-// CONTRACT: `dabs cast <recipe> <worktree>` resolves the worktree by unambiguous
-// PREFIX, git-style — a unique prefix binds the full worktree.
-func TestCastResolvesWorktreeByPrefix(t *testing.T) {
+// CONTRACT: `dabs recipe <recipe> --worktree <wt>` resolves the worktree by
+// unambiguous PREFIX, git-style — a unique prefix binds the full worktree.
+func TestWorktreeFlagResolvesWorktreeByPrefix(t *testing.T) {
 	y := `recipes:
   w:
     image: img
@@ -1316,20 +1495,20 @@ func TestCastResolvesWorktreeByPrefix(t *testing.T) {
 	seedWorktreeNode(fd, "repo-c1d2e3f4", wtState{branch: "dabs/c1d2e3f4"})
 	fd.exists["/repo/.git"] = true
 	drv := &fakeDriver{built: map[string]bool{"img": true}}
-	if err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "w", Worktree: "repo-c1"}); err != nil {
-		t.Fatalf("cast by prefix: %v", err)
+	if err := newReal(y, fd, drv).Recipe(params.Recipe{Args: []string{"w"}, Worktree: "repo-c1"}); err != nil {
+		t.Fatalf("--worktree by prefix: %v", err)
 	}
 	if len(fd.worktrees) != 0 {
-		t.Fatalf("cast forked a worktree, want none: %v", fd.worktrees)
+		t.Fatalf("--worktree forked a worktree, want none: %v", fd.worktrees)
 	}
 	if len(drv.ups) != 1 {
-		t.Fatalf("cast did not bring the box up: %v", drv.ups)
+		t.Fatalf("--worktree did not bring the box up: %v", drv.ups)
 	}
 }
 
 // CONTRACT: an AMBIGUOUS worktree prefix reports "ambiguous" and lists matches —
 // not a bare "no worktree".
-func TestCastAmbiguousWorktreePrefixErrors(t *testing.T) {
+func TestWorktreeFlagAmbiguousWorktreePrefixErrors(t *testing.T) {
 	y := `recipes:
   w:
     image: img
@@ -1342,12 +1521,12 @@ func TestCastAmbiguousWorktreePrefixErrors(t *testing.T) {
 	seedWorktreeNode(fd, "repo-aaaa1111", wtState{branch: "dabs/aaaa1111"})
 	seedWorktreeNode(fd, "repo-aaaa2222", wtState{branch: "dabs/aaaa2222"})
 	drv := &fakeDriver{built: map[string]bool{"img": true}}
-	err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "w", Worktree: "repo-aaaa"})
+	err := newReal(y, fd, drv).Recipe(params.Recipe{Args: []string{"w"}, Worktree: "repo-aaaa"})
 	if err == nil || !strings.Contains(err.Error(), "ambiguous") {
 		t.Fatalf("want an ambiguous-prefix error, got %v", err)
 	}
 	if len(drv.ups) != 0 {
-		t.Errorf("box brought up despite an ambiguous cast: %v", drv.ups)
+		t.Errorf("box brought up despite an ambiguous --worktree: %v", drv.ups)
 	}
 }
 
@@ -1433,7 +1612,7 @@ func TestRelativeSourceOriginReachesDriverAbsolute(t *testing.T) {
 
 // CONTRACT: a dabs.yaml loaded BY PATH anchors its relative source origins on
 // its OWN directory (as it already does for its image dockerfile/context), so
-// `dabs up path/to/box` provisions the same box from any cwd.
+// `dabs recipe path/to/box --detach` provisions the same box from any cwd.
 func TestUpFromDabsYamlPathRebasesSourcePaths(t *testing.T) {
 	y := `default: base
 recipes:
@@ -1450,12 +1629,73 @@ recipes:
 	fd.exists["/proj/box/assets"] = true
 	fd.files = map[string][]byte{path: []byte(y)}
 	drv := &fakeDriver{built: map[string]bool{"img": true}}
-	if err := newReal("", fd, drv).Up(params.Up{Name: path}); err != nil {
+	if err := newReal("", fd, drv).Recipe(params.Recipe{Detach: true, Args: []string{path}}); err != nil {
 		t.Fatalf("Up: %v", err)
 	}
 	up := onlyUp(t, drv)
 	if len(up.Mounts) != 1 || up.Mounts[0].Host != "/proj/box/assets" {
 		t.Errorf("Up mounts = %+v, want the source anchored on the dabs.yaml dir (/proj/box/assets)", up.Mounts)
+	}
+}
+
+// CONTRACT: `--detach` smoke-checks the box by entering it once. If that enter
+// fails (a source over `/`, a missing `workdir:`, a masked child mount — all
+// surface as a driver error), the boot did not really succeed: no success block
+// prints, the box is reaped, and the error carries the driver's message.
+func TestUpReapsAndErrorsWhenBoxCannotBeEntered(t *testing.T) {
+	y := `recipes:
+  m:
+    image: img
+    command: [x]
+    sources:
+      - mount: /data
+        path: /work
+`
+	fd := baseData()
+	fd.exists["/data"] = true
+	drv := &fakeDriver{built: map[string]bool{"img": true}, execErr: errors.New("bwrap: Can't chdir to /work: No such file or directory")}
+	err := newReal(y, fd, drv).Recipe(params.Recipe{Detach: true, Args: []string{"m"}})
+	if err == nil {
+		t.Fatal("want an error when the smoke check fails, got nil")
+	}
+	if !strings.Contains(err.Error(), "chdir") {
+		t.Errorf("error = %v, want it to surface the driver message", err)
+	}
+	if len(drv.downs) != 1 {
+		t.Errorf("box not reaped: downs = %v, want exactly one", drv.downs)
+	}
+}
+
+// CONTRACT: a healthy `--detach` box passes the smoke check, prints its id, and
+// is NOT reaped — the box stays up for the user to reach in and eventually `rm`.
+func TestUpKeepsBoxAndPrintsIDWhenSmokeCheckPasses(t *testing.T) {
+	y := `recipes:
+  m:
+    image: img
+    command: [x]
+    sources:
+      - mount: /data
+        path: /work
+`
+	fd := baseData()
+	fd.exists["/data"] = true
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	var out string
+	err := errors.New("unset")
+	out = captureStdout(t, func() {
+		err = newReal(y, fd, drv).Recipe(params.Recipe{Detach: true, Args: []string{"m"}})
+	})
+	if err != nil {
+		t.Fatalf("Recipe --detach: %v", err)
+	}
+	if len(drv.execs) != 1 || strings.Join(drv.execs[0], " ") != "true" {
+		t.Errorf("smoke check = %v, want one exec of [true]", drv.execs)
+	}
+	if len(drv.downs) != 0 {
+		t.Errorf("box was reaped on a good boot: downs = %v", drv.downs)
+	}
+	if !strings.Contains(out, "id:") || !strings.Contains(out, "img-inst") {
+		t.Errorf("stdout = %q, want the success block with the instance id", out)
 	}
 }
 

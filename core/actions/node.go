@@ -21,7 +21,7 @@ const nodeFile = "dabs-node.json"
 // Node is the record at ~/.dabs/nodes/<id>/dabs-node.json. Fields common to
 // every node sit at the top; kind-specific fields nest under their own key, and
 // the PRESENCE of that key is the kind — a node with a "worktree" nest is a
-// worktree. Listing, reaping and casting all read this record rather than
+// worktree. Listing, reaping and worktree-binding all read this record rather than
 // sniffing the filesystem, so dabs only ever sees what it actually made.
 type Node struct {
 	ID      string   `json:"id"`
@@ -65,7 +65,7 @@ const (
 
 // NodeWorktree carries what every worktree operation needs: the branch (to
 // delete on reap) and the parent repo (to remove the worktree from, and whose
-// .git `cast` must mount so git resolves inside a box).
+// .git `--worktree` must mount so git resolves inside a box).
 type NodeWorktree struct {
 	Branch string `json:"branch"`
 	Repo   string `json:"repo"`
@@ -77,7 +77,7 @@ type NodeWorktree struct {
 // a matching name elsewhere (a worktree's branch is `dabs/<short>`), so a node
 // and the things it owns always share one id.
 //
-// Readable and prefix-matchable is the point: `dabs worktrees`, `cast <name>`
+// Readable and prefix-matchable is the point: `dabs worktrees`, `recipe --worktree <name>`
 // and `down <name>` all resolve on a unique prefix, git-style.
 func mintNodeID(prefix string) (id, short string) {
 	short = randHex(4)
@@ -131,7 +131,7 @@ func (r Real) resolveNodeSpace(id, space string) (string, error) {
 // checkout, which dabs cut into the node's ephemeral space.
 //
 // Nodes written before the space layout keep their checkout in `data/`. Both are
-// read, so a worktree made by an older dabs still lists, diffs and casts.
+// read, so a worktree made by an older dabs still lists, diffs and binds.
 func (r Real) resolveNodeData(id string) (string, error) {
 	eph, err := r.resolveNodeSpace(id, SpaceEphemeral)
 	if err != nil {
@@ -186,6 +186,13 @@ func (r Real) readNode(id string) (Node, error) {
 	var n Node
 	if err := json.Unmarshal(b, &n); err != nil {
 		return Node{}, fmt.Errorf("node %s: %w", id, err)
+	}
+	// A record without an id is not a node dabs wrote: an empty or partial JSON
+	// object ({}) unmarshals cleanly but carries no identity. Rejecting it keeps
+	// such stray records out of the fleet — and out of the parent map, where an
+	// empty id would otherwise point a chain walk at itself and never terminate.
+	if n.ID == "" {
+		return Node{}, fmt.Errorf("node %s: record has no id", id)
 	}
 	// A record with no kind carries a worktree nest, and the nest is what it is.
 	if n.Kind == "" && n.Worktree != nil {

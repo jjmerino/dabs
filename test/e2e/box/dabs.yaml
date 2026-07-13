@@ -1,6 +1,6 @@
 # The box the e2e suite itself runs in (see run_e2e.sh, which builds and ups it
 # from the repo root). A recipe now, not a dabs.json manifest: `dabs build
-# test/e2e/box` builds this image, `dabs up test/e2e/box` boots it detached.
+# test/e2e/box` builds this image, `dabs recipe test/e2e/box --detach` boots it detached.
 # Inline build paths resolve relative to THIS file's dir (like the old
 # manifest): the context is the repo root three levels up, which carries the
 # .e2e-stage the Dockerfile copies in. `target` routes it to the privileged

@@ -117,9 +117,17 @@ func (Driver) Run(instance string, cmd []string) error {
 	}
 	ctn := found.ID
 	args := []string{"exec"}
-	interactive := stdinIsTerminal()
-	if interactive {
-		args = append(args, "-i", "-t")
+	// `-i` attaches stdin so a pipe or heredoc reaches the box command, and `-t`
+	// adds a pseudo-TTY for interactive use. The vendor `container exec -i`
+	// rejects a stdin that is neither a terminal nor a real stream (/dev/null),
+	// so pass `-i` only when there is one: a terminal or a piped file/pipe.
+	tty := stdinIsTerminal()
+	attach := tty || stdinIsStream()
+	if attach {
+		args = append(args, "-i")
+	}
+	if tty {
+		args = append(args, "-t")
 	}
 	if wd := found.Configuration.InitProcess.WorkingDirectory; wd != "" {
 		args = append(args, "-w", wd)
@@ -130,7 +138,7 @@ func (Driver) Run(instance string, cmd []string) error {
 	args = append(args, ctn)
 	args = append(args, cmd...)
 	c := exec.Command("container", args...)
-	if interactive {
+	if attach {
 		c.Stdin = os.Stdin
 	}
 	c.Stdout = os.Stdout
@@ -239,6 +247,17 @@ func stdinIsTerminal() bool {
 	var t syscall.Termios
 	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, os.Stdin.Fd(), syscall.TIOCGETA, uintptr(unsafe.Pointer(&t)))
 	return errno == 0
+}
+
+// stdinIsStream reports whether stdin is a pipe or a regular file — a real
+// input source to forward. A char device (a terminal, or /dev/null when there
+// is no input) is not a stream.
+func stdinIsStream() bool {
+	fi, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice == 0
 }
 
 // remove force-removes a container, tolerating absence.

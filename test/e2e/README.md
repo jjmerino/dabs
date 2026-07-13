@@ -30,7 +30,7 @@ stays hermetic and never touches sandboxes.
 - `e2e_test.go` — one file: `TestMain` builds the dab under test from source
   and builds the base image; one `test_*` per CLI behavior.
 - `dabs.yaml` + `Dockerfile` — the base recipe (`dabs-e2e`) the inner boxes
-  come from; `dabs build`/`up` resolve it.
+  come from; `dabs build`/`recipe` resolve it.
 
 ## Notes
 

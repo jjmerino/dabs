@@ -113,6 +113,17 @@ func runStdin(stdin, cmdline string) string {
 	return string(out)
 }
 
+// runInStdin runs in dir with stdin fed — for a cwd-sensitive command that also
+// hits a confirm prompt (the default-recipe path always confirms).
+func runInStdin(dir, stdin, cmdline string) (string, int) {
+	argv := splitArgs(cmdline)
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Dir = dir
+	cmd.Stdin = strings.NewReader(stdin)
+	out, _ := cmd.CombinedOutput()
+	return string(out), cmd.ProcessState.ExitCode()
+}
+
 // splitArgs splits a command line on whitespace, keeping single/double-quoted
 // runs (with their spaces) as one argument and stripping the quotes — enough
 // to write a `sh -c '…'` command as one readable string.
@@ -165,28 +176,29 @@ func writeRecipe(dir, name, dockerfile string) {
 // see each other's boxes (one box, one ~/.dabs).
 // clean reaps every box this suite made. The name is a PREFIX matching many
 // instances, so it needs --multiple (the explicit approval to act on more than
-// one) as well as --force (skip the prompt) — --force alone reaps nothing.
+// one) as well as --yes (skip the consent prompt) — neither alone reaps a fleet.
 func clean(t *testing.T) {
 	t.Helper()
-	run("dabs down " + sandboxName + " --multiple --force")
-	t.Cleanup(func() { run("dabs down " + sandboxName + " --multiple --force") })
+	run("dabs rm " + sandboxName + " --multiple --yes")
+	t.Cleanup(func() { run("dabs rm " + sandboxName + " --multiple --yes") })
 }
 
 // up starts a fresh base instance and returns its full name.
 func up(t *testing.T) string {
 	t.Helper()
-	out, code := run("dabs up " + baseDir)
+	out, code := run("dabs recipe " + baseDir + " --detach")
 	if code != 0 {
 		t.Fatalf("up failed (%d): %s", code, out)
 	}
-	// `up` reports the instance on its `id:` line (the box is named after the
-	// image, so the leading line names the recipe, not the instance).
+	// `up` reports the canonical NODE ID on its `id:` line and the driver INSTANCE
+	// name on its `instance:` line. Callers here drive rm/exec/ls, all of which
+	// resolve either — return the instance so the running box is what they name.
 	for _, line := range strings.Split(out, "\n") {
-		if inst, ok := strings.CutPrefix(strings.TrimSpace(line), "id: "); ok {
+		if inst, ok := strings.CutPrefix(strings.TrimSpace(line), "instance: "); ok {
 			return strings.TrimSpace(inst)
 		}
 	}
-	t.Fatalf("up printed no id line: %q", out)
+	t.Fatalf("up printed no instance line: %q", out)
 	return ""
 }
 
@@ -263,7 +275,7 @@ func TestUnknownCommand(t *testing.T) {
 
 func TestUpPrintsInstance(t *testing.T) {
 	clean(t)
-	out, code := run("dabs up " + baseDir)
+	out, code := run("dabs recipe " + baseDir + " --detach")
 	wantExit(t, 0, code)
 	wantContains(t, out, sandboxName+"-")
 	wantContains(t, out, " up")
@@ -285,7 +297,7 @@ func TestUpCreatesDistinctInstances(t *testing.T) {
 func TestLsAfterReapShowsNoLiveBox(t *testing.T) {
 	clean(t)
 	i := up(t)
-	run("dabs down " + i + " --force")
+	run("dabs rm " + i + " --keep --yes")
 	out, _ := run("dabs ls")
 	if isLive(out, i) {
 		t.Fatalf("%s still live after down:\n%s", i, out)
@@ -316,7 +328,7 @@ func TestLsShowsInstanceAndDriver(t *testing.T) {
 	wantContains(t, out, i)
 }
 
-// --- exec / run --------------------------------------------------------------
+// --- exec ---------------------------------------------------------------------
 
 func TestRunEnvAndWorkdir(t *testing.T) {
 	clean(t)
@@ -345,7 +357,7 @@ func TestRunAmbiguous(t *testing.T) {
 }
 
 func TestRunMissing(t *testing.T) {
-	out, _ := run("dabs run nope-missing -- echo x")
+	out, _ := run("dabs exec nope-missing -- echo x")
 	wantContains(t, out, "no box matches")
 }
 
@@ -365,25 +377,25 @@ func TestRunPersistenceWithinInstance(t *testing.T) {
 	wantContains(t, out, "persisted")
 }
 
-// TestRunShellWraps proves `dabs run` is the friendly level above exec: it runs
-// a shell command LINE (via sh -c), so a pipe works without the caller writing
-// sh -c or a `--` separator — the command reaches the box as one string.
+// TestRunShellWraps proves `dabs exec` without a `--` is the friendly level: it
+// runs a shell command LINE (via sh -c), so a pipe works without the caller
+// writing sh -c or a `--` separator — the command reaches the box as one string.
 func TestRunShellWraps(t *testing.T) {
 	clean(t)
 	i := up(t)
-	out, _ := run("dabs run " + i + " 'echo hi | tr a-z A-Z'")
+	out, _ := run("dabs exec " + i + " 'echo hi | tr a-z A-Z'")
 	wantContains(t, out, "HI")
 }
 
 // TestRunExitCodePropagates (B1): a box command that exits non-zero is the box
-// command's failure, not dabs's. `dabs run`/`exec` must mirror that exit code and
+// command's failure, not dabs's. `dabs exec` must mirror that exit code and
 // NOT print a spurious `dabs: bwrap:` (or `dabs: apple:`) wrapper line, while a
 // real driver failure (no such instance) still reports clearly as a dabs error.
 func TestRunExitCodePropagates(t *testing.T) {
 	clean(t)
 	i := up(t)
 
-	out, code := run("dabs run " + i + " 'exit 7'")
+	out, code := run("dabs exec " + i + " 'exit 7'")
 	wantExit(t, 7, code)
 	wantNotContains(t, out, "dabs: bwrap:")
 	wantNotContains(t, out, "dabs: apple:")
@@ -395,27 +407,27 @@ func TestRunExitCodePropagates(t *testing.T) {
 	wantNotContains(t, out, "dabs: apple:")
 
 	// A real failure — no such instance — is still a clear dabs error, not exit 0.
-	out, code = run("dabs run nope-missing -- echo x")
+	out, code = run("dabs exec nope-missing -- echo x")
 	if code == 0 {
 		t.Fatalf("missing instance should be a dabs error, got exit 0:\n%s", out)
 	}
 	wantContains(t, out, "no box matches")
 }
 
-// --- down --------------------------------------------------------------------
+// --- rm (the single reaper; it absorbed down) --------------------------------
 
-func TestDownOne(t *testing.T) {
+func TestRmStopsBox(t *testing.T) {
 	clean(t)
 	i := up(t)
-	out, _ := run("dabs down " + i)
+	out, _ := run("dabs rm " + i + " --yes")
 	wantContains(t, out, i+" down")
 }
 
-func TestDownDryListsAndKeeps(t *testing.T) {
+func TestRmDryListsAndKeeps(t *testing.T) {
 	clean(t)
 	a, b := up(t), up(t)
-	out, _ := run("dabs down " + sandboxName + " --dry")
-	wantContains(t, out, "matches")
+	out, _ := run("dabs rm " + sandboxName + " --multiple --dry")
+	wantContains(t, out, "reaps")
 	ls, _ := run("dabs ls")
 	for _, i := range []string{a, b} {
 		if !isLive(ls, i) {
@@ -425,35 +437,35 @@ func TestDownDryListsAndKeeps(t *testing.T) {
 }
 
 // CONTRACT (the multi-match guard): a name matching MORE THAN ONE box is NOT
-// reaped by --force alone — force only skips the prompt. Acting on several boxes
-// takes the explicit --multiple. An over-broad name must never quietly wipe a
-// fleet; it must refuse and leave everything standing.
-func TestDownRefusesMultiMatchWithoutMultiple(t *testing.T) {
+// reaped by --yes alone — yes only skips the consent prompt. Acting on several
+// boxes takes the explicit --multiple. An over-broad name must never quietly
+// wipe a fleet; it must refuse and leave everything standing.
+func TestRmRefusesMultiMatchWithoutMultiple(t *testing.T) {
 	clean(t)
 	a, b := up(t), up(t)
-	// --force alone against a prefix matching both boxes: reaps NOTHING.
-	run("dabs down " + sandboxName + " --force")
+	// --yes alone against a prefix matching both boxes: reaps NOTHING.
+	run("dabs rm " + sandboxName + " --yes")
 	out, _ := run("dabs ls")
 	for _, i := range []string{a, b} {
 		if !isLive(out, i) {
-			t.Fatalf("--force alone reaped %s on a multi-match; only --multiple may:\n%s", i, out)
+			t.Fatalf("--yes alone reaped %s on a multi-match; only --multiple may:\n%s", i, out)
 		}
 	}
 
 	// --multiple is the approval — now they go.
-	run("dabs down " + sandboxName + " --multiple --force")
+	run("dabs rm " + sandboxName + " --multiple --yes")
 	out, _ = run("dabs ls")
 	for _, i := range []string{a, b} {
 		if isLive(out, i) {
-			t.Fatalf("%s still live after --multiple --force:\n%s", i, out)
+			t.Fatalf("%s still live after --multiple --yes:\n%s", i, out)
 		}
 	}
 }
 
-func TestDownMissingIsNotError(t *testing.T) {
-	out, code := run("dabs down nope-missing")
+func TestRmMissingIsNotError(t *testing.T) {
+	out, code := run("dabs rm nope-missing")
 	wantExit(t, 0, code)
-	wantContains(t, out, "nothing matches")
+	wantContains(t, out, "no node")
 }
 
 // --- logging a harness in ------------------------------------------------------
@@ -494,7 +506,7 @@ func TestSharedLoginDirIsCreatedCapturedAndReusedByEveryBox(t *testing.T) {
 	wantContains(t, string(data), "fake-token")
 
 	// Second box: the login is already there, mounted from the same host dir.
-	out2, code2 := runIn(dir, "dabs run "+upRecipeBox(t, dir)+" cat /root/.claude/.credentials.json")
+	out2, code2 := runIn(dir, "dabs exec "+upRecipeBox(t, dir)+" cat /root/.claude/.credentials.json")
 	wantExit(t, 0, code2)
 	wantContains(t, out2, "fake-token")
 }
@@ -503,7 +515,7 @@ func TestSharedLoginDirIsCreatedCapturedAndReusedByEveryBox(t *testing.T) {
 // so a test can look inside a box the recipe provisioned.
 func upRecipeBox(t *testing.T, dir string) string {
 	t.Helper()
-	out, code := runIn(dir, "dabs up claude-mounted")
+	out, code := runIn(dir, "dabs recipe claude-mounted --detach")
 	if code != 0 {
 		t.Fatalf("up: %s", out)
 	}
@@ -552,12 +564,13 @@ const e2eRecipes = `recipes:
   shellhang:
     image: dabs-e2e
     command: [sh]
-  # For cast: a worktree-source recipe whose command DOES git — proving cast made
-  # the box git-capable. It commits (empty) and records the new HEAD into /work
-  # (the live-mounted worktree), so the host can confirm the commit reconciled.
+  # For --worktree: a worktree-source recipe whose command DOES git — proving the
+  # bound worktree made the box git-capable. It commits (empty) and records the new
+  # HEAD into /work (the live-mounted worktree), so the host can confirm the commit
+  # reconciled.
   gitprobe:
     image: dabs-e2e
-    command: [sh, -c, "cd /work && git rev-parse --abbrev-ref HEAD > BRANCH && git -c user.email=box@dabs.test -c user.name=box commit --allow-empty -qm 'from cast box' && git rev-parse HEAD > CAST_HEAD"]
+    command: [sh, -c, "cd /work && git rev-parse --abbrev-ref HEAD > BRANCH && git -c user.email=box@dabs.test -c user.name=box commit --allow-empty -qm 'from worktree box' && git rev-parse HEAD > CAST_HEAD"]
     sources:
       - worktree: .
         path: /work
@@ -760,13 +773,13 @@ func TestWorktreesInspectAndGuardedReap(t *testing.T) {
 	wantExit(t, 0, code)
 	wantContains(t, out, "HAS WORK") // the box wrote from-box.txt (uncommitted)
 
-	out, code = run("dabs worktrees rm " + name)
+	out, code = run("dabs rm " + name + " -y")
 	if code == 0 {
 		t.Fatalf("rm removed a worktree with unreviewed work without --force\n%s", out)
 	}
 	wantContains(t, out, "unreviewed work")
 
-	out, code = run("dabs worktrees rm " + name + " --force")
+	out, code = run("dabs rm " + name + " -y --force")
 	wantExit(t, 0, code)
 	wantContains(t, out, "removed")
 	if e := worktreeDirs(t); len(e) != 0 {
@@ -800,8 +813,8 @@ func TestWorktreesDiffShowsUntrackedFiles(t *testing.T) {
 }
 
 // TestRmWorktreeGuardsUnreviewedWork (finding B26/B27): the git-work guard is not
-// the property of one verb. `dabs rm <worktree> -y` must honour it exactly as
-// `worktrees rm` does — -y consents to the ephemeral space, but discarding
+// the property of one verb. `dabs rm <worktree> -y` must honour it — the same guard
+// `dabs rm --clean-worktrees` applies: -y consents to the ephemeral space, but discarding
 // unreviewed git work needs the stronger --force. A childless worktree LEAF (no
 // cascade) is the case B27 slipped through: it reaps with no prompt at all, so it
 // is precisely where a plain `rm -y` would silently destroy work.
@@ -930,12 +943,12 @@ func gitOut(t *testing.T, dir string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// TestCastAttachesWorktreeAndGivesGit: `dabs cast <recipe> <worktree>` binds an
-// EXISTING worktree to the recipe's `worktree: .` source — it mounts the
-// worktree live (never forks a new branch) AND mounts the parent .git, so git
-// works inside the box. Proven end-to-end: the box reads the branch, commits,
-// and that commit reconciles into the shared store (visible from the repo).
-func TestCastAttachesWorktreeAndGivesGit(t *testing.T) {
+// TestWorktreeFlagAttachesWorktreeAndGivesGit: `dabs recipe <recipe> --worktree
+// <wt>` binds an EXISTING worktree to the recipe's `worktree: .` source — it
+// mounts the worktree live (never forks a new branch) AND mounts the parent .git,
+// so git works inside the box. Proven end-to-end: the box reads the branch,
+// commits, and that commit reconciles into the shared store (visible from the repo).
+func TestWorktreeFlagAttachesWorktreeAndGivesGit(t *testing.T) {
 	clean(t)
 	installRecipes(t)
 	resetNodes(t) // isolate from other tests
@@ -953,14 +966,14 @@ func TestCastAttachesWorktreeAndGivesGit(t *testing.T) {
 	name := wts[0]
 	wt := worktreeData(name)
 
-	// Cast a git-doing recipe onto that existing worktree.
-	out, code := run("dabs cast gitprobe " + name)
+	// Bind a git-doing recipe onto that existing worktree.
+	out, code := run("dabs recipe gitprobe --worktree " + name)
 	wantExit(t, 0, code)
 	wantContains(t, out, "mounting it instead") // attached, did not fork
 
 	// It must NOT have created a second worktree.
 	if e := worktreeDirs(t); len(e) != 1 {
-		t.Fatalf("cast forked a new worktree; want still one, got %v", e)
+		t.Fatalf("--worktree forked a new worktree; want still one, got %v", e)
 	}
 
 	// git ran INSIDE the box against the worktree's own branch...
@@ -983,28 +996,30 @@ func TestCastAttachesWorktreeAndGivesGit(t *testing.T) {
 	if typ := gitOut(t, repo, "cat-file", "-t", sha); typ != "commit" {
 		t.Fatalf("box commit %s not in shared store from the repo (type %q)", sha, typ)
 	}
-	if subj := gitOut(t, wt, "log", "-1", "--format=%s"); subj != "from cast box" {
-		t.Fatalf("worktree HEAD subject = %q, want 'from cast box'", subj)
+	if subj := gitOut(t, wt, "log", "-1", "--format=%s"); subj != "from worktree box" {
+		t.Fatalf("worktree HEAD subject = %q, want 'from worktree box'", subj)
 	}
 }
 
-// instanceFrom pulls the base-box instance name out of `dabs up` output (the
-// field prefixed with the sandbox name, printed on the "<instance> up" line).
+// instanceFrom pulls the base-box driver instance name out of `dabs recipe
+// --detach` output — the value on the `instance:` line. The NODE ID shares the
+// recipe's `dabs-e2e-` prefix, so scanning for the prefix is ambiguous; the
+// labelled line is not.
 func instanceFrom(t *testing.T, out string) string {
 	t.Helper()
-	for _, f := range strings.Fields(out) {
-		if strings.HasPrefix(f, sandboxName+"-") {
-			return f
+	for _, line := range strings.Split(out, "\n") {
+		if inst, ok := strings.CutPrefix(strings.TrimSpace(line), "instance: "); ok {
+			return strings.TrimSpace(inst)
 		}
 	}
-	t.Fatalf("no %s-* instance in output:\n%s", sandboxName, out)
+	t.Fatalf("no instance line in output:\n%s", out)
 	return ""
 }
 
 // TestWorktreeBoxLifecycleLog drives the append-only journal end to end: bring
-// up a worktree-backed box (`dabs up` on a `worktree:` recipe), confirm
+// up a worktree-backed box (`dabs recipe --detach` on a `worktree:` recipe), confirm
 // log.jsonl gains an `up` and `dabs worktrees` shows the box live under the
-// worktree's absolute path, then `dabs down` and confirm a `down` entry and that
+// worktree's absolute path, then `dabs rm --keep` and confirm a `down` entry and that
 // the worktree reads as having no box. The log is the sole instance→worktree
 // record; nothing else knows the box was worktree-backed.
 func TestWorktreeBoxLifecycleLog(t *testing.T) {
@@ -1014,12 +1029,12 @@ func TestWorktreeBoxLifecycleLog(t *testing.T) {
 	repo := filepath.Join(home, "wtlogrepo")
 	gitRepo(t, repo)
 
-	// Bring up a worktree-backed box detached (up runs no command, keeps the box).
-	out, code := runIn(repo, "dabs up claude-new-worktree")
+	// Bring up a worktree-backed box detached (--detach runs no command, keeps the box).
+	out, code := runIn(repo, "dabs recipe claude-new-worktree --detach")
 	wantExit(t, 0, code)
 	wantContains(t, out, "kept:")
 	inst := instanceFrom(t, out)
-	t.Cleanup(func() { run("dabs down " + inst + " --force") })
+	t.Cleanup(func() { run("dabs rm " + inst + " --yes") })
 
 	wts := worktreeDirs(t)
 	if len(wts) != 1 {
@@ -1051,8 +1066,8 @@ func TestWorktreeBoxLifecycleLog(t *testing.T) {
 		wantContains(t, out, want)
 	}
 
-	// Bring the box down — the journal gains a matching `down`.
-	out, code = run("dabs down " + inst)
+	// Stop the box (archive it) — the journal gains a matching `down`.
+	out, code = run("dabs rm " + inst + " --keep --yes")
 	wantExit(t, 0, code)
 	logAfterDown := readFile(t, logPath)
 	t.Logf("log.jsonl after down:\n%s", logAfterDown)
@@ -1148,7 +1163,8 @@ func TestRecipeLocalDabsYamlDefault(t *testing.T) {
 	// marker still fails.
 	wantContains(t, out, "probe default")
 
-	out, code = runIn(dir, "dabs recipe") // no name → default
+	// No name → the default-recipe path, which confirms before running: feed `y`.
+	out, code = runInStdin(dir, "y\n", "dabs recipe")
 	wantExit(t, 0, code)
 	wantContains(t, out, "LOCAL_DEFAULT_RAN")
 }
@@ -1168,11 +1184,11 @@ func TestHelpRendersAndPointsToFull(t *testing.T) {
 	wantContains(t, full, "dabs box") // the bundled AGENTS.md guide
 }
 
-// TestUpUnknownRecipeLists: `dabs up <bogus>` (not a recipe, not a path) fails
-// clearly, listing the known recipes and pointing at the recipe/path/default
-// forms — build/up resolve a recipe now, not a manifest.
+// TestUpUnknownRecipeLists: `dabs recipe <bogus> --detach` (not a recipe, not a
+// path) fails clearly, listing the known recipes and pointing at the
+// recipe/path/default forms — build/detach resolve a recipe now, not a manifest.
 func TestUpUnknownRecipeLists(t *testing.T) {
-	out, code := run("dabs up not-a-recipe")
+	out, code := run("dabs recipe not-a-recipe --detach")
 	if code == 0 {
 		t.Fatalf("want non-zero exit; got 0\n%s", out)
 	}
@@ -1180,9 +1196,10 @@ func TestUpUnknownRecipeLists(t *testing.T) {
 	wantContains(t, out, "dabs.yaml path") // the hint naming the accepted forms
 }
 
-// TestUpFromDabsYamlPath: `dabs up <path/to/dabs.yaml>` loads that file and boots
-// its recipe — proving the "a path is a dabs.yaml to load" form. The recipe
-// reuses the prebuilt base image by BARE name, so up needs no builder in-box.
+// TestUpFromDabsYamlPath: `dabs recipe <path/to/dabs.yaml> --detach` loads that
+// file and boots its recipe — proving the "a path is a dabs.yaml to load" form.
+// The recipe reuses the prebuilt base image by BARE name, so detach needs no
+// builder in-box.
 func TestUpFromDabsYamlPath(t *testing.T) {
 	clean(t)
 	dir := filepath.Join(home, "yamlpath")
@@ -1194,7 +1211,7 @@ func TestUpFromDabsYamlPath(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out, code := run("dabs up " + filepath.Join(dir, "dabs.yaml")) // a FILE path
+	out, code := run("dabs recipe " + filepath.Join(dir, "dabs.yaml") + " --detach") // a FILE path
 	wantExit(t, 0, code)
 	wantContains(t, out, sandboxName+"-")
 	wantContains(t, out, " up")

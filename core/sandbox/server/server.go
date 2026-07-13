@@ -164,7 +164,8 @@ func (d *Driver) writeRecipe(name string, env map[string]string, workdir string)
 }
 
 // Up rewrites the staged recipe with the spec's runtime fields and runs
-// `dabs up` remotely, returning the instance name the remote printed.
+// `dabs recipe … --detach` remotely, returning the instance name the remote
+// printed on its `instance:` line.
 func (d *Driver) Up(spec sandbox.Spec) (string, error) {
 	if err := d.writeRecipe(spec.Name, spec.Env, spec.Workdir); err != nil {
 		return "", err
@@ -173,15 +174,19 @@ func (d *Driver) Up(spec sandbox.Spec) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	out, err := d.remote(nil, dabs, "up", d.stagingDir(spec.Name)).Output()
+	out, err := d.remote(nil, dabs, "recipe", d.stagingDir(spec.Name), "--detach").Output()
 	if err != nil {
-		return "", fmt.Errorf("ssh: dabs up on %s: %w", d.host, err)
+		return "", fmt.Errorf("ssh: dabs recipe --detach on %s: %w", d.host, err)
 	}
-	fields := strings.Fields(strings.TrimSpace(string(out))) // "<instance> up"
-	if len(fields) < 1 {
-		return "", fmt.Errorf("ssh: unexpected dabs up output on %s: %q", d.host, string(out))
+	// printUp emits the instance on its own line: "instance: <name>".
+	for _, line := range strings.Split(string(out), "\n") {
+		if rest, ok := strings.CutPrefix(strings.TrimSpace(line), "instance:"); ok {
+			if inst := strings.TrimSpace(rest); inst != "" {
+				return inst, nil
+			}
+		}
 	}
-	return fields[0], nil
+	return "", fmt.Errorf("ssh: unexpected dabs recipe --detach output on %s: %q", d.host, string(out))
 }
 
 // Run executes remotely, streams wired through ssh. A TTY is requested when
@@ -195,7 +200,7 @@ func (d *Driver) Run(instance string, cmd []string) error {
 	if stdinIsTerminal() {
 		extra = append(extra, "-t")
 	}
-	argv := append([]string{dabs, "run", instance, "--"}, cmd...)
+	argv := append([]string{dabs, "exec", instance, "--"}, cmd...)
 	c := d.remote(extra, argv...)
 	c.Stdin = os.Stdin
 	c.Stdout = os.Stdout
@@ -212,7 +217,7 @@ func (d *Driver) Exec(instance string, cmd []string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	argv := append([]string{dabs, "run", instance, "--"}, cmd...)
+	argv := append([]string{dabs, "exec", instance, "--"}, cmd...)
 	out, err := d.remote(nil, argv...).CombinedOutput()
 	if err != nil {
 		return string(out), fmt.Errorf("ssh: exec on %s: %v: %s", d.host, err, strings.TrimSpace(string(out)))
@@ -227,7 +232,7 @@ func (d *Driver) Down(instance string) error {
 	if err != nil {
 		return err
 	}
-	if out, err := d.remote(nil, dabs, "down", instance).CombinedOutput(); err != nil {
+	if out, err := d.remote(nil, dabs, "rm", instance, "--keep", "-y").CombinedOutput(); err != nil {
 		return fmt.Errorf("ssh: down on %s: %v: %s", d.host, err, strings.TrimSpace(string(out)))
 	}
 	return nil

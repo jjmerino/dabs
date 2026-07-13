@@ -17,33 +17,14 @@ type Build struct {
 	Name string // recipe name, a dabs.yaml path, or "" for the default
 }
 
-// Up are the inputs to the up action. Name selects the recipe to bring up, with
-// the same meaning as Build.Name.
-type Up struct {
-	Name string // recipe name, a dabs.yaml path, or "" for the default
-}
-
-// Exec are the inputs to the exec action: the lowest level — run an EXACT argv
-// inside an instance, with no shell interpretation.
+// Exec are the inputs to the exec action, the single reach-in verb. The `--`
+// separator on the command line selects the mode: with `--`, Cmd is an EXACT
+// argv run as-is (Shell false); without it, Cmd's tokens are joined into one
+// `sh -c` line so pipes/globs/&& work (Shell true).
 type Exec struct {
 	Instance string   // instance name, as reported by ls (e.g. demo-0)
-	Cmd      []string // exact argv, run as-is
-}
-
-// Run are the inputs to the run action: the friendly level — run a shell
-// command LINE inside an instance. Cmd's tokens are joined into one `sh -c`
-// command, so pipes/globs/&& work as written.
-type Run struct {
-	Instance string   // instance name, as reported by ls (e.g. demo-0)
-	Cmd      []string // tokens joined into one shell command line
-}
-
-// Down are the inputs to the down action.
-type Down struct {
-	Instance string // instance name, as reported by ls (e.g. demo-0)
-	Force    bool   // skip the confirmation prompt / force through
-	Multiple bool   // authorize acting on more than one match; without it a name matching several instances is refused
-	Dry      bool   // only show what the name matches; down nothing
+	Cmd      []string // exact argv, or shell tokens joined into one line
+	Shell    bool     // join Cmd into one `sh -c` line instead of running it as-is
 }
 
 // Ls are the inputs to the ls action.
@@ -54,29 +35,44 @@ type Ls struct {
 	All bool
 }
 
-// Rm are the inputs to removing a node: a place dabs made, or a box.
+// Rm are the inputs to removing a node: a place dabs made, or a box. It is the
+// single reaper — it stops a live box and takes its node and spaces away.
 //
-// Yes consents to reaping the ephemeral space (the one that may hold work).
+// Yes skips the consent prompt: it reaps the ephemeral space (the one that may
+// hold work) and stops a live box without asking. Without it, a reap that would
+// stop a live box or lose held data is REFUSED with a preview.
+// Keep archives instead of removing: the box is stopped but its node record is
+// left behind (what ran, and from where, outlives the box). This is teardown
+// without forgetting.
 // Volume additionally consents to the volume — what a place keeps ON PURPOSE,
 // so it is never taken without being asked for by name.
 // Force approves discarding a worktree node that holds unreviewed git work
-// (uncommitted changes or unpushed commits) — a stronger consent than Yes,
-// which only speaks to the ephemeral space, not to losing git work.
+// (uncommitted changes or unpushed commits) — a different risk than the prompt
+// Yes skips, so it stays its own flag.
 // Multiple authorizes acting on more than one prefix match; without it a name
-// matching several nodes is refused (mirrors Down.Multiple), so a stray prefix
-// cannot reap several nodes at once.
+// matching several nodes is refused, so a stray prefix cannot reap several
+// nodes at once — the count is shown first.
+// Dry previews what would be reaped and removes nothing.
+// CleanWorktrees reaps EVERY worktree node that holds no unreviewed work, in one
+// sweep, instead of a single named node. A worktree with unreviewed work is kept
+// unless Force. When set, Node is not required.
 type Rm struct {
-	Node     string
-	Yes      bool
-	Volume   bool
-	Force    bool
-	Multiple bool
+	Node           string
+	Yes            bool
+	Keep           bool
+	Volume         bool
+	Force          bool
+	Multiple       bool
+	Dry            bool
+	CleanWorktrees bool
 }
 
-// Images are the inputs to the images action: list built images, or with Prune
-// remove them (they rebuild on the next build).
-type Images struct {
-	Prune bool
+// Prune are the inputs to the prune action: reclaim built box images (they
+// rebuild on the next build). Dry lists what exists instead of removing it;
+// Force removes even an image a live box still depends on.
+type Prune struct {
+	Dry   bool
+	Force bool
 }
 
 // ServersList are the inputs to listing registered servers.
@@ -96,26 +92,32 @@ type ServersRemove struct {
 	Name string
 }
 
-// Recipe are the inputs to running a named recipe (a fully declarative box:
-// image, sources, env, command).
+// Recipe are the inputs to running a recipe (a fully declarative box: image,
+// sources, env, command).
 type Recipe struct {
+	// Name is an already-chosen recipe run directly. The `dabs recipe` verb leaves
+	// it empty and passes Args instead, letting the action decide name-vs-default
+	// against the registry.
 	Name string
-	// Worktree, when set (via `dabs cast`), binds an EXISTING dabs worktree to
-	// the recipe's `.` source instead of the cwd: `worktree: .`/`mount: .` mount
-	// that worktree live (plus its parent .git so git works in-box) rather than
-	// cutting a fresh branch, and `copy: .` snapshots it.
+	// Worktree, when set (via `dabs recipe <name> --worktree <wt>`), binds an
+	// EXISTING dabs worktree to the recipe's `.` source instead of the cwd:
+	// `worktree: .`/`mount: .` mount that worktree live (plus its parent .git so
+	// git works in-box) rather than cutting a fresh branch, and `copy: .` snapshots
+	// it. Composes with Detach.
 	Worktree string
-	// Cmd, when non-empty, is APPENDED to the recipe's own command (e.g.
-	// `dabs recipe claude --model x` → `claude --model x`). Passing a command
-	// triggers a look-before-run confirmation.
-	Cmd []string
-}
-
-// Do are the inputs to `dabs do`: run a command in a throwaway recipe box. It
-// is an alias for the default recipe (the dabs.yaml `default:`, else the
-// bundled `sh` box), with Cmd appended to that recipe's command.
-type Do struct {
-	Cmd []string // command appended to the resolved recipe's command
+	// Args are the positional tokens of `dabs recipe [name] [cmd…]`. If the first
+	// is a KNOWN recipe, it is the recipe and the rest are appended to its
+	// command; otherwise (or with no args) the registry DEFAULT recipe runs (the
+	// dabs.yaml `default:`, else the bundled `sh` box) with ALL of Args appended.
+	Args []string
+	// Default forces the default-recipe path (a leading `--`), so a command whose
+	// first token happens to be a recipe name still runs against the default.
+	Default bool
+	// Detach boots a NEW pristine DETACHED box from the recipe and does NOT run
+	// the recipe's command — it reports the instance and leaves the box up for
+	// `dabs exec` (and `dabs rm` to reap). Args[0], when present, is the recipe
+	// name or a dabs.yaml path; no command is appended in this mode.
+	Detach bool
 }
 
 // Recipes are the inputs to listing the known recipes.
@@ -125,26 +127,21 @@ type Recipes struct {
 
 // Worktrees are the inputs to inspecting/reaping recipe-created git worktrees.
 type Worktrees struct {
-	Sub   string // "" | "ls" | "diff" | "rm" | "prune"
-	Name  string // for diff/rm
-	Force bool   // approve discarding a worktree that holds unreviewed work
+	Sub  string // "" | "ls" | "diff"
+	Name string // for diff
 }
 
 // Actions is the contract every action provider satisfies: the real
 // implementations in core/actions, fakes in tests, RPC clients later.
 type Actions interface {
 	Build(Build) error
-	Up(Up) error
 	Recipe(Recipe) error
-	Do(Do) error
 	Recipes(Recipes) error
 	Worktrees(Worktrees) error
 	Exec(Exec) error
-	Run(Run) error
-	Down(Down) error
 	Ls(Ls) error
 	Rm(Rm) error
-	Images(Images) error
+	Prune(Prune) error
 	ServersList(ServersList) error
 	ServersAdd(ServersAdd) error
 	ServersRemove(ServersRemove) error

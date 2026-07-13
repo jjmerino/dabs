@@ -118,9 +118,16 @@ func (r Real) viewNode(n Node, state map[string]boxState) *NodeView {
 	}
 	switch n.Kind {
 	case KindBox:
-		// A box marks a sandbox, not a directory, so its "where" is the instance
-		// name — the identity run/exec/down take.
-		v.Where = n.Instance
+		// A box marks a sandbox, but its bytes still live somewhere: the node dir
+		// under ~/.dabs/nodes/<id> holds its volume/ephemeral/tmp spaces. WHERE
+		// points there (tilde-abbreviated) so a box's on-disk location is as
+		// discoverable as a place's; the driver INSTANCE name — the running box —
+		// rides alongside so users still see it and rm/exec still resolve it.
+		where := tilde(r.boxNodeDir(n))
+		if n.Instance != "" {
+			where += "  (" + n.Instance + ")"
+		}
+		v.Where = where
 		if _, live := state[n.Instance]; live {
 			v.State = CellLive
 		} else {
@@ -152,6 +159,16 @@ func (r Real) nodeFolder(n Node) string {
 		}
 	}
 	return n.Dir
+}
+
+// boxNodeDir is the directory a box node's bytes live in — its own node dir,
+// which holds the volume/ephemeral/tmp spaces. It falls back to the node id when
+// the dir cannot be resolved, so a box row always says something locatable.
+func (r Real) boxNodeDir(n Node) string {
+	if dir, err := r.resolveNodeDir(n.ID); err == nil {
+		return dir
+	}
+	return n.ID
 }
 
 // spaceCell reports whether a node's own space holds anything. A resolve error
@@ -221,6 +238,24 @@ func columnTitle(c Column) string {
 	}
 }
 
+// sanitizeCell neutralizes an untrusted display value — a node id or a WHERE
+// path, either of which can carry whatever a filesystem name or a hand-written
+// node record holds. It drops ASCII control bytes (< 0x20 and 0x7F), which
+// removes the ESC that begins any ANSI escape sequence (leaving its inert
+// letters as plain text) and the newline that would split one row into phantom
+// tree lines. It must run on the RAW value, before dabs wraps it in its own
+// styling escapes, so those intentional codes are kept.
+func sanitizeCell(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
 // renderForest draws view trees in the nested ├─/└─ style, aligning exactly the
 // columns requested. Column widths are computed across the whole forest so deep
 // nodes still line up. The result ends with a trailing newline.
@@ -263,7 +298,7 @@ func renderForest(roots []*NodeView, cols []Column, indent int) string {
 	cellText := func(r row, c Column) string {
 		switch c {
 		case ColNode:
-			return tui.Accent(r.label)
+			return tui.Accent(sanitizeCell(r.label))
 		case ColKind:
 			return tui.Muted(string(r.v.Kind))
 		case ColVol:
@@ -275,7 +310,7 @@ func renderForest(roots []*NodeView, cols []Column, indent int) string {
 		case ColState:
 			return styleState(r.v.State)
 		case ColWhere:
-			return tui.Muted(r.v.Where)
+			return tui.Muted(sanitizeCell(r.v.Where))
 		default:
 			return ""
 		}
@@ -315,7 +350,7 @@ func renderForest(roots []*NodeView, cols []Column, indent int) string {
 	writeLine(header)
 	if hasSpaceColumn(cols) {
 		b.WriteString(pad)
-		b.WriteString(tui.Muted("✓ empty  ⚠ holds files  — n/a"))
+		b.WriteString(tui.Muted("✓ empty  ⚠ holds files"))
 		b.WriteByte('\n')
 	}
 	for _, r := range rows {
@@ -354,9 +389,13 @@ func styleCell(c Cell) string {
 }
 
 // styleState colors a box or worktree state cell: what draws the eye (a live
-// box, unmerged work) is accented; what recedes (gone, merged, n/a) is muted.
+// box, unmerged work) is accented; what recedes (gone, merged) is muted. State
+// is a box/worktree concept, so a node kind without one (project, workdir)
+// leaves the cell blank rather than filling it with a placeholder glyph.
 func styleState(c Cell) string {
 	switch c {
+	case CellNA:
+		return ""
 	case CellLive, CellUnmerged:
 		return tui.Accent(c.Symbol())
 	default:

@@ -9,7 +9,7 @@ FROM dabs-dabseption
 # bottom of this file describe THIS stage, so both move together.
 FROM alpine:3.20 AS e2ebase
 WORKDIR /work
-RUN apk add --no-cache git   # `dabs cast` proves git works IN the box; the suite needs it on PATH
+RUN apk add --no-cache git   # `dabs recipe --worktree` proves git works IN the box; the suite needs it on PATH
 RUN echo hello-from-image > /work/marker.txt
 
 # A FAKE `claude`: a real CLI on PATH that only "logs in" — it writes the

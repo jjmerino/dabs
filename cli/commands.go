@@ -17,17 +17,12 @@ type Command struct {
 var Commands = map[string]Command{
 	"build":     {(*CLI).runBuild},
 	"recipe":    {(*CLI).runRecipe},
-	"do":        {(*CLI).runDo},
-	"cast":      {(*CLI).runCast},
 	"recipes":   {(*CLI).runRecipes},
 	"worktrees": {(*CLI).runWorktrees},
-	"up":        {(*CLI).runUp},
 	"exec":      {(*CLI).runExec},
-	"run":       {(*CLI).runRun},
-	"down":      {(*CLI).runDown},
 	"ls":        {(*CLI).runLs},
 	"rm":        {(*CLI).runRm},
-	"images":    {(*CLI).runImages},
+	"prune":     {(*CLI).runPrune},
 	"servers":   {(*CLI).runServers},
 }
 
@@ -40,18 +35,13 @@ type cmdDoc struct{ Help, Args string }
 
 var commandDocs = map[string]cmdDoc{
 	"build":     {"build a recipe's box image: build [recipe|path] (no name → dabs.yaml default)", "build [recipe|path]"},
-	"recipe":    {"run a named recipe box: recipe <name> [cmd…] (no name → dabs.yaml default)", "recipe [<name>] [cmd…]"},
-	"do":        {"run a command in a throwaway box via the default recipe (else sh): do <cmd…>", "do <cmd…>"},
-	"cast":      {"run a recipe onto an existing worktree: cast <recipe> <worktree>", "cast <recipe> <worktree>"},
+	"recipe":    {"run a recipe box: recipe [name] [cmd…] (unknown/omitted name → the default recipe, else sh, with the cmd appended); --worktree <wt> binds an existing worktree (git works in-box); --detach boots a NEW detached box and runs no command", "recipe [name] [cmd… | --detach] [--worktree <wt>]"},
 	"recipes":   {"list the known recipes and what each mounts", "recipes [--print]"},
-	"worktrees": {"inspect/reap worktree nodes (rm is `dabs rm` on one): worktrees [ls | diff <name> | rm <name> | prune] [--force]", "worktrees [ls | diff <name> | rm <name> | prune] [--force]"},
-	"up":        {"start a NEW detached box from a recipe (no command): up [recipe|path]", "up [recipe|path]"},
-	"exec":      {"exec an exact command inside a box (no shell): exec <node> -- <cmd…>", "exec <node> -- <cmd…>"},
-	"run":       {"run a shell command inside a box (args joined into one `sh -c` line — use `exec` for exact argv): run <node> <shell…>", "run <node> <shell…>"},
-	"down":      {"stop a box; its node is archived, not removed (--multiple for several matches)", "down [--force] [--dry] [--multiple] <node>"},
+	"worktrees": {"inspect worktree nodes (reap with `dabs rm <name>` or `dabs rm --clean-worktrees`): worktrees [ls | diff <name>]", "worktrees [ls | diff <name>]"},
+	"exec":      {"run a command inside a box: exec <node> -- <cmd…> for an exact argv, or exec <node> <shell…> for a `sh -c` line (pipes/globs/&&)", "exec <node> [--] <cmd…>"},
 	"ls":        {"list what dabs owns, as a tree, live (--all: include archived nodes)", "ls [--all]"},
-	"rm":        {"remove a node (a place or a box) and what it holds: rm <node> [-y] [--volume] [--force]", "rm <node> [-y] [--volume] [--force]"},
-	"images":    {"list built box images, or reclaim them: images [prune] (they rebuild on the next build)", "images [prune]"},
+	"rm":        {"stop a box and remove its node and what it holds (--keep archives instead; --clean-worktrees sweeps every worktree with no unreviewed work): rm <node> [-y] [--keep] [--volume] [--multiple] [--dry] [--force] | rm --clean-worktrees [--force] [--dry]", "rm <node> [-y] [--keep] [--volume] [--multiple] [--dry] [--force] | rm --clean-worktrees [--force] [--dry]"},
+	"prune":     {"reclaim built box images (they rebuild on the next build); --dry lists what exists, --force removes even images a live box uses", "prune [--dry] [--force]"},
 	"servers":   {"manage registered servers: servers [ls] | add <name> [host] | rm <name>", "servers [ls | add <name> [host] | rm <name>]"},
 }
 
@@ -59,61 +49,64 @@ func (c *CLI) runRecipe(args []string) error {
 	if wantsHelp(args) {
 		return HelpRequestedError{helpText("recipe", nil)}
 	}
-	// recipe [<name>] [cmd…]: the first arg is the recipe (no name → the
-	// dabs.yaml default); any remaining args are a command appended to the
-	// recipe's own command (which triggers a confirmation before running).
+	// recipe [name] [cmd…]: a first arg naming a known recipe selects it and the
+	// rest are appended to its command; otherwise (or with no args) the default
+	// recipe runs with ALL args appended. The action resolves name-vs-default
+	// against the registry. A leading `--` forces the default path — an escape
+	// hatch for a command whose first token happens to be a recipe name.
 	p := params.Recipe{}
-	if len(args) >= 1 {
-		p.Name = args[0]
+	if len(args) > 0 && args[0] == "--" {
+		p.Default = true
+		p.Args = args[1:]
+		return c.actions.Recipe(p)
 	}
-	if len(args) > 1 {
-		p.Cmd = args[1:]
+	// --detach boots a NEW pristine DETACHED box and runs no command; it takes an
+	// optional recipe name or dabs.yaml path and no appended command. --worktree
+	// <wt> binds an existing worktree to the recipe's `.` source (git works in-box)
+	// instead of the cwd, and composes with --detach. Both are dabs flags, so `--`
+	// (the escape hatch above) still routes a literal `--detach`/`--worktree`
+	// command token to the default recipe untouched.
+	var rest []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--detach":
+			p.Detach = true
+		case a == "--worktree":
+			if i+1 >= len(args) {
+				return BadArgsError{Cmd: "recipe", Reason: "--worktree needs a worktree name (from: dabs worktrees ls)"}
+			}
+			i++
+			p.Worktree = args[i]
+		case strings.HasPrefix(a, "--worktree="):
+			p.Worktree = strings.TrimPrefix(a, "--worktree=")
+		default:
+			rest = append(rest, a)
+		}
 	}
+	if p.Detach && len(rest) > 1 {
+		return BadArgsError{Cmd: "recipe", Reason: "recipe --detach takes an optional recipe name or dabs.yaml path and runs no command"}
+	}
+	if p.Worktree != "" && len(rest) == 0 {
+		return BadArgsError{Cmd: "recipe", Reason: "recipe --worktree <wt> needs a recipe name (from: dabs recipes)"}
+	}
+	p.Args = rest
 	return c.actions.Recipe(p)
-}
-
-func (c *CLI) runDo(args []string) error {
-	if wantsHelp(args) {
-		return HelpRequestedError{helpText("do", nil)}
-	}
-	// do <cmd…>: everything is the command (flags included), appended to the
-	// default recipe's command — no name, no `--` needed.
-	return c.actions.Do(params.Do{Cmd: args})
-}
-
-func (c *CLI) runCast(args []string) error {
-	if wantsHelp(args) {
-		return HelpRequestedError{helpText("cast", nil)}
-	}
-	if len(args) != 2 {
-		return BadArgsError{Cmd: "cast", Reason: "usage: cast <recipe> <worktree> (worktree name from: dabs worktrees ls)"}
-	}
-	return c.actions.Recipe(params.Recipe{Name: args[0], Worktree: args[1]})
 }
 
 func (c *CLI) runWorktrees(args []string) error {
 	if wantsHelp(args) {
-		fs := newFlagSet("worktrees")
-		fs.Bool("force", false, "with rm/prune: reap even worktrees with unreviewed work")
-		return HelpRequestedError{helpText("worktrees", fs)}
+		return HelpRequestedError{helpText("worktrees", nil)}
 	}
 	p := params.Worktrees{}
-	var pos []string
-	for _, a := range args {
-		if a == "--force" || a == "-f" {
-			p.Force = true
-			continue
-		}
-		pos = append(pos, a)
+	if len(args) > 2 {
+		return BadArgsError{Cmd: "worktrees", Reason: "usage: worktrees [ls | diff <name>]"}
 	}
-	if len(pos) > 2 {
-		return BadArgsError{Cmd: "worktrees", Reason: "usage: worktrees [ls | diff <name> | rm <name> | prune] [--force]"}
+	if len(args) > 0 {
+		p.Sub = args[0]
 	}
-	if len(pos) > 0 {
-		p.Sub = pos[0]
-	}
-	if len(pos) > 1 {
-		p.Name = pos[1]
+	if len(args) > 1 {
+		p.Name = args[1]
 	}
 	return c.actions.Worktrees(p)
 }
@@ -144,36 +137,12 @@ func (c *CLI) runBuild(args []string) error {
 	return c.actions.Build(p)
 }
 
-func (c *CLI) runUp(args []string) error {
-	p, err := parseUp(args)
-	if err != nil {
-		return err
-	}
-	return c.actions.Up(p)
-}
-
 func (c *CLI) runExec(args []string) error {
 	p, err := parseExec(args)
 	if err != nil {
 		return err
 	}
 	return c.actions.Exec(p)
-}
-
-func (c *CLI) runRun(args []string) error {
-	p, err := parseRun(args)
-	if err != nil {
-		return err
-	}
-	return c.actions.Run(p)
-}
-
-func (c *CLI) runDown(args []string) error {
-	p, err := parseDown(args)
-	if err != nil {
-		return err
-	}
-	return c.actions.Down(p)
 }
 
 func (c *CLI) runLs(args []string) error {
@@ -192,19 +161,25 @@ func (c *CLI) runRm(args []string) error {
 	return c.actions.Rm(p)
 }
 
-func (c *CLI) runImages(args []string) error {
+func (c *CLI) runPrune(args []string) error {
 	if wantsHelp(args) {
-		return HelpRequestedError{helpText("images", nil)}
+		fs := newFlagSet("prune")
+		fs.Bool("dry", false, "list what exists (sizes) without removing anything")
+		fs.Bool("force", false, "remove even an image a live box still depends on")
+		return HelpRequestedError{helpText("prune", fs)}
 	}
-	p := params.Images{}
-	switch {
-	case len(args) == 0:
-	case len(args) == 1 && args[0] == "prune":
-		p.Prune = true
-	default:
-		return BadArgsError{Cmd: "images", Reason: "usage: images [prune]"}
+	p := params.Prune{}
+	for _, a := range args {
+		switch a {
+		case "--dry":
+			p.Dry = true
+		case "--force", "-f":
+			p.Force = true
+		default:
+			return BadArgsError{Cmd: "prune", Reason: "usage: prune [--dry] [--force]"}
+		}
 	}
-	return c.actions.Images(p)
+	return c.actions.Prune(p)
 }
 
 func (c *CLI) runServers(args []string) error {

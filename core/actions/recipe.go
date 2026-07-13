@@ -18,42 +18,56 @@ import (
 	"github.com/jjmerino/dabs/core/tui"
 )
 
-// Recipe runs the named recipe (no name → the dabs.yaml `default:`). A trailing
-// command from `dabs recipe <name> <cmd…>` is appended to the recipe's own
-// command and gated behind a look-before-run confirmation.
+// Recipe runs `dabs recipe [name] [cmd…]`. Three shapes:
+//
+//   - No args, or a leading `--` (params.Default): the registry DEFAULT recipe
+//     runs (the dabs.yaml `default:`, else the bundled `sh` box). A `--` appends
+//     everything after it to that recipe's command; no args runs its own command.
+//     This path ALWAYS confirms — it runs an arbitrary command in a box, so it
+//     must never launch unprompted (the replacement for the old `dabs do`).
+//   - A first positional naming a KNOWN recipe: that recipe, the rest appended to
+//     its command, confirmed only when a command is appended.
+//   - A first positional that is neither `--` nor a known recipe: an ERROR listing
+//     the known recipes — a bare typo must not silently become a command. The hint
+//     points at `-- <cmd>` for running a command on the default recipe.
+//
+// `--worktree <wt>` (p.Worktree) binds the recipe's `.` source to an EXISTING
+// dabs worktree instead of the cwd, mounting its parent .git so git works in-box.
+//
+// `--detach` (p.Detach) is a fourth shape: it boots a NEW pristine DETACHED box
+// from the resolved recipe (Args[0] as a name or dabs.yaml path, else the
+// default) and does NOT run the recipe's command.
 func (r Real) Recipe(p params.Recipe) error {
-	reg, err := r.loadRegistry()
-	if err != nil {
-		return err
-	}
-	name := p.Name
-	if name == "" {
-		if reg.Default == "" {
-			return fmt.Errorf("no recipe given and no default set — choose one: %s (or set `default:` in dabs.yaml)", strings.Join(reg.Names(), ", "))
+	if p.Detach {
+		arg := ""
+		if len(p.Args) > 0 {
+			arg = p.Args[0]
 		}
-		name = reg.Default
+		return r.upDetached(arg, p.Worktree)
 	}
-	return r.runRecipe(reg, name, p.Worktree, p.Cmd, false)
-}
-
-// Do runs `dabs do <cmd…>`: a throwaway box over the DEFAULT recipe — the
-// dabs.yaml `default:` if set, else the bundled generic `sh` box — with the
-// command appended. It is the quick "just run this in a sandbox" alias, and it
-// ALWAYS confirms first (look-before-run), even with no appended command.
-func (r Real) Do(p params.Do) error {
 	reg, err := r.loadRegistry()
 	if err != nil {
 		return err
 	}
-	name := reg.Default
-	if name == "" {
-		name = "sh" // no project default → the bundled generic shell box
+	if p.Name != "" {
+		return r.runRecipe(reg, p.Name, p.Worktree, nil, false)
 	}
-	return r.runRecipe(reg, name, "", p.Cmd, true)
+	if p.Default || len(p.Args) == 0 {
+		name := reg.Default
+		if name == "" {
+			name = "sh" // no project default → the bundled generic shell box
+		}
+		return r.runRecipe(reg, name, "", p.Args, true)
+	}
+	name := p.Args[0]
+	if _, ok := reg.Recipes[name]; !ok {
+		return fmt.Errorf("no recipe %q (known: %s) — or `dabs recipe -- %s` to run it as a command on the default recipe", name, strings.Join(reg.Names(), ", "), name)
+	}
+	return r.runRecipe(reg, name, p.Worktree, p.Args[1:], false)
 }
 
-// runRecipe is the shared engine behind `dabs recipe`, `dabs cast`, and
-// `dabs do`: it ensures the image exists, prepares the recipe's sources (live
+// runRecipe is the shared engine behind `dabs recipe` (with or without
+// `--worktree`): it ensures the image exists, prepares the recipe's sources (live
 // mounts, fresh git worktrees, and up-time copies), brings up a box with them,
 // runs the recipe's command interactively, and tears the box down on exit.
 // Worktrees are KEPT (paths printed) so no in-box work is silently discarded.
@@ -84,7 +98,7 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 		return fmt.Errorf("recipe %q: no command to run", name)
 	}
 	// A worktree argument resolves by unambiguous prefix, git-style, like every
-	// other name dabs takes — done before castSources binds it.
+	// other name dabs takes — done before bindWorktree rewrites the sources.
 	if worktree != "" {
 		full, werr := r.resolveWorktreeArg(worktree)
 		if werr != nil {
@@ -92,21 +106,21 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 		}
 		worktree = full
 	}
-	// Look before running: `dabs do` ALWAYS confirms — it exists to run an
-	// arbitrary command in a box, so it must never launch unprompted, even with
-	// no appended command. `dabs recipe`/`cast` confirm only when a caller
-	// appends a command. Nothing is built or run until approved.
+	// Look before running: the default-recipe path ALWAYS confirms — it exists to
+	// run an arbitrary command in a box, so it must never launch unprompted, even
+	// with no appended command. A named recipe confirms only when a
+	// caller appends a command. Nothing is built or run until approved.
 	if (alwaysConfirm || len(extra) > 0) && !r.confirm(confirmRecipe(name, rec, command)) {
 		return fmt.Errorf("recipe %q: aborted", name)
 	}
 
-	// `dabs cast <recipe> <worktree>` binds an existing worktree to the recipe's
-	// `.` source: a `worktree:`/`mount:` source attaches the worktree live (never
-	// forks a new branch) and a `copy:` source snapshots it. Done before the
-	// engine runs, so validate/build see plain sources.
+	// `--worktree <wt>` binds an existing worktree to the recipe's `.` source: a
+	// `worktree:`/`mount:` source attaches the worktree live (never forks a new
+	// branch) and a `copy:` source snapshots it. Done before the engine runs, so
+	// validate/build see plain sources.
 	sources := rec.Sources
 	if worktree != "" {
-		sources, err = r.castSources(name, rec.Sources, worktree)
+		sources, err = r.bindWorktree(name, rec.Sources, worktree)
 		if err != nil {
 			return err
 		}
@@ -141,7 +155,7 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 	if err != nil {
 		return err
 	}
-	// `cast` binds an EXISTING worktree (mounted, not cut) so buildBox never
+	// `--worktree` binds an EXISTING worktree (mounted, not cut) so buildBox never
 	// journals it — record its box→worktree link here instead.
 	if worktree != "" {
 		if data, derr := r.resolveNodeData(worktree); derr == nil {
@@ -150,7 +164,7 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 	}
 	// Delete the box once the command finishes, unless the recipe asks to keep
 	// it alive so the user can run more commands in it or resume. A kept box is
-	// the user's to delete with `dabs down`.
+	// the user's to delete with `dabs rm`.
 	if !rec.Keep {
 		// teardown (not a bare drv.Down) so a journaled worktree-backed box also
 		// gets its matching `down` — otherwise a non-keep `worktree:` recipe would
@@ -172,7 +186,7 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 		fmt.Fprintln(os.Stdout, "\n"+tui.Success("kept: %s", k))
 	}
 	if rec.Keep {
-		fmt.Fprintf(os.Stdout, "\nbox kept: %s (dabs down %s to delete it)\n", instance, instance)
+		fmt.Fprintf(os.Stdout, "\nbox kept: %s (dabs rm %s to delete it)\n", instance, instance)
 	}
 	return nil
 }
@@ -201,10 +215,10 @@ func pathDepth(p string) int {
 // provisionNodes runs a recipe that has no image: it marks the project, cuts
 // whatever places the recipe declares, and prints them. There is no box, so
 // nothing is mounted and nothing is torn down — the places persist, and a later
-// recipe (or `dabs cast`) can put a box on one.
+// recipe (or `dabs recipe --worktree`) can put a box on one.
 func (r Real) provisionNodes(name string, rec recipe.Recipe, worktree string) error {
 	if worktree != "" {
-		return fmt.Errorf("recipe %q: has no image, so there is no box to cast onto a worktree", name)
+		return fmt.Errorf("recipe %q: has no image, so there is no box to put onto a worktree", name)
 	}
 	project, err := r.ensureProjectNode(name)
 	if err != nil {
@@ -324,16 +338,16 @@ func (r Real) spaceVars(id, prefix string) (map[string]string, error) {
 // `at:` says where a provisioned place puts its bytes on the host, in the new
 // node's own spaces — so the recipe, not this function, decides what `down` may
 // reap.
-func (r Real) provisionPlaces(recipeName string, sources []recipe.Source, castWorktree string) (project, tip string, hosts map[int]string, kept []string, cut []wtCut, err error) {
+func (r Real) provisionPlaces(recipeName string, sources []recipe.Source, boundWorktree string) (project, tip string, hosts map[int]string, kept []string, cut []wtCut, err error) {
 	project, err = r.ensureProjectNode(recipeName)
 	if err != nil {
 		return "", "", nil, nil, nil, err
 	}
 	tip, hosts = project, map[int]string{}
-	if castWorktree != "" {
-		// cast binds an EXISTING place; castSources already rewrote the `.` source
-		// to mount it, so there is nothing to provision and the tip is that node.
-		return project, castWorktree, hosts, nil, nil, nil
+	if boundWorktree != "" {
+		// --worktree binds an EXISTING place; bindWorktree already rewrote the `.`
+		// source to mount it, so there is nothing to provision and the tip is that node.
+		return project, boundWorktree, hosts, nil, nil, nil
 	}
 	for i, s := range sources {
 		kind, origin, kerr := s.Kind()
@@ -452,8 +466,8 @@ type resolvedSource struct{ kind, origin, top string }
 // validateSources checks every source of a recipe up front — a bad source spec,
 // a non-git worktree dir, a repo with no commits, or a missing mount/copy path
 // all fail HERE, before any image build or box touch. It returns one
-// resolvedSource per source, in source order. Shared by runRecipe and Up so both
-// validate identically.
+// resolvedSource per source, in source order. Shared by runRecipe and the
+// detach path so both validate identically.
 func (r Real) validateSources(recipeName string, sources []recipe.Source, vars map[string]string, hosts map[int]string) ([]resolvedSource, error) {
 	resolved := make([]resolvedSource, len(sources))
 	for i, s := range sources {
@@ -519,9 +533,9 @@ func (r Real) validateSources(recipeName string, sources []recipe.Source, vars m
 // It returns the instance and the worktrees it cut (kept, for the caller to
 // report). No command is run and, on success, the box is left up — the caller
 // owns its lifecycle (runRecipe runs the command then tears it down unless the
-// recipe says keep; Up leaves it up). On any failure after the box is up it
-// tears the half-built box down. Shared by runRecipe and Up so both mount
-// sources identically.
+// recipe says keep; `--detach` leaves it up). On any failure after the box is up
+// it tears the half-built box down. Shared by runRecipe and the detach path so
+// both mount sources identically.
 func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID, tip string, rec recipe.Recipe, image string, sources []recipe.Source, resolved []resolvedSource, cut []wtCut) (instance string, err error) {
 	// Places are already cut (provisionPlaces): a `.` source's origin is the
 	// directory that place owns. What is left is turning every source into a mount.
@@ -581,8 +595,8 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID, tip string, rec re
 	return instance, nil
 }
 
-// resolveRecipe picks the recipe that `dabs build`/`dabs up` act on and returns
-// the effective registry plus the chosen recipe name:
+// resolveRecipe picks the recipe that `dabs build`/`dabs recipe --detach` act on
+// and returns the effective registry plus the chosen recipe name:
 //   - ""     → the registry `default:` (bundled → ~/.dabs → ./dabs.yaml).
 //   - a path → a dabs.yaml file (or a dir containing one) loaded as an overlay;
 //     its `default:` (or its sole recipe) is used.
@@ -639,7 +653,7 @@ func (r Real) resolveRecipe(arg string) (recipe.Registry, string, error) {
 	}
 	// Otherwise a bare recipe name.
 	if _, ok := reg.Recipes[arg]; !ok {
-		return reg, "", fmt.Errorf("no recipe %q (known: %s) — build/up take a recipe name, a dabs.yaml path, or nothing (the default)", arg, strings.Join(reg.Names(), ", "))
+		return reg, "", fmt.Errorf("no recipe %q (known: %s) — build/detach take a recipe name, a dabs.yaml path, or nothing (the default)", arg, strings.Join(reg.Names(), ", "))
 	}
 	return reg, arg, nil
 }
@@ -671,7 +685,7 @@ func rebaseImagePaths(reg *recipe.Registry, dir string) {
 
 // rebaseSourcePaths anchors each recipe's RELATIVE source origins (mount/copy/
 // worktree) to dir, for a dabs.yaml loaded BY PATH — the same rule
-// rebaseImagePaths applies to its image, so `dabs up path/to/box` provisions the
+// rebaseImagePaths applies to its image, so `dabs recipe path/to/box --detach` provisions the
 // same box from any cwd. Absolute origins, `~`/`$VAR` origins (expanded later),
 // and `perbox:` labels are left alone.
 //
@@ -699,14 +713,14 @@ func rebaseSourcePaths(reg *recipe.Registry, dir string) {
 }
 
 // resolveBuiltImage returns the image name to BOOT for a recipe WITHOUT building
-// the recipe's own Dockerfile: `dabs up` boots an image a prior `dabs build`
-// produced and must not (re)build — it may run where no builder exists (a staged
-// prebuilt image, a machine with no docker).
+// the recipe's own Dockerfile: `dabs recipe --detach` boots an image a prior
+// `dabs build` produced and must not (re)build — it may run where no builder
+// exists (a staged prebuilt image, a machine with no docker).
 //
 // A recipe with a fleet `target` (a server, docker) manages its own image
 // lifecycle through the driver, and its HasImage cannot cheaply probe (the
 // server driver's HasImage returns false BY DESIGN — see core/sandbox/server).
-// Gating those on HasImage would wrongly reject remote `up`, so a targeted
+// Gating those on HasImage would wrongly reject a remote detach, so a targeted
 // recipe passes its image name straight to the driver's Up (which builds/boots
 // it remotely, as `dabs build` staged it). Only the LOCAL path gates: a bare
 // name resolves the normal way (reuse if built, build from a bundled recipe if
@@ -939,8 +953,13 @@ func (r Real) expandPath(p string) (string, error) {
 // environment. vars carries what dabs itself supplies (a node's spaces), so a
 // recipe can name them without them leaking into the box's environment.
 func (r Real) expandPathWith(p string, vars map[string]string) (string, error) {
+	// Space vars ($NODE_*/$PARENT_*) name a root dabs owns; a path built from one
+	// must stay under that root. Remember the roots a path references so a `..`
+	// that climbs above the named space is caught after expansion.
+	var roots []struct{ name, root string }
 	for _, m := range envRef.FindAllStringSubmatch(p, -1) {
-		if _, ok := vars[m[1]]; ok {
+		if root, ok := vars[m[1]]; ok {
+			roots = append(roots, struct{ name, root string }{m[1], root})
 			continue
 		}
 		if _, ok := r.data.LookupEnv(m[1]); !ok {
@@ -958,7 +977,24 @@ func (r Real) expandPathWith(p string, vars map[string]string) (string, error) {
 			p = filepath.Join(home, strings.TrimPrefix(p, "~"))
 		}
 	}
-	return p, nil
+	clean := filepath.Clean(p)
+	for _, s := range roots {
+		if !withinRoot(s.root, clean) {
+			return "", fmt.Errorf("source path %q escapes its $%s space (%s) — a dabs space path may not climb out of the space it names", p, s.name, s.root)
+		}
+	}
+	return clean, nil
+}
+
+// withinRoot reports whether target is root itself or nested under it, comparing
+// on path boundaries so /foo does not appear to contain /foobar. Both are cleaned
+// first, so a `..` that climbs above root is rejected.
+func withinRoot(root, target string) bool {
+	rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(target))
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
 
 // addWorktree provisions a fresh worktree NODE at ~/.dabs/nodes/<repo>-<id>/,
@@ -1047,8 +1083,8 @@ func (r Real) ensureProjectNode(recipeName string) (string, error) {
 	return id, nil
 }
 
-// castSources rewrites a recipe's sources to bind an existing dabs worktree
-// (by name, under ~/.dabs/worktrees/<name>) to the recipe's `.` origin:
+// bindWorktree rewrites a recipe's sources to bind an existing dabs worktree
+// (by name) to the recipe's `.` origin:
 //   - worktree: . / mount: .  → mount the worktree live, PLUS mount its parent
 //     .git at its own absolute path so the worktree's `.git` pointer resolves
 //     and git works inside the box. `worktree:` prints a note that it attached
@@ -1057,15 +1093,15 @@ func (r Real) ensureProjectNode(recipeName string) (string, error) {
 //     the object store isn't copied — that's inherent to a copy).
 //
 // Sources that don't name `.` (a login dir, a skill) pass through untouched.
-func (r Real) castSources(recipeName string, in []recipe.Source, worktree string) ([]recipe.Source, error) {
+func (r Real) bindWorktree(recipeName string, in []recipe.Source, worktree string) ([]recipe.Source, error) {
 	// The node record is the source of truth for what dabs provisioned — a
-	// worktree node has a `worktree` nest. Anything else isn't ours to cast on.
+	// worktree node has a `worktree` nest. Anything else isn't ours to bind onto.
 	n, err := r.readNode(worktree)
 	if err != nil {
-		return nil, fmt.Errorf("cast: no worktree %q (see: dabs worktrees ls)", worktree)
+		return nil, fmt.Errorf("--worktree: no worktree %q (see: dabs worktrees ls)", worktree)
 	}
 	if n.Worktree == nil {
-		return nil, fmt.Errorf("cast: %q is not a worktree", worktree)
+		return nil, fmt.Errorf("--worktree: %q is not a worktree", worktree)
 	}
 	wt, err := r.resolveNodeData(worktree)
 	if err != nil {
@@ -1073,7 +1109,7 @@ func (r Real) castSources(recipeName string, in []recipe.Source, worktree string
 	}
 	gitDir, err := r.data.GitCommonDir(wt)
 	if err != nil {
-		return nil, fmt.Errorf("cast: %s is not a git worktree: %w", wt, err)
+		return nil, fmt.Errorf("--worktree: %s is not a git worktree: %w", wt, err)
 	}
 
 	out := make([]recipe.Source, 0, len(in)+1)
@@ -1091,7 +1127,7 @@ func (r Real) castSources(recipeName string, in []recipe.Source, worktree string
 		switch kind {
 		case "worktree", "mount":
 			if kind == "worktree" {
-				fmt.Fprintln(os.Stdout, tui.Muted("cast: recipe wants a fresh worktree; casting onto %s — mounting it instead.", wt))
+				fmt.Fprintln(os.Stdout, tui.Muted("--worktree: recipe wants a fresh worktree; binding onto %s — mounting it instead.", wt))
 			}
 			out = append(out, recipe.Source{Mount: wt, Path: s.Path, RO: s.RO})
 			if !gitMounted { // the shared object store, once, so git resolves in-box
@@ -1103,13 +1139,13 @@ func (r Real) castSources(recipeName string, in []recipe.Source, worktree string
 		}
 	}
 	if !bound {
-		return nil, fmt.Errorf("cast: recipe %q has no `.` source to bind the worktree to", recipeName)
+		return nil, fmt.Errorf("--worktree: recipe %q has no `.` source to bind the worktree to", recipeName)
 	}
 	return out, nil
 }
 
-// resolveWorktreeArg resolves a `dabs cast` worktree argument to a full node id
-// by unambiguous prefix, git-style — the same rule every other name dabs takes.
+// resolveWorktreeArg resolves a `--worktree` argument to a full node id by
+// unambiguous prefix, git-style — the same rule every other name dabs takes.
 // An exact id wins outright; a unique prefix resolves; an ambiguous prefix lists
 // the matches; nothing matching is a plain "no worktree".
 func (r Real) resolveWorktreeArg(arg string) (string, error) {
@@ -1128,12 +1164,12 @@ func (r Real) resolveWorktreeArg(arg string) (string, error) {
 	}
 	switch len(pref) {
 	case 0:
-		return "", fmt.Errorf("cast: no worktree %q (see: dabs worktrees ls)", arg)
+		return "", fmt.Errorf("--worktree: no worktree %q (see: dabs worktrees ls)", arg)
 	case 1:
 		return pref[0], nil
 	default:
 		sort.Strings(pref)
-		return "", fmt.Errorf("cast: %q is ambiguous: %s (see: dabs worktrees ls)", arg, strings.Join(pref, ", "))
+		return "", fmt.Errorf("--worktree: %q is ambiguous: %s (see: dabs worktrees ls)", arg, strings.Join(pref, ", "))
 	}
 }
 

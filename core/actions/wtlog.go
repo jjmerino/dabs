@@ -46,7 +46,7 @@ func (r Real) wtLogPath() (string, error) {
 }
 
 // logWorktreeUp records that a worktree-backed box came up. Best-effort: a log
-// failure warns but never breaks `dabs recipe`/`up`/`cast`.
+// failure warns but never breaks `dabs recipe`/`up`.
 func (r Real) logWorktreeUp(instance, worktree, path, recipe string) {
 	r.appendWtLog(wtLogEntry{
 		Event:    "up",
@@ -61,7 +61,7 @@ func (r Real) logWorktreeUp(instance, worktree, path, recipe string) {
 // logWorktreeDown records that a worktree-backed box came down. The log is the
 // source of truth for instance→worktree: it looks the worktree up from the
 // journal and only writes when that instance is currently live (an `up` with no
-// later `down`), so a plain box or a repeated `dabs down` adds nothing.
+// later `down`), so a plain box or a repeated stop adds nothing.
 func (r Real) logWorktreeDown(instance string) {
 	entries, err := r.readWtLog()
 	if err != nil {

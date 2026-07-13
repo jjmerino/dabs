@@ -2,8 +2,8 @@
 
 Disposable sandboxes you can hand to an AI agent. Each box is a pristine
 "fresh machine" built from a Dockerfile; run a command — or a whole agent via
-a recipe — inside it, and it can't touch your host. Every `up` is a new
-instance; boxes run locally or on a remote server.
+a recipe — inside it, and it can't touch your host. Every `recipe --detach` is a
+new instance; boxes run locally or on a remote server.
 
 ## Requirements
 
@@ -63,17 +63,17 @@ Then:
 
 ```bash
 dabs build myproj                # build the box's image
-dabs up myproj                   # → myproj-a3f9c21d4e02 up   (a NEW pristine box)
+dabs recipe myproj --detach      # → myproj-a3f9c21d4e02 up   (a NEW pristine box, no command)
 dabs ls                          # the tree: what dabs owns, and where it runs
-dabs run myproj-a3f 'ls | wc -l'         # run a shell line inside (instance prefixes ok, git-style)
+dabs exec myproj-a3f 'ls | wc -l'        # run a shell line inside (instance prefixes ok, git-style)
 dabs exec myproj-a3f -- ./mycli --help   # exec an exact command inside (no shell)
 dabs recipe myproj               # boot a box and run its command
-dabs down myproj-a3f             # stop it
+dabs rm myproj-a3f -y            # stop it and remove its node
 ```
 
-Every `up` creates a **new** instance with a random id — the image is the clean
-state, so "give me a fresh machine" is instant. `down <name> --dry` shows what a
-name matches; a name matching more than one instance is refused unless you pass
+Every `recipe --detach` creates a **new** instance with a random id — the image is the clean
+state, so "give me a fresh machine" is instant. `rm <name> --dry` shows what a
+name would reap; a name matching more than one node is refused unless you pass
 `--multiple`.
 
 ## Nodes
@@ -98,7 +98,7 @@ no box. Point a box at one later, or never.
 Each node offers three directories, and the one a recipe mounts says what happens
 to the bytes:
 
-| space | on `down` / `rm` |
+| space | on `rm` |
 |---|---|
 | `volume/` | kept, unless you ask for it by name (`rm -y --volume`) |
 | `ephemeral/` | reaped with consent; without it, kept and its path printed |
@@ -110,13 +110,14 @@ what you want back next time, since a box never returns):
 ```yaml
 - mkmount: ~/.dabs/shared/claude          # shared by every box that mounts it
   path: /root/.claude
-- mkmount: $PARENT_VOLUME/claude/projects # this place's sessions; survive `down`
+- mkmount: $PARENT_VOLUME/claude/projects # this place's sessions; survive `rm`
   path: /root/.claude/projects
 ```
 
-`dabs down` stops a box and archives its node. `dabs rm <node>` removes a node and
-whatever stands on it (it brings boxes down first). `dabs ls --all` shows the
-archive.
+`dabs rm <node>` stops a box and removes its node and whatever stands on it (it
+brings boxes down first, and asks before it loses a live box or held data).
+`dabs rm --keep <box>` stops the box but ARCHIVES its node instead. `dabs ls
+--all` shows the archive.
 
 ## Remote servers
 
@@ -133,14 +134,14 @@ dabs servers rm homelab             # unregister (remote sandboxes untouched)
 ```
 
 Route a recipe to a server with `target: homelab` (omit for local). `dabs
-build`/`up` then run there; `dabs ls` aggregates the whole fleet with a target
-column; `run`/`down` address any instance by name wherever it lives.
+build`/`recipe` then run there; `dabs ls` aggregates the whole fleet with a target
+column; `exec`/`rm` address any instance by name wherever it lives.
 
 ## Recipe fields (dabs.yaml)
 
 A recipe is the whole box spec. Recipes resolve bundled (`sh`) →
 `~/.dabs/recipes.yaml` (global) → `./dabs.yaml` (project), later winning; a
-top-level `default:` names the recipe `build`/`up`/`recipe`/`do` use when given
+top-level `default:` names the recipe `build`/`recipe` use when given
 no name.
 
 | field | default | meaning |
@@ -153,7 +154,7 @@ no name.
 | `target` | local | which fleet driver runs it |
 | `keep` | `false` | keep the box alive after the command finishes |
 
-Paths given to `build`/`up` may be a `dabs.yaml` or a directory containing one.
+Paths given to `build`/`recipe` may be a `dabs.yaml` or a directory containing one.
 
 ### Sources
 
@@ -165,13 +166,13 @@ inside the box:
 | `mount` | a live bind; the box's writes hit the host | must exist (`ro: true` for read-only) |
 | `mkmount` | a live bind | created (0700) if absent |
 | `worktree` | a fresh git branch off HEAD, mounted live | your tree untouched; reap with `dabs worktrees` |
-| `copy` | a snapshot taken at `up` | untouched |
+| `copy` | a snapshot taken at box start | untouched |
 
 Host paths may use `~` and `$VAR`. dabs also supplies the box's three node
-spaces to source paths — `$NODE_VOLUME` (survives `down`), `$NODE_EPHEMERAL`
-(`down` asks first), `$NODE_TMP` (`down` reaps quietly) — plus the `$PARENT_*`
+spaces to source paths — `$NODE_VOLUME` (survives `rm --keep`), `$NODE_EPHEMERAL`
+(`rm` asks first), `$NODE_TMP` (`rm` reaps quietly) — plus the `$PARENT_*`
 family naming the same spaces of the box's parent place. Use `$PARENT_VOLUME`
-for what a box wants back on the NEXT `up`: a fresh box gets an empty
+for what a box wants back on the NEXT box: a fresh box gets an empty
 `$NODE_VOLUME`, but its parent place persists, so a box can keep a private slice
 that reloads next time:
 
@@ -179,7 +180,7 @@ that reloads next time:
 sources:
   - mkmount: ~/.dabs/shared/claude           # a login dir every box shares
     path: /root/.claude
-  - mkmount: $PARENT_VOLUME/claude/projects  # this place's sessions; reload next box, kept across `down`
+  - mkmount: $PARENT_VOLUME/claude/projects  # this place's sessions; reload next box, kept across `rm`
     path: /root/.claude/projects
 ```
 

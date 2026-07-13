@@ -1,5 +1,5 @@
-# The recipe the e2e inner boxes come from. `dabs up test/e2e` boots a detached
-# box from it. Named "dabs-e2e" so the boxes are obvious in `dabs ls` and the
+# The recipe the e2e inner boxes come from. `dabs recipe test/e2e --detach` boots
+# a detached box from it. Named "dabs-e2e" so the boxes are obvious in `dabs ls` and the
 # user recipes (installed into ~/.dabs/recipes.yaml by the suite) can reuse the
 # image by that bare name.
 #
@@ -8,7 +8,7 @@
 # out to docker and the box carries none. So this recipe boots an image that is
 # already present, and never builds one.
 #
-# No sources: `dabs up` must not shadow the image's /work (it bakes marker.txt
+# No sources: `dabs recipe --detach` must not shadow the image's /work (it bakes marker.txt
 # there). The workdir and env below are the recipe's own.
 default: dabs-e2e
 recipes:

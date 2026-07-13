@@ -7,9 +7,9 @@ import (
 
 // The test process's stdout is a pipe, not a terminal, so stdoutIsTTY is false
 // and these assertions exercise the piped (non-TTY) degradation path — the same
-// path a script capturing `dabs up` output hits. On a real terminal the same
+// path a script capturing `dabs recipe --detach` output hits. On a real terminal the same
 // helpers would prepend the glyph and wrap the text in ANSI color; here they
-// must not, so machine parsing (`dabs up | awk '{print $1}'`) is not corrupted.
+// must not, so machine parsing (`dabs recipe --detach | awk '{print $1}'`) is not corrupted.
 
 func hasANSI(s string) bool { return strings.Contains(s, "\x1b[") }
 

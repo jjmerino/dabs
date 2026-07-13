@@ -28,7 +28,7 @@ func main() {
 	a := actions.New(drivers, order, imagesFS, data.OS{})
 	c := cli.New(a)
 
-	// Interrupting a box-creating command (`recipe`/`do`) mid-flight would
+	// Interrupting a box-creating command (`recipe`) mid-flight would
 	// otherwise leave a live box behind, since a signal skips deferred teardown.
 	// Snapshot the instances now and, on SIGINT/SIGTERM, best-effort down any
 	// that appeared since — the box being created/run. Best-effort: it ignores
@@ -76,18 +76,23 @@ func main() {
 	os.Exit(1)
 }
 
-// createsBox reports whether argv runs a command that brings up a fresh box —
-// the only case where an interrupt can leak one. `recipe`/`do` create-and-run;
-// `run`/`exec` reuse an existing box and `up` intentionally leaves one behind.
+// createsBox reports whether argv runs a command that brings up a fresh box AND
+// tears it down on exit — the only case where an interrupt can leak one. A plain
+// `recipe` creates-and-runs; `exec` reuses an existing box, and `recipe
+// --detach` intentionally leaves one behind, so an interrupt must NOT reap it.
 func createsBox(args []string) bool {
-	if len(args) == 0 {
+	if len(args) == 0 || args[0] != "recipe" {
 		return false
 	}
-	switch args[0] {
-	case "recipe", "do":
-		return true
+	for _, a := range args[1:] {
+		if a == "--" {
+			break
+		}
+		if a == "--detach" {
+			return false
+		}
 	}
-	return false
+	return true
 }
 
 // installInterruptCleanup snapshots the current instances and, on SIGINT/SIGTERM,

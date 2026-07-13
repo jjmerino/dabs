@@ -1,9 +1,12 @@
 package actions_test
 
-// Tests for `dabs rm` name-resolution ergonomics:
-//   - a no-match reap is idempotent (exit 0), the same as `dabs down`;
+// Tests for `dabs rm`, the single reaper (it absorbed `down`):
+//   - a no-match reap is idempotent (exit 0);
 //   - --multiple reaps every prefix match, and is REQUIRED when a name matches
-//     more than one node (mirroring `down`).
+//     more than one node;
+//   - a reap that would stop a LIVE box or lose held data needs consent (-y),
+//     and without it non-interactively it keeps everything and exits NONZERO;
+//   - --keep archives instead of removing (what `down` used to do).
 
 import (
 	"strings"
@@ -88,7 +91,12 @@ func spaceHeld(fd *fakeData, id, space string) {
 	if fd.dirs == nil {
 		fd.dirs = map[string][]string{}
 	}
-	fd.dirs[nodeBase+"/"+id+"/"+space] = []string{"a-file"}
+	if fd.files == nil {
+		fd.files = map[string][]byte{}
+	}
+	base := nodeBase + "/" + id + "/" + space
+	fd.dirs[base] = []string{"a-file"}
+	fd.files[base+"/a-file"] = []byte("x") // a real file, not just a non-empty listing
 }
 
 func rmAllHas(fd *fakeData, p string) bool {
@@ -100,32 +108,79 @@ func rmAllHas(fd *fakeData, p string) bool {
 	return false
 }
 
-// CONTRACT: a held ephemeral space is NOT reaped without consent — and because
-// consent is declined here (non-interactive), the node is KEPT, not removed. The
-// old code prompted for every node and then removed empty ones regardless; this
-// pins the "declined → kept" half so it cannot regress.
-func TestRmHeldEphemeralWithoutConsentKeepsNode(t *testing.T) {
+// CONTRACT (E2-2): a node that holds data (here a held ephemeral) is NOT reaped
+// without consent. Non-interactively there is nobody to ask, so the node is KEPT,
+// nothing is removed, and rm exits NONZERO — a script must see the reap did not
+// happen rather than read exit 0 as "gone".
+func TestRmHeldEphemeralWithoutConsentKeepsNodeAndErrors(t *testing.T) {
 	fd := baseData()
 	seedBoxNode(fd, "hold-aaaa", "inst-a")
 	spaceHeld(fd, "hold-aaaa", "ephemeral")
 	drv := &fakeDriver{infos: []sandbox.Info{{Name: "inst-a", Status: "running"}}}
 
+	var err error
 	out := captureStdout(t, func() {
-		if err := newReal("", fd, drv).Rm(params.Rm{Node: "hold-aaaa"}); err != nil {
-			t.Fatalf("rm: %v", err)
-		}
+		err = newReal("", fd, drv).Rm(params.Rm{Node: "hold-aaaa"})
 	})
-	if !strings.Contains(out, "ephemeral kept") {
-		t.Errorf("held ephemeral without -y should be KEPT; got:\n%s", out)
+	if err == nil {
+		t.Fatal("held data without -y non-interactively must error, got nil")
+	}
+	if !strings.Contains(out, "ephemeral data") {
+		t.Errorf("held ephemeral should be previewed; got:\n%s", out)
 	}
 	if strings.Contains(out, "removed") {
-		t.Errorf("a node whose ephemeral was kept must NOT be removed; got:\n%s", out)
+		t.Errorf("a kept node must NOT be removed; got:\n%s", out)
 	}
-	if rmAllHas(fd, nodeBase+"/hold-aaaa") {
-		t.Errorf("node dir reaped despite a kept ephemeral: %v", fd.rmAll)
+	if len(drv.downs) != 0 {
+		t.Errorf("a kept node's box must NOT be stopped; downed %v", drv.downs)
 	}
-	if rmAllHas(fd, nodeBase+"/hold-aaaa/ephemeral") {
-		t.Errorf("held ephemeral reaped without consent: %v", fd.rmAll)
+	if rmAllHas(fd, nodeBase+"/hold-aaaa") || rmAllHas(fd, nodeBase+"/hold-aaaa/ephemeral") {
+		t.Errorf("reaped despite refusal: %v", fd.rmAll)
+	}
+}
+
+// CONTRACT (E2-1): `rm` of a LIVE box without -y, non-interactively, does NOT
+// stop or remove it and exits NONZERO — even with empty spaces. Stopping a
+// running box is itself a loss that needs consent. (This is what a bare
+// single-node `rm` used to do silently with exit 0.)
+func TestRmLiveBoxWithoutConsentKeepsAndErrors(t *testing.T) {
+	fd := baseData()
+	seedBoxNode(fd, "live-aaaa", "inst-a") // no held spaces — only the box is live
+	drv := &fakeDriver{infos: []sandbox.Info{{Name: "inst-a", Status: "running"}}}
+
+	var err error
+	out := captureStdout(t, func() {
+		err = newReal("", fd, drv).Rm(params.Rm{Node: "live-aaaa"})
+	})
+	if err == nil {
+		t.Fatal("rm of a live box without -y must error non-interactively, got nil")
+	}
+	if len(drv.downs) != 0 {
+		t.Errorf("a refused rm must NOT stop the box; downed %v", drv.downs)
+	}
+	if rmAllHas(fd, nodeBase+"/live-aaaa") {
+		t.Errorf("a refused rm must NOT remove the node: %v", fd.rmAll)
+	}
+	if !strings.Contains(out, "reaps") {
+		t.Errorf("a refused rm should preview what it would take; got:\n%s", out)
+	}
+}
+
+// CONTRACT: --keep archives — it stops the box but LEAVES the node record as the
+// account of what ran and from where.
+func TestRmKeepArchivesBoxButKeepsNode(t *testing.T) {
+	fd := baseData()
+	seedBoxNode(fd, "keep-aaaa", "inst-a")
+	drv := &fakeDriver{infos: []sandbox.Info{{Name: "inst-a", Status: "running"}}}
+
+	if err := newReal("", fd, drv).Rm(params.Rm{Node: "keep-aaaa", Keep: true}); err != nil {
+		t.Fatalf("rm --keep: %v", err)
+	}
+	if len(drv.downs) != 1 || drv.downs[0] != "inst-a" {
+		t.Fatalf("--keep must stop the box, downed %v", drv.downs)
+	}
+	if rmAllHas(fd, nodeBase+"/keep-aaaa") {
+		t.Errorf("--keep must NOT remove the node dir: %v", fd.rmAll)
 	}
 }
 
@@ -149,13 +204,13 @@ func TestRmHeldEphemeralWithConsentReaps(t *testing.T) {
 	}
 }
 
-// CONTRACT: an EMPTY ephemeral is reaped silently — never prompted about, never
-// "kept" — and the node is removed. This is the half the old code got wrong: it
-// prompted for empty spaces and ignored the answer.
+// CONTRACT: an EMPTY ephemeral on a box that is NOT live is reaped silently —
+// never prompted about, never "kept" — and the node is removed. Nothing is at
+// stake (no live box, no held data), so no consent is needed.
 func TestRmEmptyEphemeralReapsSilently(t *testing.T) {
 	fd := baseData()
 	seedBoxNode(fd, "gone-aaaa", "inst-a") // no space entries → all empty
-	drv := &fakeDriver{infos: []sandbox.Info{{Name: "inst-a", Status: "running"}}}
+	drv := &fakeDriver{}                   // box already down → nothing live at stake
 
 	out := captureStdout(t, func() {
 		if err := newReal("", fd, drv).Rm(params.Rm{Node: "gone-aaaa"}); err != nil {
@@ -234,42 +289,64 @@ func TestRmCascadeYesReapsWholeSetIncludingEphemeral(t *testing.T) {
 	}
 }
 
-// CONTRACT (node id everywhere): down/run/exec take the NODE id — what `ls`
-// shows — and resolve it to the box the node records. A raw instance name still
-// works for a box no node claims (back-compat / loose boxes).
-func TestDownResolvesByNodeId(t *testing.T) {
+// CONTRACT (node id is the handle): `rm` takes the NODE id — what `ls` shows —
+// and stops the box the node records. With -y consenting to stop the live box.
+func TestRmResolvesByNodeId(t *testing.T) {
 	fd := baseData()
 	seedBoxNode(fd, "mybox-aaaa", "shell-1234") // node id -> its instance
 	drv := &fakeDriver{infos: []sandbox.Info{{Name: "shell-1234", Status: "running"}}}
-	if err := newReal("", fd, drv).Down(params.Down{Instance: "mybox-aaaa"}); err != nil {
-		t.Fatalf("down by node id: %v", err)
+	if err := newReal("", fd, drv).Rm(params.Rm{Node: "mybox-aaaa", Yes: true}); err != nil {
+		t.Fatalf("rm by node id: %v", err)
 	}
 	if len(drv.downs) != 1 || drv.downs[0] != "shell-1234" {
-		t.Fatalf("down by node id downed %v, want [shell-1234]", drv.downs)
+		t.Fatalf("rm by node id downed %v, want [shell-1234]", drv.downs)
 	}
 }
 
-func TestDownResolvesByNodeIdPrefix(t *testing.T) {
+func TestRmResolvesByNodeIdPrefix(t *testing.T) {
 	fd := baseData()
 	seedBoxNode(fd, "mybox-aaaa", "shell-1234")
 	drv := &fakeDriver{infos: []sandbox.Info{{Name: "shell-1234", Status: "running"}}}
-	if err := newReal("", fd, drv).Down(params.Down{Instance: "mybox"}); err != nil {
-		t.Fatalf("down by node prefix: %v", err)
+	if err := newReal("", fd, drv).Rm(params.Rm{Node: "mybox", Yes: true}); err != nil {
+		t.Fatalf("rm by node prefix: %v", err)
 	}
 	if len(drv.downs) != 1 || drv.downs[0] != "shell-1234" {
-		t.Fatalf("down by node prefix downed %v, want [shell-1234]", drv.downs)
+		t.Fatalf("rm by node prefix downed %v, want [shell-1234]", drv.downs)
 	}
 }
 
-func TestDownStillResolvesByRawInstanceName(t *testing.T) {
+// CONTRACT (fallback, what `down` did): a raw box INSTANCE name — not a node-id
+// prefix — resolves to that box's node when no node id matched, so `rm
+// <instance>` still stops the box. The instance name here is not a prefix of the
+// node id, so only the instance-name fallback can find it.
+func TestRmResolvesByRawInstanceName(t *testing.T) {
 	fd := baseData()
 	seedBoxNode(fd, "mybox-aaaa", "shell-1234")
 	drv := &fakeDriver{infos: []sandbox.Info{{Name: "shell-1234", Status: "running"}}}
-	// The instance name is not a node-id prefix, so the byInstance fallback resolves it.
-	if err := newReal("", fd, drv).Down(params.Down{Instance: "shell-1234"}); err != nil {
-		t.Fatalf("down by instance name: %v", err)
+	if err := newReal("", fd, drv).Rm(params.Rm{Node: "shell-1234", Yes: true}); err != nil {
+		t.Fatalf("rm by instance name: %v", err)
 	}
 	if len(drv.downs) != 1 || drv.downs[0] != "shell-1234" {
-		t.Fatalf("down by instance name downed %v, want [shell-1234]", drv.downs)
+		t.Fatalf("rm by instance name downed %v, want [shell-1234]", drv.downs)
+	}
+}
+
+// CONTRACT: an instance-name PREFIX matching more than one box is refused without
+// --multiple — the ambiguity guard is the same whether hits came from node ids or
+// instance names.
+func TestRmInstanceNamePrefixMultiMatchRefuses(t *testing.T) {
+	fd := baseData()
+	seedBoxNode(fd, "node-a", "shell-aaaa")
+	seedBoxNode(fd, "node-b", "shell-bbbb")
+	drv := &fakeDriver{infos: []sandbox.Info{
+		{Name: "shell-aaaa", Status: "running"},
+		{Name: "shell-bbbb", Status: "running"},
+	}}
+	err := newReal("", fd, drv).Rm(params.Rm{Node: "shell", Yes: true})
+	if err == nil {
+		t.Fatal("instance-name prefix matching two boxes must refuse without --multiple")
+	}
+	if len(drv.downs) != 0 {
+		t.Fatalf("must reap NOTHING on refusal, downed %v", drv.downs)
 	}
 }

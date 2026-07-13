@@ -4,11 +4,11 @@
 # The Claude boxes share one login dir, MOUNTED (never copied): the first box to
 # run creates it, you /login inside once, and every later box is already logged in.
 #
-# No `default:` on purpose. A default is what a bare `dabs do <cmd>` APPENDS your
-# command to, and every recipe here is either an agent or a build box — none is a
-# shell, so any of them would make `dabs do` do something you did not ask for.
-# With no default, `dabs do` falls back to the bundled `sh` box (a real shell) and
-# `dabs recipe`/`build`/`up` with no name list the choices instead of guessing.
+# No `default:` on purpose. A default is what a bare `dabs recipe <cmd>` APPENDS
+# your command to, and every recipe here is either an agent or a build box — none is
+# a shell, so any of them would make `dabs recipe` do something you did not ask for.
+# With no default, `dabs recipe` falls back to the bundled `sh` box (a real shell) and
+# `dabs recipe`/`build` with no name list the choices instead of guessing.
 
 recipes:
 
@@ -41,7 +41,7 @@ recipes:
       - mkmount: ~/.dabs/shared/claude
         path: /root/.claude
       # Session transcripts, nested over the shared dir above. They live in this
-      # BOX NODE's volume, so they survive `down` and load again next time — and
+      # BOX NODE's volume, so they survive `rm --keep` and load again next time — and
       # they are this box's, so a second box on the same code does not resurface
       # them through `claude --continue`.
       - mkmount: $PARENT_VOLUME/claude/projects
@@ -85,9 +85,9 @@ recipes:
   # the parent repo's object store, which this static recipe doesn't mount — so
   # `git log/diff/commit` fail in-box. The agent EDITS files here; you commit and
   # review on the host (`dabs worktrees diff`). To get working git in-box, run a
-  # recipe onto an EXISTING worktree with `dabs cast <recipe> <worktree>`: it also
-  # mounts the parent `.git`, so the agent can commit and the commits reconcile
-  # straight into the shared store.
+  # recipe onto an EXISTING worktree with `dabs recipe <recipe> --worktree <wt>`:
+  # it also mounts the parent `.git`, so the agent can commit and the commits
+  # reconcile straight into the shared store.
   claudewt:
     description: Claude box working in a fresh git worktree
     image: claude
@@ -99,7 +99,7 @@ recipes:
       - mkmount: ~/.dabs/shared/claude
         path: /root/.claude
       # Session transcripts in this box node's volume — see the `claude` recipe.
-      # Persist across `down`, private to this box.
+      # Persist across `rm --keep`, private to this box.
       - mkmount: $PARENT_VOLUME/claude/projects
         path: /root/.claude/projects
       - worktree: .
@@ -108,8 +108,8 @@ recipes:
   # dabs INSIDE dabs. Both recipes below build dabs from /work and KEEP the box,
   # so you (or an agent) drive that dabs from the host by reaching in:
   #
-  #   dabs recipe dabseption            # → box kept; note the instance name
-  #   dabs run <instance> 'dabs up sh'  # the dabs in the box boots its OWN box
+  #   dabs recipe dabseption                     # → box kept; note the instance name
+  #   dabs exec <instance> 'dabs recipe sh --detach' # the dabs in the box boots its OWN box
   #   dabs exec <instance> -- dabs ls
   #
   # They differ in ONE thing — what lands at /work:
@@ -122,12 +122,12 @@ recipes:
   #
   # The box is PRIVILEGED (target below) and carries bubblewrap, so the built
   # dabs boots its driver fleet and runs for real — full CLI, recipe resolution,
-  # cast/worktree/keep/down logic, git, error paths — sandboxed in the box while
+  # cast/worktree/keep/rm logic, git, error paths — sandboxed in the box while
   # the driver (you, an agent) stays OUTSIDE on the host, unsandboxed.
   #
   # The box can boot NESTED boxes: the image stages a ready-built `shell` rootfs
-  # (see the Dockerfile's COPY --from), so `dabs up sh` / `dabs do` work inside
-  # with no builder. `dabs build` still cannot run in there — it shells out to
+  # (see the Dockerfile's COPY --from), so `dabs recipe sh --detach` / `dabs recipe sh`
+  # work inside with no builder. `dabs build` still cannot run in there — it shells out to
   # docker, which the box has none of — and does not need to.
   dabseption:
     description: build and run the cwd's dabs in a kept box that can boot its own boxes
@@ -142,8 +142,8 @@ recipes:
   # Same box, but /work is a FRESH worktree cut off the current branch, so you can
   # `dabs recipe dabseptionwt`, switch the cwd back to main, and the box keeps
   # testing that branch. Trade-off: no parent .git is mounted, so git is BLIND
-  # in-box — use `dabs cast dabseptionwt <worktree>` when a test needs in-box git
-  # (cast attaches an EXISTING worktree live and mounts its parent .git).
+  # in-box — use `dabs recipe dabseptionwt --worktree <wt>` when a test needs
+  # in-box git (it attaches an EXISTING worktree live and mounts its parent .git).
   dabseptionwt:
     description: build and run a branch's dabs in a kept box, from a fresh worktree
     image: *dabseption_image
@@ -151,7 +151,7 @@ recipes:
     keep: true
     command: *dabseption_command
     sources:
-      - worktree: .                       # cast rewrites this: attach <worktree> live + mount its parent .git
+      - worktree: .                       # --worktree rewrites this: attach <wt> live + mount its parent .git
         path: /work
 
   # Agents: use when you changed dabs's CLI, help text, errors, or recipes and
@@ -184,8 +184,8 @@ recipes:
   # `dabs ls` shows which code each box is holding — a place, with no repo behind
   # it (a worktree needs git; this does not).
   #
-  # Work you want to keep goes in the node's spaces: $NODE_VOLUME survives `down`,
-  # $NODE_EPHEMERAL makes `down` ask first.
+  # Work you want to keep goes in the node's spaces: $NODE_VOLUME survives `rm --keep`,
+  # $NODE_EPHEMERAL makes `rm` ask first.
   scratch:
     description: a box over a throwaway copy of the cwd — no git needed
     image: shell
@@ -193,24 +193,24 @@ recipes:
     sources:
       - copy: .                           # a snapshot: the box owns it, the host is untouched
         path: /work
-      - mkmount: $PARENT_VOLUME/out       # anything you want back after `down`
+      - mkmount: $PARENT_VOLUME/out       # anything you want back after `rm --keep`
         path: /out
 
   # dabs recipe wt — a recipe with NO image: it cuts a worktree and stops. A place
   # is not a box; a box is one more node that stacks on a place. Point one at it
-  # later with `dabs cast <recipe> <node>`, or none at all.
+  # later with `dabs recipe <recipe> --worktree <node>`, or none at all.
   wt:
     description: cut a worktree, no box
     sources:
       - worktree: .
-        at: $NODE_EPHEMERAL/worktree      # where the checkout lands: down asks before reaping it
+        at: $NODE_EPHEMERAL/worktree      # where the checkout lands: rm asks before reaping it
 
   # dabs recipe dir — the same, without git: a directory node holding its own copy
-  # of the cwd, in the node's ephemeral space (so `down` asks before reaping it,
+  # of the cwd, in the node's ephemeral space (so `rm` asks before reaping it,
   # and you can read it on the host). Several of these work in parallel over a
   # directory that is not a repo.
   dir:
     description: copy the cwd into a directory node, no box
     sources:
       - copy: .
-        at: $NODE_EPHEMERAL/work          # where the copy lands: down asks before reaping it
+        at: $NODE_EPHEMERAL/work          # where the copy lands: rm asks before reaping it

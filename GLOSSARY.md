@@ -44,7 +44,7 @@ glossary records where the vocabulary is going so new work simply avoids the old
 | **driver** | one sandboxing mechanism behind the `sandbox.Driver` contract | `core/sandbox/<kind>` |
 | **fleet** ⚠ | deprecated — use **drivers** | `Real.drivers`, `dabs ls` |
 | **worktree** | a fresh git branch off HEAD, cut into a node's held space and mounted live | the `worktree:` source, `dabs worktrees` |
-| **--detach** | boot a box and leave it up without running the recipe's command (alias: **--detach** ⚠) | `recipe --no-command`, `upDetached` |
+| **--detach** | boot a box and leave it up without running the recipe's command (**--detach** ⚠ unstable: today an alias, may become a true detach) | `recipe --no-command`, `upDetached` |
 
 ---
 
@@ -145,9 +145,12 @@ handle) and prints the driver instance on its own line; the box is yours to reac
 with `exec` and to reap with `rm`. A boxless recipe (no image) detaches cleanly —
 it provisions its places and stops.
 
-The flag `--detach` ⚠ is deprecated — use **--no-command**, which the CLI
-accepts. "Detach" wrongly implies running something in the background; the point
-is that no command runs. `--detach` remains a working alias.
+The flag `--detach` ⚠ is unstable — not deprecated: it is staying, but its
+MEANING has not settled. Today it is an alias of **--no-command** (boot, run
+nothing). The preferred future is that it earns its name — boot AND run the
+recipe's command, detached into the background — so its behavior is likely to
+change. Use `--no-command` when no-command is what you mean; do not build on
+`--detach`'s current aliasing.
 *Where:* `upDetached`, `printUp`.
 
 ### recipe --worktree \<wt>

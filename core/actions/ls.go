@@ -54,31 +54,33 @@ func (r Real) Ls(p params.Ls) error {
 	if err != nil {
 		return err
 	}
-	// An ARCHIVED node is a box no driver holds any more. It is kept — what ran,
-	// and from where, is the question a node exists to answer — but it is not what
-	// you are looking at when you type `ls`, and it never goes away, so by default
-	// it is not shown. Its SPACES are already gone: `rm` reaps them.
+	// Visibility follows LIFE, not history. Every boot mints a project marker for
+	// the directory dabs ran from, so a plain listing fills with empty markers for
+	// every dir dabs was ever run in. `ls` answers what is ALIVE: it shows only the
+	// ACTIVE subtrees — a root and everything under it, holding a running box or
+	// real files in some space. `ls --inactive` flips that, showing ONLY the
+	// inactive ones (the empty records that remain), which `rm --inactive` sweeps.
+	active, inactive := r.activeSubtrees(all, state)
 	nodes := make([]Node, 0, len(all))
-	archived := 0
 	for _, n := range all {
-		if n.Kind == KindBox {
-			if _, live := state[n.Instance]; !live {
-				archived++
-				if !p.All {
-					continue
-				}
-			}
+		if p.Inactive == active[n.ID] {
+			continue // default: keep active; --inactive: keep inactive
 		}
 		nodes = append(nodes, n)
 	}
 	work := r.worktreeWork(nodes)
-	if len(nodes) == 0 && len(state) == 0 {
+	if p.Inactive {
+		if len(nodes) == 0 {
+			fmt.Fprintln(os.Stdout, tui.Muted("no inactive subtrees"))
+			return nil
+		}
+	} else if len(all) == 0 && len(state) == 0 {
 		fmt.Fprintln(os.Stdout, tui.Muted("nothing here yet"))
 		return nil
 	}
 	defer func() {
-		if archived > 0 && !p.All {
-			fmt.Fprintln(os.Stdout, tui.Muted("\n%d archived (dabs ls --all)", archived))
+		if len(inactive) > 0 && !p.Inactive {
+			fmt.Fprintln(os.Stdout, tui.Muted("\n%d inactive (dabs ls --inactive)", len(inactive)))
 		}
 	}()
 
@@ -132,10 +134,10 @@ func (r Real) Ls(p params.Ls) error {
 		}
 	}
 
-	// An archived box is one tree with its place: whenever its parent is shown
-	// under some heading, the box nests there — the same shape `rm` previews —
-	// instead of floating as a parentless row.
-	var orphans []Node // archived boxes whose parent is not shown at all
+	// A gone box is one tree with its place: whenever its parent is shown under
+	// some heading, the box nests there — the same shape `rm` previews — instead
+	// of floating as a parentless row.
+	var orphans []Node // gone boxes whose parent is not shown at all
 	for _, n := range nodes {
 		if n.Kind != KindBox {
 			continue
@@ -168,7 +170,7 @@ func (r Real) Ls(p params.Ls) error {
 		fmt.Fprint(os.Stdout, renderForest(r.viewNodes(sections[key], state), lsColumns, 2))
 	}
 
-	// Archived boxes with no living parent context — their place record is gone —
+	// Gone boxes with no living parent context — their place record is gone —
 	// have nowhere to nest, so they list flat under `no place`.
 	if len(orphans) > 0 {
 		fmt.Fprintln(os.Stdout, tui.Heading("no place"))
@@ -176,29 +178,34 @@ func (r Real) Ls(p params.Ls) error {
 	}
 
 	// A box a driver holds that no node claims — booted by an older dabs, or by
-	// hand. Still yours to reap, so still listed.
-	claimed := map[string]bool{}
-	for _, n := range nodes {
-		if n.Instance != "" {
-			claimed[n.Instance] = true
+	// hand. Still yours to reap, so still listed. A live box is always active, so
+	// `--inactive` (which shows only inactive subtrees) never lists these.
+	// A live box is always active, so `--inactive` (only inactive subtrees) never
+	// lists these.
+	if !p.Inactive {
+		claimed := map[string]bool{}
+		for _, n := range nodes {
+			if n.Instance != "" {
+				claimed[n.Instance] = true
+			}
 		}
-	}
-	var loose []string
-	for inst, st := range state {
-		if claimed[inst] {
-			continue
+		var loose []string
+		for inst, st := range state {
+			if claimed[inst] {
+				continue
+			}
+			line := fmt.Sprintf("%-26s %s", tui.Accent(inst), tui.Status(st.status))
+			if st.where != "local" {
+				line += "  " + tui.Muted("%s", st.where)
+			}
+			loose = append(loose, line)
 		}
-		line := fmt.Sprintf("%-26s %s", tui.Accent(inst), tui.Status(st.status))
-		if st.where != "local" {
-			line += "  " + tui.Muted("%s", st.where)
-		}
-		loose = append(loose, line)
-	}
-	sort.Strings(loose)
-	if len(loose) > 0 {
-		fmt.Fprintln(os.Stdout, tui.Heading("boxes with no node"))
-		for _, l := range loose {
-			fmt.Fprintln(os.Stdout, tui.Indent(l, 2))
+		sort.Strings(loose)
+		if len(loose) > 0 {
+			fmt.Fprintln(os.Stdout, tui.Heading("boxes with no node"))
+			for _, l := range loose {
+				fmt.Fprintln(os.Stdout, tui.Indent(l, 2))
+			}
 		}
 	}
 	return nil
@@ -260,6 +267,94 @@ func anyLiveInChain(n Node, nodes []Node, byID map[string]Node, state map[string
 		}
 	}
 	return false
+}
+
+// activeSubtrees marks every node that belongs to an ACTIVE subtree, and names
+// the roots of the inactive ones. Visibility follows LIFE, not history: a subtree
+// — a root and everything under it — is active iff ANY node in it is self-active.
+// A subtree of only empty markers is inactive; `ls` hides it by default, `ls
+// --inactive` shows it, and `rm --inactive` sweeps it. The returned set names the
+// ids in active subtrees; inactiveRoots names the root id of each inactive one.
+func (r Real) activeSubtrees(nodes []Node, state map[string]boxState) (active map[string]bool, inactiveRoots []string) {
+	byID := make(map[string]Node, len(nodes))
+	for _, n := range nodes {
+		byID[n.ID] = n
+	}
+	// rootOf walks a node to the top of its chain, guarding a corrupt cycle, so
+	// every node is judged as part of exactly ONE subtree.
+	rootOf := func(n Node) string {
+		seen := map[string]bool{}
+		for {
+			seen[n.ID] = true
+			p, ok := byID[n.Parent]
+			if !ok || seen[p.ID] {
+				return n.ID
+			}
+			n = p
+		}
+	}
+	liveRoot := map[string]bool{}
+	seenRoot := map[string]bool{}
+	var roots []string // distinct root ids, in first-seen order
+	for _, n := range nodes {
+		rid := rootOf(n)
+		if !seenRoot[rid] {
+			seenRoot[rid] = true
+			roots = append(roots, rid)
+		}
+		if r.nodeSelfActive(n, state) {
+			liveRoot[rid] = true
+		}
+	}
+	active = make(map[string]bool, len(nodes))
+	for _, n := range nodes {
+		if liveRoot[rootOf(n)] {
+			active[n.ID] = true
+		}
+	}
+	for _, rid := range roots {
+		if !liveRoot[rid] {
+			inactiveRoots = append(inactiveRoots, rid)
+		}
+	}
+	return active, inactiveRoots
+}
+
+// nodeSelfActive reports one node's OWN claim to life: a running box, or a node
+// any of whose three spaces holds a real file. It is the atom activeSubtrees is
+// built from. spaceHolds is the single content predicate — the same one the ls
+// space cells and the rm consent consult — so "holds files" means exactly the
+// same thing here as everywhere, and a tree of only empty directories holds
+// nothing.
+func (r Real) nodeSelfActive(n Node, state map[string]boxState) bool {
+	if n.Kind == KindBox {
+		if _, live := state[n.Instance]; live {
+			return true
+		}
+	}
+	for _, dir := range r.nodeSpaceDirs(n) {
+		if holds, err := r.spaceHolds(dir); err == nil && holds {
+			return true
+		}
+	}
+	return false
+}
+
+// nodeSpaceDirs is a node's three space directories — volume, held (resolved
+// through its legacy ephemeral/ fallback so an older node's files still count),
+// and tmp.
+func (r Real) nodeSpaceDirs(n Node) []string {
+	var dirs []string
+	if d, err := r.resolveNodeSpace(n.ID, SpaceVolume); err == nil {
+		dirs = append(dirs, d)
+	}
+	if d, err := r.resolveHeldSpace(n.ID); err == nil {
+		dirs = append(dirs, d)
+	}
+	if d, err := r.resolveNodeSpace(n.ID, SpaceTmp); err == nil {
+		dirs = append(dirs, d)
+	}
+	return dirs
 }
 
 // worktreeWork marks the worktree nodes holding something a reap would destroy:

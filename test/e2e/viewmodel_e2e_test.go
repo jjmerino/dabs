@@ -121,9 +121,10 @@ func TestRmPreviewShowsLiveBoxAsLiveE2E(t *testing.T) {
 	}
 }
 
-// E2-6: a live project place whose only box is archived was filed under the
-// `no place` heading — an error-looking bucket — although the place has a real
-// path on THIS machine. It belongs under the machine's own section.
+// E2-6: a project place whose only box is gone was filed under the `no place`
+// heading — an error-looking bucket — although the place has a real path on THIS
+// machine. It belongs under the machine's own section. The subtree is inactive
+// once its box is gone and its spaces empty, so it surfaces under `ls --inactive`.
 func TestLsPlaceWithDownedBoxNotUnderNoBoxE2E(t *testing.T) {
 	clean(t)
 	resetNodes(t)
@@ -140,9 +141,11 @@ func TestLsPlaceWithDownedBoxNotUnderNoBoxE2E(t *testing.T) {
 		t.Fatalf("rm --keep failed (%d): %s", code, out)
 	}
 
-	ls, code := run("dabs ls")
+	// The subtree is inactive now (box gone, spaces empty), so it lists under
+	// `--inactive` — and there it must still sit under the machine's own section.
+	ls, code := run("dabs ls --inactive")
 	if code != 0 {
-		t.Fatalf("ls failed (%d): %s", code, ls)
+		t.Fatalf("ls --inactive failed (%d): %s", code, ls)
 	}
 	section := sectionOf(t, ls, proj)
 	if strings.HasPrefix(section, "no place") {
@@ -153,11 +156,13 @@ func TestLsPlaceWithDownedBoxNotUnderNoBoxE2E(t *testing.T) {
 	}
 }
 
-// E2-51: `ls --all` drew an archived box as a PARENTLESS row under `no place`
-// while its parent project sat live under `local` — two trees for one tree.
-// The archived box must nest under its parent whenever the parent is shown,
-// and `rm --dry` must show the same parent/child shape.
-func TestLsAllNestsArchivedBoxUnderLiveParentE2E(t *testing.T) {
+// E2-51: a GONE box was drawn as a PARENTLESS row under `no place` while its
+// parent project sat live under `local` — two trees for one tree. A gone box must
+// nest under its parent whenever the parent is shown, and `rm --dry` must show the
+// same parent/child shape. A gone box only persists when it left files behind
+// (an empty one is removed on down), so boxA is given a leftover volume file; the
+// live boxB keeps the whole subtree active, so it shows in the default `ls`.
+func TestLsNestsGoneBoxUnderLiveParentE2E(t *testing.T) {
 	clean(t)
 	resetNodes(t)
 	dir := filepath.Join(home, "e2e-vm-nest")
@@ -174,25 +179,35 @@ func TestLsAllNestsArchivedBoxUnderLiveParentE2E(t *testing.T) {
 	boxB := nodeIDFrom(t, outB)
 	proj := theProjectNode(t)
 
-	// Archive one box; the other stays live, so the project is shown under local.
+	// A leftover file in boxA's volume, so its record survives being brought down.
+	volA := filepath.Join(nodesDir(), boxA, "volume")
+	if err := os.MkdirAll(volA, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(volA, "leftover.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Bring boxA down (keeping its file-holding record); boxB stays live, so the
+	// subtree is active and shows by default.
 	if out, code := run("dabs rm " + boxA + " --keep -y"); code != 0 {
 		t.Fatalf("rm --keep failed (%d): %s", code, out)
 	}
 
-	all, code := run("dabs ls --all")
+	all, code := run("dabs ls")
 	if code != 0 {
-		t.Fatalf("ls --all failed (%d): %s", code, all)
+		t.Fatalf("ls failed (%d): %s", code, all)
 	}
 	if sec := sectionOf(t, all, boxA); strings.HasPrefix(sec, "no place") {
-		t.Fatalf("archived box drawn parentless under %q while its parent is shown (E2-51):\n%s", sec, all)
+		t.Fatalf("gone box drawn parentless under %q while its parent is shown (E2-51):\n%s", sec, all)
 	}
-	archRow := rowWith(t, all, boxA)
-	if !strings.Contains(archRow, "├─") && !strings.Contains(archRow, "└─") {
-		t.Fatalf("archived box is not a child row under its parent (E2-51); row:\n%q\nls --all:\n%s", archRow, all)
+	goneRow := rowWith(t, all, boxA)
+	if !strings.Contains(goneRow, "├─") && !strings.Contains(goneRow, "└─") {
+		t.Fatalf("gone box is not a child row under its parent (E2-51); row:\n%q\nls:\n%s", goneRow, all)
 	}
 	// It sits BENEATH its parent's row (same tree, parent first).
 	if pi, bi := strings.Index(all, proj), strings.Index(all, boxA); pi < 0 || bi < pi {
-		t.Fatalf("archived box row not beneath its parent row (E2-51):\n%s", all)
+		t.Fatalf("gone box row not beneath its parent row (E2-51):\n%s", all)
 	}
 	_ = boxB
 
@@ -203,7 +218,7 @@ func TestLsAllNestsArchivedBoxUnderLiveParentE2E(t *testing.T) {
 	}
 	dryRow := rowWith(t, dry, boxA)
 	if !strings.Contains(dryRow, "├─") && !strings.Contains(dryRow, "└─") {
-		t.Fatalf("rm --dry does not nest the archived box under the parent (E2-51); row:\n%q\npreview:\n%s", dryRow, dry)
+		t.Fatalf("rm --dry does not nest the gone box under the parent (E2-51); row:\n%q\npreview:\n%s", dryRow, dry)
 	}
 }
 
@@ -231,13 +246,14 @@ func TestLsWorktreeStateNotUnmergedWhenZeroAheadE2E(t *testing.T) {
 	name := wts[0]
 	wt := worktreeData(name)
 
-	// Only uncommitted/untracked work, zero commits ahead.
+	// Only uncommitted/untracked work, zero commits ahead. The checkout carries
+	// files, so its subtree is active and shows in the default `ls`.
 	if err := os.WriteFile(filepath.Join(wt, "untracked.txt"), []byte("wip\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	all, code := run("dabs ls --all")
+	all, code := run("dabs ls")
 	if code != 0 {
-		t.Fatalf("ls --all failed (%d): %s", code, all)
+		t.Fatalf("ls failed (%d): %s", code, all)
 	}
 	row := rowWith(t, all, name)
 	if strings.Contains(row, "unmerged") {
@@ -247,9 +263,9 @@ func TestLsWorktreeStateNotUnmergedWhenZeroAheadE2E(t *testing.T) {
 	// Commit the work: now the branch IS ahead, and unmerged is the truth.
 	gitOut(t, wt, "add", "-A")
 	gitOut(t, wt, "-c", "user.email=e2e@dabs.test", "-c", "user.name=e2e", "commit", "-qm", "wip")
-	all2, code := run("dabs ls --all")
+	all2, code := run("dabs ls")
 	if code != 0 {
-		t.Fatalf("ls --all failed (%d): %s", code, all2)
+		t.Fatalf("ls failed (%d): %s", code, all2)
 	}
 	row2 := rowWith(t, all2, name)
 	if !strings.Contains(row2, "unmerged") {

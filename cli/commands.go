@@ -39,8 +39,8 @@ var commandDocs = map[string]cmdDoc{
 	"recipes":   {"list the known recipes and what each mounts", "recipes [--print]"},
 	"worktrees": {"inspect worktree nodes (reap with `dabs rm <name>` or `dabs rm --clean-worktrees`): worktrees [ls | diff <name>]", "worktrees [ls | diff <name>]"},
 	"exec":      {"run a command inside a box: exec <node> -- <cmd…> for an exact argv, or exec <node> <shell…> for a `sh -c` line (pipes/globs/&&)", "exec <node> [--] <cmd…>"},
-	"ls":        {"list what dabs owns, as a tree, live (--all: include archived nodes)", "ls [--all]"},
-	"rm":        {"stop a box and remove its node and what it holds (--keep archives instead; --clean-worktrees sweeps every worktree with no unreviewed work): rm <node> [-y] [--keep] [--volume] [--multiple] [--dry] [--force] | rm --clean-worktrees [--force] [--dry]", "rm <node> [-y] [--keep] [--volume] [--multiple] [--dry] [--force] | rm --clean-worktrees [--force] [--dry]"},
+	"ls":        {"list the active subtrees dabs owns, as a tree (--inactive: show only the inactive ones instead)", "ls [--inactive]"},
+	"rm":        {"stop a box and remove its node and what it holds (--keep keeps the record instead; --clean-worktrees sweeps every worktree with no unreviewed work; --inactive sweeps every inactive subtree): rm <node> [-y] [--keep] [--volume] [--multiple] [--dry] [--force] | rm --clean-worktrees [--force] [--dry] | rm --inactive [--dry]", "rm <node> [-y] [--keep] [--volume] [--multiple] [--dry] [--force] | rm --clean-worktrees [--force] [--dry] | rm --inactive [--dry]"},
 	"prune":     {"reclaim built box images (they rebuild on the next build); --dry lists what exists, --force removes even images a live box uses", "prune [--dry] [--force]"},
 	"servers":   {"manage registered servers: servers [ls] | add <name> [host] | rm <name>", "servers [ls | add <name> [host] | rm <name>]"},
 }

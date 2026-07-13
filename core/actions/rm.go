@@ -21,6 +21,9 @@ func (r Real) Rm(p params.Rm) error {
 	if p.CleanWorktrees {
 		return r.rmCleanWorktrees(p)
 	}
+	if p.Inactive {
+		return r.rmInactive(p)
+	}
 	nodes, err := r.listNodes()
 	if err != nil {
 		return err
@@ -65,8 +68,9 @@ func (r Real) Rm(p params.Rm) error {
 	views := r.viewNodes(doomed, state)
 	held, vol, tmp := countHoldingSpaces(views)
 
-	// --keep archives instead of removing: stop the box(es) but leave the node
-	// record behind — teardown without forgetting what ran and from where.
+	// --keep keeps the record instead of removing: stop the box(es) but leave the
+	// node record behind — teardown without forgetting what ran and from where. A
+	// kept box with empty spaces becomes inactive and drops out of the default `ls`.
 	if p.Keep {
 		return r.archive(targets, p)
 	}
@@ -236,24 +240,52 @@ func countViews(views []*NodeView) int {
 	return n
 }
 
-// archive stops the matched box(es) but leaves their node records behind — the
-// teardown `dabs rm --keep` performs. Only a box can be archived: a place has
-// nothing to stop, and keeping it would be a no-op. tmp is reaped, a held space
-// is kept unless -y consents, and the node dir stays.
+// archive brings the matched box(es) down — the teardown `dabs rm --keep`
+// performs. Only a box can be kept this way: a place has nothing to stop, and
+// keeping it would be a no-op. The box is stopped, tmp is reaped, a held space is
+// kept unless -y consents, and the volume is kept unless --volume. Bringing a box
+// down takes its NODE too when nothing is left: an empty record is cruft, not
+// history, so it does not linger as a `gone` row. A box that left files behind in
+// a kept space keeps its node — there is something to point at.
 func (r Real) archive(targets []Node, p params.Rm) error {
 	for _, n := range targets {
 		if n.Kind != KindBox {
-			return fmt.Errorf("rm --keep %s: only a box can be archived (it is a %s)", n.ID, n.Kind)
+			return fmt.Errorf("rm --keep %s: only a box can be kept (it is a %s)", n.ID, n.Kind)
 		}
 	}
 	for _, n := range targets {
-		if err := r.reapSpaces(n, spacePolicy{yes: p.Yes, volume: p.Volume, removeNode: false}); err != nil {
-			return err
-		}
 		if n.Instance != "" {
 			if err := r.downInstance(n.Instance); err != nil {
 				return fmt.Errorf("rm --keep %s: %w", n.ID, err)
 			}
+		}
+		// removeNode: reapSpaces takes the node dir only when no space held anything
+		// (nothing kept). A kept held space or a leftover volume keeps the record.
+		if err := r.reapSpaces(n, spacePolicy{yes: p.Yes, volume: p.Volume, removeNode: true}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// rmInactive sweeps EVERY inactive subtree — any node kind whose subtree holds no
+// running box and no real files — reaping each through the ordinary Rm path so
+// the same space rules apply. Nothing an inactive subtree holds is data (that is
+// what makes it inactive), so the reap needs no consent; --dry previews each
+// without removing anything. It is the reaper for the empty markers `ls` hides.
+func (r Real) rmInactive(p params.Rm) error {
+	nodes, err := r.listNodes()
+	if err != nil {
+		return err
+	}
+	_, inactiveRoots := r.activeSubtrees(nodes, r.boxStates())
+	if len(inactiveRoots) == 0 {
+		fmt.Fprintln(os.Stdout, tui.Muted("no inactive subtrees"))
+		return nil
+	}
+	for _, rid := range inactiveRoots {
+		if err := r.Rm(params.Rm{Node: rid, Yes: true, Dry: p.Dry}); err != nil {
+			return fmt.Errorf("rm --inactive %s: %w", rid, err)
 		}
 	}
 	return nil
@@ -290,10 +322,9 @@ func (r Real) guardWorktreeWork(n Node, force bool) error {
 // spacePolicy is the consent a caller carries into a reap. `rm -y` consents to
 // the held space; `rm -y --volume` also to the volume.
 //
-// removeNode is what separates a reap from an archive: with it, `rm` takes the
-// marker away; without it, `rm --keep` leaves the record. An archived box holds
-// what ran, and from where, after the box is gone — the whole reason a node
-// exists.
+// removeNode is what separates a reap from a keep: with it, `rm` takes the
+// marker away; without it, `rm --keep` leaves the record. A kept box holds what
+// ran, and from where, after the box is gone — the whole reason a node exists.
 // quiet suppresses the per-space "kept" line: a cascade reap already reported
 // the aggregate (see reapDataSummary), so repeating it per node is noise.
 type spacePolicy struct{ yes, volume, removeNode, quiet bool }

@@ -11,12 +11,11 @@ so they age with the code rather than drifting from it.
 **What this glossary guarantees.** An untagged entry describes what works TODAY,
 exactly as written — an agent may rely on it without checking anything else.
 Two tags mark the exceptions:
-**⚠ deprecated — use `<successor>`**: still works today, but do not rely on it in
-anything new — the successor exists and is what new code, output, docs, and
-comments use.
-**⚠ unstable**: the concept has not fully landed and is subject to revision. What
-the entry describes is what works today — keep using it — and any future
-name/shape noted alongside is direction, not instruction.
+**deprecated**: still works today, but do not rely on it in anything new — the
+successor exists and is what new code, output, docs, and comments use.
+**unstable**: the concept has not fully landed and is subject to revision. What
+the entry describes is what works today; any future name or shape noted
+alongside is direction, not instruction.
 The word may still be printed by the current CLI; where it is, the entry says so.
 Deprecation is docs-first: the term keeps working until code catches up, and the
 glossary records where the vocabulary is going so new work simply avoids the old word.
@@ -36,15 +35,15 @@ glossary records where the vocabulary is going so new work simply avoids the old
 | **image** | the frozen template a driver builds and boots a box from | `recipe.ImageRef`, `Driver.Build` |
 | **reap** | to remove a node and the spaces it holds (what `dabs rm` does) | `Rm`, `reapSpaces` |
 | **confirmation** | the explicit go-ahead a losing action needs — four flags for four risks | `-y` / `--multiple` / `--force` / `--volume` |
-| **archived** ⚠ | a box whose node record is kept but whose instance is gone (`rm --keep`) | `archive`, `dabs ls --all` |
-| **live / gone** | a box's STATE: its driver holds it, or it does not (**gone** ⚠) | `CellLive`/`CellGone` |
+| **archived** (unstable) | a box whose node record is kept but whose instance is gone (`rm --keep`) | `archive`, `dabs ls --all` |
+| **live / gone** | a box's STATE: its driver holds it, or it does not (**gone**: unstable) | `CellLive`/`CellGone` |
 | **no-diff / has work / unmerged** | a worktree's STATE: clean · uncommitted-or-untracked · commits ahead | `worktreeState` |
 | **target** | the named driver configuration a recipe uses to bring up a box | `recipe.Recipe.Target`, `driverFor` |
 | **server** | a registered remote machine with dabs installed, reached over ssh | `dabs servers`, `config` |
 | **driver** | one sandboxing mechanism behind the `sandbox.Driver` contract | `core/sandbox/<kind>` |
-| **fleet** ⚠ | deprecated — use **drivers** | `Real.drivers`, `dabs ls` |
+| **fleet** (deprecated) | use **drivers** | `Real.drivers`, `dabs ls` |
 | **worktree** | a fresh git branch off HEAD, cut into a node's held space and mounted live | the `worktree:` source, `dabs worktrees` |
-| **--detach** | boot a box and leave it up without running the recipe's command (**--detach** ⚠ unstable: today an alias, may become a true detach) | `recipe --no-command`, `upDetached` |
+| **--detach** | boot a box and leave it up without running the recipe's command (`--detach`: unstable alias) | `recipe --no-command`, `upDetached` |
 
 ---
 
@@ -96,7 +95,7 @@ it and never reaps its `Dir`), **workdir** (a host directory a recipe copied as
 `.`), **worktree** (a git worktree dabs cut), **box** (one running sandbox).
 *Where:* `NodeKind` (`KindProject`/`KindWorkdir`/`KindWorktree`/`KindBox`).
 
-### archived  ⚠ unstable
+### archived (unstable)
 A box reaped with `--keep`: its instance is stopped but its node record stays, so
 what ran and from where outlives the box. Its spaces are already gone. Archived
 boxes are hidden by default and shown by `dabs ls --all`.
@@ -109,9 +108,9 @@ residue of `rm --keep`. `dabs ls` still prints it — do not lean on it in new w
 A box node's STATE cell: **live** when a driver holds its instance, **gone** when
 none does (it is archived, or its instance died).
 
-**gone** ⚠ unstable — it says only what a box is *not*; the noted direction
+**gone** (unstable) — it says only what a box is *not*. The noted direction
 splits it into box-specific statuses (**idling** / **running** / **stopped**),
-which do NOT exist yet. `gone` is what works today, in output and new code alike.
+which do not exist yet; `gone` is what works today.
 *Where:* `CellLive`/`CellGone`, `viewNode`.
 
 ### sandbox
@@ -145,12 +144,10 @@ handle) and prints the driver instance on its own line; the box is yours to reac
 with `exec` and to reap with `rm`. A boxless recipe (no image) detaches cleanly —
 it provisions its places and stops.
 
-The flag `--detach` ⚠ is unstable — not deprecated: it is staying, but its
-MEANING has not settled. Today it is an alias of **--no-command** (boot, run
-nothing). The preferred future is that it earns its name — boot AND run the
-recipe's command, detached into the background — so its behavior is likely to
-change. Use `--no-command` when no-command is what you mean; do not build on
-`--detach`'s current aliasing.
+The flag `--detach` (unstable) is an alias of **--no-command** today: boot, run
+nothing. The intended future is a true detach — boot AND run the recipe's
+command in the background — so its behavior is likely to change. Use
+`--no-command` when no-command is what you mean.
 *Where:* `upDetached`, `printUp`.
 
 ### recipe --worktree \<wt>
@@ -254,7 +251,7 @@ itself run a nested sandbox. Most drivers run with fixed flags; the docker drive
 exposes two targets, for privileged and unprivileged docker.
 *Where:* `recipe.Recipe.Target`, `driverFor`, `Driver.Kind`, `Real.drivers`.
 
-### fleet  ⚠ deprecated
+### fleet (deprecated)
 Deprecated — use **drivers** (or "the drivers dabs dispatches across"). The word
 has been used loosely over time and is being eradicated from prose. Code still
 references `Real.drivers`.
@@ -361,7 +358,7 @@ Under any tree with a space column: **✓** the space is present and holds nothi
 (safe to reap); **⚠** the space holds files a reap would lose. On `tmp`, the ⚠ is
 display-only (see the tmp promise).
 
-⚠ The glyphs are changing: **✓** only ever made sense in a reap preview, not in
+Unstable — the glyphs are changing: **✓** only ever made sense in a reap preview, not in
 general listing. The future renders nothing for an empty space and a single mark
 when a space holds bytes. This documents the current rendering.
 *Where:* `Cell.Symbol`, `styleCell`, the `hasSpaceColumn` legend.
@@ -371,18 +368,18 @@ Where an archived box whose place record is gone lists — its place is gone, so
 has nowhere to nest and lists flat. (Not to be confused with a worktree's
 DETAIL cell reading `no box`, which means "no live box on this worktree".)
 
-⚠ unstable — noted direction: **orphaned**, one heading for anything not
-correctly connected to the node tree. Not implemented; `no place` is the heading
-that works today.
+Unstable. The noted direction is **orphaned** — one heading for anything not
+correctly connected to the node tree; not implemented, so `no place` is the
+heading that works today.
 *Where:* the `no place` heading in `Ls`.
 
 ### `boxes with no node` (heading)
 Where a box a driver holds but no node claims lists — booted by an older dabs or
 by hand. Still yours, so still shown and still reapable by its instance name.
 
-⚠ unstable — noted direction: **orphaned**, one heading for anything not
-correctly connected to the node tree. Not implemented; `boxes with no node` is
-the heading that works today.
+Unstable. The noted direction is **orphaned** — one heading for anything not
+correctly connected to the node tree; not implemented, so `boxes with no node`
+is the heading that works today.
 *Where:* the `boxes with no node` heading in `Ls`.
 
 ### the worktree states
@@ -417,7 +414,7 @@ something:
 ONE name matched, while `--clean-worktrees` (the sweep) acts on every worktree.
 Without the matching flag, the losing action is refused and previewed first.
 
-The word **consent** ⚠ is deprecated in docs — it carries human meaning, and dabs's
+The word **consent** (deprecated) — it carries human meaning, and dabs's
 operators are usually agents; say **confirmation**. Code identifiers still read
 `consent`.
 *Where:* `Rm`, `reapSpaces`, `guardWorktreeWork`, `rmMatches`.

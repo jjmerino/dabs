@@ -49,7 +49,16 @@ type fakeDriver struct {
 	lsPanic bool           // if true, Ls panics — proves it was never called when the test passes
 }
 
-func (d *fakeDriver) Build(s sandbox.BuildSpec) error { d.builds = append(d.builds, s); return nil }
+func (d *fakeDriver) Build(s sandbox.BuildSpec) error {
+	d.builds = append(d.builds, s)
+	// A real build leaves the image present, so a later HasImage sees it — the
+	// property the reuse-vs-rebuild decision turns on.
+	if d.built == nil {
+		d.built = map[string]bool{}
+	}
+	d.built[s.Name] = true
+	return nil
+}
 func (d *fakeDriver) HasImage(name string) (bool, error) {
 	return d.built[name], nil
 }
@@ -485,9 +494,10 @@ func TestRecipeDuplicateBoxPathRejected(t *testing.T) {
 	}
 }
 
-// CONTRACT: a Dockerfile-backed recipe whose image is ALREADY built is not
-// rebuilt on `dabs recipe` — the box boots the existing image. Rebuilding an
-// edited Dockerfile is the `dabs build` verb's job, not every run's.
+// CONTRACT: a Dockerfile-backed recipe whose image is built AND whose Dockerfile
+// is UNCHANGED is not rebuilt on `dabs recipe` — the box boots the existing
+// image (the #39 speedup). The first boot builds and records the source; the
+// second, with nothing edited, reuses it.
 func TestRecipeDockerfileImageAlreadyBuiltDoesNotBuild(t *testing.T) {
 	y := `recipes:
   d:
@@ -499,14 +509,19 @@ func TestRecipeDockerfileImageAlreadyBuiltDoesNotBuild(t *testing.T) {
 `
 	fd := baseData()
 	fd.exists["/data"] = true
-	drv := &fakeDriver{built: map[string]bool{"d": true}} // image "d" already built
-	if err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "d"}); err != nil {
+	fd.files = map[string][]byte{"/cwd/Dockerfile": []byte("FROM alpine\n")}
+	drv := &fakeDriver{}
+	r := newReal(y, fd, drv)
+	if err := r.Recipe(params.Recipe{Name: "d"}); err != nil { // builds once, records
 		t.Fatalf("Recipe: %v", err)
 	}
-	if len(drv.builds) != 0 {
-		t.Errorf("image already built — want no Build, got %+v", drv.builds)
+	if err := r.Recipe(params.Recipe{Name: "d"}); err != nil { // unchanged → reuse
+		t.Fatalf("Recipe: %v", err)
 	}
-	if len(drv.ups) != 1 || drv.ups[0].Name != "d" {
+	if len(drv.builds) != 1 {
+		t.Errorf("unchanged Dockerfile — want a single Build, got %+v", drv.builds)
+	}
+	if drv.ups[len(drv.ups)-1].Name != "d" {
 		t.Fatalf("want the box booted from image d, got ups=%+v", drv.ups)
 	}
 }
@@ -524,6 +539,7 @@ func TestRecipeDockerfileImageMissingBuildsOnce(t *testing.T) {
 `
 	fd := baseData()
 	fd.exists["/data"] = true
+	fd.files = map[string][]byte{"/cwd/Dockerfile": []byte("FROM alpine\n")}
 	drv := &fakeDriver{built: map[string]bool{"d": false}} // not built yet
 	if err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "d"}); err != nil {
 		t.Fatalf("Recipe: %v", err)

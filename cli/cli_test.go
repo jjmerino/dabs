@@ -12,30 +12,22 @@ import (
 // argv into the right action call with the right params.
 type fakeActions struct {
 	build  []params.Build
-	up     []params.Up
 	exec   []params.Exec
-	run    []params.Run
-	down   []params.Down
 	ls     []params.Ls
 	rm     []params.Rm
-	images []params.Images
+	prune  []params.Prune
 	recipe []params.Recipe
-	do     []params.Do
 	err    error // returned from every action
 }
 
 func (f *fakeActions) Build(p params.Build) error               { f.build = append(f.build, p); return f.err }
-func (f *fakeActions) Up(p params.Up) error                     { f.up = append(f.up, p); return f.err }
 func (f *fakeActions) Recipe(p params.Recipe) error             { f.recipe = append(f.recipe, p); return f.err }
-func (f *fakeActions) Do(p params.Do) error                     { f.do = append(f.do, p); return f.err }
 func (f *fakeActions) Recipes(params.Recipes) error             { return f.err }
 func (f *fakeActions) Worktrees(params.Worktrees) error         { return f.err }
 func (f *fakeActions) Exec(p params.Exec) error                 { f.exec = append(f.exec, p); return f.err }
-func (f *fakeActions) Run(p params.Run) error                   { f.run = append(f.run, p); return f.err }
-func (f *fakeActions) Down(p params.Down) error                 { f.down = append(f.down, p); return f.err }
 func (f *fakeActions) Rm(p params.Rm) error                     { f.rm = append(f.rm, p); return f.err }
 func (f *fakeActions) Ls(p params.Ls) error                     { f.ls = append(f.ls, p); return f.err }
-func (f *fakeActions) Images(p params.Images) error             { f.images = append(f.images, p); return f.err }
+func (f *fakeActions) Prune(p params.Prune) error               { f.prune = append(f.prune, p); return f.err }
 func (f *fakeActions) ServersList(params.ServersList) error     { return f.err }
 func (f *fakeActions) ServersAdd(params.ServersAdd) error       { return f.err }
 func (f *fakeActions) ServersRemove(params.ServersRemove) error { return f.err }
@@ -65,57 +57,58 @@ func TestRunDelegatesToActions(t *testing.T) {
 			},
 		},
 		{
-			name: "up with a recipe name",
-			args: []string{"up", "m"},
+			name: "recipe --detach with a recipe name boots detached",
+			args: []string{"recipe", "m", "--detach"},
 			want: func(t *testing.T, f *fakeActions) {
-				if len(f.up) != 1 || f.up[0] != (params.Up{Name: "m"}) {
-					t.Errorf("got %+v, want one Up{Name:m}", f.up)
+				if len(f.recipe) != 1 || !f.recipe[0].Detach ||
+					len(f.recipe[0].Args) != 1 || f.recipe[0].Args[0] != "m" {
+					t.Errorf("got %+v, want one Recipe{Detach:true Args:[m]}", f.recipe)
 				}
 			},
 		},
 		{
-			name: "up with no arg → the default recipe",
-			args: []string{"up"},
+			name: "recipe --detach with no arg → the default recipe",
+			args: []string{"recipe", "--detach"},
 			want: func(t *testing.T, f *fakeActions) {
-				if len(f.up) != 1 || f.up[0] != (params.Up{}) {
-					t.Errorf("got %+v, want one Up{} (default recipe)", f.up)
+				if len(f.recipe) != 1 || !f.recipe[0].Detach || len(f.recipe[0].Args) != 0 {
+					t.Errorf("got %+v, want one Recipe{Detach:true} (default recipe)", f.recipe)
 				}
 			},
 		},
 		{
-			name: "exec with exact argv after --",
+			name: "exec with exact argv after -- stays exact",
 			args: []string{"exec", "demo-0", "--", "echo", "--flag", "hi"},
 			want: func(t *testing.T, f *fakeActions) {
-				if len(f.exec) != 1 || f.exec[0].Instance != "demo-0" ||
+				if len(f.exec) != 1 || f.exec[0].Instance != "demo-0" || f.exec[0].Shell ||
 					len(f.exec[0].Cmd) != 3 || f.exec[0].Cmd[1] != "--flag" {
-					t.Errorf("got %+v, want one Exec{Instance:demo-0 Cmd:[echo --flag hi]}", f.exec)
+					t.Errorf("got %+v, want one Exec{Instance:demo-0 Shell:false Cmd:[echo --flag hi]}", f.exec)
 				}
 			},
 		},
 		{
-			name: "run takes a shell command line after the instance",
-			args: []string{"run", "demo-0", "ls", "-la"},
+			name: "exec with no -- takes a shell command line after the instance",
+			args: []string{"exec", "demo-0", "ls", "-la"},
 			want: func(t *testing.T, f *fakeActions) {
-				if len(f.run) != 1 || f.run[0].Instance != "demo-0" ||
-					len(f.run[0].Cmd) != 2 || f.run[0].Cmd[0] != "ls" || f.run[0].Cmd[1] != "-la" {
-					t.Errorf("got %+v, want one Run{Instance:demo-0 Cmd:[ls -la]}", f.run)
+				if len(f.exec) != 1 || f.exec[0].Instance != "demo-0" || !f.exec[0].Shell ||
+					len(f.exec[0].Cmd) != 2 || f.exec[0].Cmd[0] != "ls" || f.exec[0].Cmd[1] != "-la" {
+					t.Errorf("got %+v, want one Exec{Instance:demo-0 Shell:true Cmd:[ls -la]}", f.exec)
 				}
 			},
 		},
 		{
 			// B12: a command word starting with `-` must reach the box verbatim,
 			// not be eaten as one of dabs's own flags (which left an empty `sh -c`).
-			name: "run forwards a dash-leading command word",
-			args: []string{"run", "box", "-x"},
+			name: "exec forwards a dash-leading command word as shell",
+			args: []string{"exec", "box", "-x"},
 			want: func(t *testing.T, f *fakeActions) {
-				if len(f.run) != 1 || f.run[0].Instance != "box" ||
-					len(f.run[0].Cmd) != 1 || f.run[0].Cmd[0] != "-x" {
-					t.Errorf("got %+v, want Run{Instance:box Cmd:[-x]}", f.run)
+				if len(f.exec) != 1 || f.exec[0].Instance != "box" || !f.exec[0].Shell ||
+					len(f.exec[0].Cmd) != 1 || f.exec[0].Cmd[0] != "-x" {
+					t.Errorf("got %+v, want Exec{Instance:box Shell:true Cmd:[-x]}", f.exec)
 				}
 			},
 		},
 		{
-			// B14: rm gains --multiple, mirroring down.
+			// rm gains --multiple: a prefix matching several nodes needs it.
 			name: "rm --multiple after the name",
 			args: []string{"rm", "demo", "--multiple"},
 			want: func(t *testing.T, f *fakeActions) {
@@ -125,20 +118,32 @@ func TestRunDelegatesToActions(t *testing.T) {
 			},
 		},
 		{
-			name: "down",
-			args: []string{"down", "demo-0"},
+			// --yes is the long alias of -y; both set Yes.
+			name: "rm --yes",
+			args: []string{"rm", "demo-0", "--yes"},
 			want: func(t *testing.T, f *fakeActions) {
-				if len(f.down) != 1 || f.down[0] != (params.Down{Instance: "demo-0"}) {
-					t.Errorf("got %+v, want one Down{Instance:demo-0}", f.down)
+				if len(f.rm) != 1 || f.rm[0].Node != "demo-0" || !f.rm[0].Yes {
+					t.Errorf("got %+v, want Rm{Node:demo-0 Yes:true}", f.rm)
 				}
 			},
 		},
 		{
-			name: "down --multiple after the name",
-			args: []string{"down", "demo", "--multiple"},
+			// --keep archives (what `down` used to do), stopping the box but
+			// leaving its node record.
+			name: "rm --keep after the name",
+			args: []string{"rm", "demo", "--keep"},
 			want: func(t *testing.T, f *fakeActions) {
-				if len(f.down) != 1 || f.down[0] != (params.Down{Instance: "demo", Multiple: true}) {
-					t.Errorf("got %+v, want Down{Instance:demo Multiple:true}", f.down)
+				if len(f.rm) != 1 || f.rm[0].Node != "demo" || !f.rm[0].Keep {
+					t.Errorf("got %+v, want Rm{Node:demo Keep:true}", f.rm)
+				}
+			},
+		},
+		{
+			name: "rm --dry",
+			args: []string{"rm", "demo", "--dry"},
+			want: func(t *testing.T, f *fakeActions) {
+				if len(f.rm) != 1 || f.rm[0].Node != "demo" || !f.rm[0].Dry {
+					t.Errorf("got %+v, want Rm{Node:demo Dry:true}", f.rm)
 				}
 			},
 		},
@@ -152,21 +157,27 @@ func TestRunDelegatesToActions(t *testing.T) {
 			},
 		},
 		{
-			name: "recipe name with appended command",
+			// The cli passes positionals through as Args (name-vs-default is the
+			// action's call, against the registry); no `--`, so Default stays false.
+			name: "recipe forwards its positionals as Args",
 			args: []string{"recipe", "claude", "--model", "x"},
 			want: func(t *testing.T, f *fakeActions) {
-				if len(f.recipe) != 1 || f.recipe[0].Name != "claude" ||
-					len(f.recipe[0].Cmd) != 2 || f.recipe[0].Cmd[0] != "--model" {
-					t.Errorf("got %+v, want Recipe{Name:claude Cmd:[--model x]}", f.recipe)
+				if len(f.recipe) != 1 || f.recipe[0].Default ||
+					len(f.recipe[0].Args) != 3 || f.recipe[0].Args[0] != "claude" ||
+					f.recipe[0].Args[1] != "--model" || f.recipe[0].Args[2] != "x" {
+					t.Errorf("got %+v, want Recipe{Args:[claude --model x]}", f.recipe)
 				}
 			},
 		},
 		{
-			name: "do passes all args as the command",
-			args: []string{"do", "-c", "echo hi"},
+			// A leading `--` forces the default recipe: it is stripped and Default set,
+			// so the following token (which may name a recipe) is part of the command.
+			name: "recipe -- forces the default path",
+			args: []string{"recipe", "--", "sh", "-c", "echo hi"},
 			want: func(t *testing.T, f *fakeActions) {
-				if len(f.do) != 1 || len(f.do[0].Cmd) != 2 || f.do[0].Cmd[0] != "-c" || f.do[0].Cmd[1] != "echo hi" {
-					t.Errorf("got %+v, want Do{Cmd:[-c echo hi]}", f.do)
+				if len(f.recipe) != 1 || !f.recipe[0].Default ||
+					len(f.recipe[0].Args) != 3 || f.recipe[0].Args[0] != "sh" {
+					t.Errorf("got %+v, want Recipe{Default:true Args:[sh -c echo hi]}", f.recipe)
 				}
 			},
 		},
@@ -190,7 +201,7 @@ func TestRunErrorsReachNoAction(t *testing.T) {
 	}{
 		{"no command", nil, NoCommandError{}},
 		{"unknown command", []string{"bogus"}, UnknownCommandError{Name: "bogus"}},
-		{"bad args", []string{"up", "a", "b"}, BadArgsError{Cmd: "up", Reason: "expected an optional recipe name or dabs.yaml path"}},
+		{"bad args", []string{"recipe", "a", "b", "--detach"}, BadArgsError{Cmd: "recipe", Reason: "recipe --detach takes an optional recipe name or dabs.yaml path and runs no command"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -199,7 +210,7 @@ func TestRunErrorsReachNoAction(t *testing.T) {
 			if err != tt.wantErr {
 				t.Errorf("Run(%v) = %v, want %v", tt.args, err, tt.wantErr)
 			}
-			if len(f.build)+len(f.up)+len(f.exec)+len(f.run)+len(f.down)+len(f.ls) != 0 {
+			if len(f.build)+len(f.recipe)+len(f.exec)+len(f.rm)+len(f.ls) != 0 {
 				t.Errorf("action was called despite error %v", err)
 			}
 		})
@@ -214,9 +225,9 @@ func TestCommandHelpShowsOwnUsage(t *testing.T) {
 		cmd  string
 		want []string // substrings that must appear in the command's own help
 	}{
-		{"down", []string{"dabs down", "--force", "--dry", "<node>"}},
-		{"up", []string{"dabs up", "[recipe|path]"}},
-		{"worktrees", []string{"dabs worktrees", "diff <name>", "prune", "--force"}},
+		{"rm", []string{"dabs rm", "--keep", "--dry", "--force", "--clean-worktrees", "<node>"}},
+		{"recipe", []string{"dabs recipe", "--detach", "--worktree"}},
+		{"worktrees", []string{"dabs worktrees", "diff <name>"}},
 		{"recipes", []string{"dabs recipes", "--print"}},
 	}
 	for _, tt := range tests {
@@ -238,7 +249,7 @@ func TestCommandHelpShowsOwnUsage(t *testing.T) {
 				if strings.Contains(h.Text, "dabs <command> [args]") {
 					t.Errorf("%s help leaked the top-level menu:\n%s", tt.cmd, h.Text)
 				}
-				if n := len(f.build) + len(f.up) + len(f.down) + len(f.ls); n != 0 {
+				if n := len(f.build) + len(f.recipe) + len(f.rm) + len(f.ls); n != 0 {
 					t.Errorf("%s --help invoked an action", tt.cmd)
 				}
 			})
@@ -250,11 +261,11 @@ func TestCommandHelpShowsOwnUsage(t *testing.T) {
 // command run INSIDE a box is forwarded, not eaten as dabs's own help.
 func TestPassThroughHelpNotIntercepted(t *testing.T) {
 	f := &fakeActions{}
-	if err := New(f).Run([]string{"run", "demo-0", "mytool", "--help"}); err != nil {
+	if err := New(f).Run([]string{"exec", "demo-0", "mytool", "--help"}); err != nil {
 		t.Fatalf("Run = %v, want nil", err)
 	}
-	if len(f.run) != 1 || f.run[0].Cmd[len(f.run[0].Cmd)-1] != "--help" {
-		t.Errorf("got %+v, want run to forward --help to the box command", f.run)
+	if len(f.exec) != 1 || f.exec[0].Cmd[len(f.exec[0].Cmd)-1] != "--help" {
+		t.Errorf("got %+v, want exec to forward --help to the box command", f.exec)
 	}
 }
 

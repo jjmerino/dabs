@@ -31,8 +31,13 @@ type vGit struct {
 
 func (f *vFakeData) HomeDir() (string, error) { return "/home/t", nil }
 func (f *vFakeData) ReadDir(dir string) ([]string, error) {
+	// A held space lists one child that is itself a file: listing that child
+	// errors (ENOTDIR), the way the OS reports a non-directory.
+	if strings.HasSuffix(dir, "/__file__") {
+		return nil, fs.ErrInvalid
+	}
 	if f.held[dir] {
-		return []string{"a-file"}, nil
+		return []string{"__file__"}, nil
 	}
 	return nil, nil
 }
@@ -108,8 +113,10 @@ func TestViewNodesBoxStateFromMapOnly(t *testing.T) {
 	if got := byID["box-gone"].State; got != CellGone {
 		t.Errorf("gone box State = %v, want CellGone", got)
 	}
-	if byID["box-live"].Where != "inst-live" {
-		t.Errorf("box Where = %q, want the instance name", byID["box-live"].Where)
+	// WHERE points at the box's node dir on disk AND still carries the instance
+	// name, so a box's bytes are locatable while rm/exec still resolve it.
+	if w := byID["box-live"].Where; !strings.Contains(w, ".dabs/nodes/box-live") || !strings.Contains(w, "inst-live") {
+		t.Errorf("box Where = %q, want the node dir and the instance name", w)
 	}
 }
 
@@ -197,7 +204,7 @@ func TestRenderForestColumnsAndGlyphs(t *testing.T) {
 			t.Errorf("render missing %q:\n%s", want, out)
 		}
 	}
-	if !strings.Contains(out, "✓ empty  ⚠ holds files  — n/a") {
+	if !strings.Contains(out, "✓ empty  ⚠ holds files") {
 		t.Errorf("space legend missing when a space column is drawn:\n%s", out)
 	}
 	// A column not asked for is not drawn.
@@ -209,6 +216,35 @@ func TestRenderForestColumnsAndGlyphs(t *testing.T) {
 	noSpace := renderForest([]*NodeView{proj}, []Column{ColNode, ColState}, 0)
 	if strings.Contains(noSpace, "holds files") {
 		t.Errorf("legend drawn without a space column:\n%s", noSpace)
+	}
+}
+
+// CONTRACT: a node id or a WHERE path is untrusted display data — it can carry a
+// newline (splitting one row into phantom tree lines) or an ANSI escape (moving
+// the cursor / spoofing the terminal). renderForest must neutralize both before
+// drawing: no raw ESC (0x1b) or newline survives from the value, and the row
+// stays a single line.
+func TestRenderForestSanitizesUntrustedFields(t *testing.T) {
+	proj := &NodeView{
+		ID:    "ev\x1b[31mil\nid",
+		Kind:  KindProject,
+		State: CellNA,
+		Where: "/re\x1b[2Jpo\nboom",
+	}
+
+	out := renderForest([]*NodeView{proj}, []Column{ColNode, ColWhere}, 0)
+
+	if strings.ContainsRune(out, 0x1b) {
+		t.Errorf("raw ESC (0x1b) survived into rendered output:\n%q", out)
+	}
+	// The header line plus exactly one node row — no phantom rows from the
+	// embedded newlines.
+	if lines := strings.Count(strings.TrimRight(out, "\n"), "\n"); lines != 1 {
+		t.Errorf("want 1 newline (header + one row), got %d:\n%q", lines, out)
+	}
+	// The inert letters of the neutralized sequences remain as plain text.
+	if !strings.Contains(out, "il") || !strings.Contains(out, "id") {
+		t.Errorf("sanitized id lost its printable text:\n%q", out)
 	}
 }
 
@@ -243,5 +279,42 @@ func TestCountHeldSpaces(t *testing.T) {
 	eph, vol, tmp := countHeldSpaces(roots)
 	if eph != 2 || vol != 2 || tmp != 1 {
 		t.Errorf("counts = eph %d vol %d tmp %d, want 2/2/1", eph, vol, tmp)
+	}
+}
+
+// treeData models an explicit directory tree for spaceHolds: dirs maps a path to
+// its child names; a path in files is a non-directory, so listing it errors the
+// way the OS does with ENOTDIR.
+type treeData struct {
+	*vFakeData
+	dirs  map[string][]string
+	files map[string]bool
+}
+
+func (t *treeData) ReadDir(dir string) ([]string, error) {
+	if t.files[dir] {
+		return nil, fs.ErrInvalid
+	}
+	return t.dirs[dir], nil // absent path -> nil, nil
+}
+
+// CONTRACT (E2-4): a space whose tree is only empty subdirectories holds
+// nothing; it becomes held only once a real file appears anywhere in the tree.
+func TestSpaceHoldsIgnoresEmptySubdirs(t *testing.T) {
+	empty := &treeData{vFakeData: &vFakeData{}, dirs: map[string][]string{
+		"space":     {"a"},
+		"space/a":   {"b"},
+		"space/a/b": {},
+	}}
+	if held, err := (Real{data: empty}).spaceHolds("space"); err != nil || held {
+		t.Fatalf("space of only empty subdirs: held=%v err=%v, want false/nil", held, err)
+	}
+
+	withFile := &treeData{vFakeData: &vFakeData{},
+		dirs:  map[string][]string{"space": {"a"}, "space/a": {"b"}, "space/a/b": {"f"}},
+		files: map[string]bool{"space/a/b/f": true},
+	}
+	if held, err := (Real{data: withFile}).spaceHolds("space"); err != nil || !held {
+		t.Fatalf("real file deep in tree: held=%v err=%v, want true/nil", held, err)
 	}
 }

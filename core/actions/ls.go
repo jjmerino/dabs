@@ -209,10 +209,14 @@ func ellipsis(s string, n int) string {
 // carries its places with it, so a heading shows where the CODE is too.
 func chainOf(n Node, byID map[string]Node) []Node {
 	var up []Node
+	seen := map[string]bool{}
 	for {
 		up = append([]Node{n}, up...)
+		seen[n.ID] = true
 		p, ok := byID[n.Parent]
-		if !ok {
+		if !ok || seen[p.ID] {
+			// No parent, or the parent closes a cycle (a self-parent, or a
+			// corrupt record chain): stop rather than walk it forever.
 			return up
 		}
 		n = p

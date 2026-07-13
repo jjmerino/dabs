@@ -2,7 +2,7 @@
 // recipe is a fully declarative box: an image, what to mount/copy into it, its
 // env, and the command to run. Everything a box does is visible in the recipe —
 // nothing is hardcoded in Go. `dabs recipe sh` is just the bundled `sh`
-// recipe; the same box is reproducible by hand as a plain dabs up + dabs run.
+// recipe; the same box is reproducible by hand as a plain dabs recipe --detach + dabs exec.
 //
 // The registry is YAML (so it can carry comments) with a single top-level
 // `recipes:` map. It is the bundled default merged with the user's
@@ -231,9 +231,21 @@ func validate(reg Registry) error {
 		if err := rejectControl(fmt.Sprintf("recipe name %q", name), name); err != nil {
 			return err
 		}
+		seen := map[string]bool{}
 		for _, s := range rec.Sources {
 			if err := rejectControl(fmt.Sprintf("source path in recipe %q", name), s.Path); err != nil {
 				return err
+			}
+			// Two sources landing at the SAME box path silently mask each other —
+			// whichever binds last wins and the other never appears. Reject the
+			// exact-duplicate destination so the conflict is named, not hidden.
+			// Nesting at DIFFERENT paths stays legal; an empty path is a source
+			// that only makes a place and lands nowhere, so it is not a collision.
+			if s.Path != "" {
+				if seen[s.Path] {
+					return fmt.Errorf("recipe %q has two sources mounting to the same box path %q; each box path must be unique", name, s.Path)
+				}
+				seen[s.Path] = true
 			}
 		}
 		for k, v := range rec.Env {

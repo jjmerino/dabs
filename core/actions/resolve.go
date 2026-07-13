@@ -69,26 +69,31 @@ func (r Real) matches(arg string) ([]match, error) {
 	// takes. A box node records the instance it turned out to be, so resolving a
 	// node id to its box is a lookup, not a guess. A box that no node claims
 	// (booted by an older dabs, or by hand) is still reachable by its raw
-	// instance name — the byInstance fallback below.
+	// instance name — the instToNode lookup below covers both handles.
 	nodes, err := r.listNodes()
 	if err != nil {
 		return nil, err
 	}
-	want := map[string]bool{} // the instance name(s) the argument names, via node ids
+	instToNode := map[string]string{} // box instance name -> its node id
 	for _, n := range nodes {
-		if n.Kind == KindBox && n.Instance != "" && strings.HasPrefix(n.ID, arg) {
-			want[n.Instance] = true
+		if n.Kind == KindBox && n.Instance != "" {
+			instToNode[n.Instance] = n.ID
 		}
 	}
-	byInstance := len(want) == 0
 
 	// check reports whether a driver's instance is a match, and whether it is an
 	// UNAMBIGUOUS exact hit that short-circuits the fleet (so remotes are skipped).
+	// A box is reachable by EITHER handle — its node id or its raw instance name —
+	// so a prefix is matched against both namespaces. An exact hit on either
+	// handle wins outright; only a PREFIX that lands on more than one distinct box
+	// is ambiguous. Checking both namespaces (not one to the exclusion of the
+	// other) is what makes a prefix that names one box's node id AND a different
+	// box's instance name report as ambiguous rather than silently picking one.
 	check := func(name string) (matched, exact bool) {
-		if byInstance {
-			return strings.HasPrefix(name, arg), name == arg
-		}
-		return want[name], want[name] && len(want) == 1
+		id, hasNode := instToNode[name]
+		exactHit := name == arg || (hasNode && id == arg)
+		prefixHit := strings.HasPrefix(name, arg) || (hasNode && strings.HasPrefix(id, arg))
+		return prefixHit, exactHit
 	}
 
 	var out []match

@@ -102,42 +102,44 @@ func TestRecipeMountLogsNothing(t *testing.T) {
 	}
 }
 
-// CONTRACT: `dabs down` on a worktree-backed box looks the worktree up FROM the
-// log (its only record) and appends a matching `down`. A repeated down adds
-// nothing (the instance is no longer live).
-func TestDownLogsWorktreeDownFromLog(t *testing.T) {
+// CONTRACT: stopping a worktree-backed box (here via `rm --keep`) looks the
+// worktree up FROM the log (its only record) and appends a matching `down`. A
+// repeated stop adds nothing — the journal's up already has its down.
+func TestRmKeepLogsWorktreeDownFromLog(t *testing.T) {
 	fd := baseData()
 	fd.files = map[string][]byte{
 		logPath: []byte(
 			`{"event":"up","ts":"t1","instance":"img-inst","worktree":"proj-aa","path":"` + nodeBase + `/proj-aa/data","recipe":"w"}` + "\n"),
 	}
+	seedBoxNode(fd, "wtbox-aaaa", "img-inst")
 	drv := &fakeDriver{infos: []sandbox.Info{{Name: "img-inst", Driver: "fake"}}}
 	r := newReal("", fd, drv)
-	if err := r.Down(params.Down{Instance: "img-inst"}); err != nil {
-		t.Fatalf("Down: %v", err)
+	if err := r.Rm(params.Rm{Node: "wtbox-aaaa", Keep: true}); err != nil {
+		t.Fatalf("rm --keep: %v", err)
 	}
 	log := readLog(t, fd)
 	if len(log) != 2 || log[1].Event != "down" || log[1].Worktree != "proj-aa" || log[1].Instance != "img-inst" {
 		t.Fatalf("want a down entry resolved to proj-aa, got %+v", log)
 	}
-	// A second down finds no live box → no new entry.
-	if err := r.Down(params.Down{Instance: "img-inst"}); err != nil {
-		t.Fatalf("Down again: %v", err)
+	// A second stop: the journal's up already has its down → no new entry.
+	if err := r.Rm(params.Rm{Node: "wtbox-aaaa", Keep: true}); err != nil {
+		t.Fatalf("rm --keep again: %v", err)
 	}
 	if got := readLog(t, fd); len(got) != 2 {
-		t.Fatalf("repeated down should add nothing, got %+v", got)
+		t.Fatalf("repeated stop should add nothing, got %+v", got)
 	}
 }
 
-// CONTRACT: downing a PLAIN box (not in the journal) writes no `down` entry.
-func TestDownPlainBoxLogsNothing(t *testing.T) {
+// CONTRACT: stopping a PLAIN box (not in the journal) writes no `down` entry.
+func TestRmKeepPlainBoxLogsNothing(t *testing.T) {
 	fd := baseData()
+	seedBoxNode(fd, "plainbox-aaaa", "plain-inst")
 	drv := &fakeDriver{infos: []sandbox.Info{{Name: "plain-inst", Driver: "fake"}}}
-	if err := newReal("", fd, drv).Down(params.Down{Instance: "plain-inst"}); err != nil {
-		t.Fatalf("Down: %v", err)
+	if err := newReal("", fd, drv).Rm(params.Rm{Node: "plainbox-aaaa", Keep: true}); err != nil {
+		t.Fatalf("rm --keep: %v", err)
 	}
 	if len(readLog(t, fd)) != 0 {
-		t.Fatalf("plain box down should log nothing, got %v", fd.files[logPath])
+		t.Fatalf("plain box stop should log nothing, got %v", fd.files[logPath])
 	}
 }
 

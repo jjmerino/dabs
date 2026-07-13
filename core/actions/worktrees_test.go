@@ -41,8 +41,8 @@ func seedWorktreeNode(fd *fakeData, id string, st wtState) string {
 		fd.commondir = map[string]string{}
 	}
 	fd.commondir[data] = "/repo/.git"
-	// The checkout is really on disk — cast rewrites a `worktree:` source into a
-	// mount of this path, and mounts are validated for existence.
+	// The checkout is really on disk — `--worktree` rewrites a `worktree:` source
+	// into a mount of this path, and mounts are validated for existence.
 	fd.exists[data] = true
 	fd.isDir[data] = true
 	return data
@@ -57,12 +57,13 @@ func seedStray(fd *fakeData, name string) {
 }
 
 // CONTRACT: a worktree with unreviewed work (uncommitted OR commits ahead) must
-// NOT be removed without --force — losing an agent's work needs approval.
+// NOT be removed by `dabs rm <wt>` without --force — losing an agent's work needs
+// approval.
 func TestWorktreeRmRefusesUnreviewedWork(t *testing.T) {
 	for _, s := range []wtState{{dirty: true}, {ahead: 2}} {
 		fd := baseData()
 		seedWorktreeNode(fd, "wt1", s)
-		err := newReal("", fd, &fakeDriver{}).Worktrees(params.Worktrees{Sub: "rm", Name: "wt1"})
+		err := newReal("", fd, &fakeDriver{}).Rm(params.Rm{Node: "wt1", Yes: true})
 		if err == nil || !strings.Contains(err.Error(), "unreviewed work") {
 			t.Fatalf("state %+v: want refusal, got %v", s, err)
 		}
@@ -72,11 +73,12 @@ func TestWorktreeRmRefusesUnreviewedWork(t *testing.T) {
 	}
 }
 
-// CONTRACT: --force is the approval — it discards even unreviewed work.
+// CONTRACT: --force is the approval — `dabs rm <wt> --force` discards even
+// unreviewed work.
 func TestWorktreeRmForceDiscards(t *testing.T) {
 	fd := baseData()
 	data := seedWorktreeNode(fd, "wt1", wtState{dirty: true, ahead: 3})
-	if err := newReal("", fd, &fakeDriver{}).Worktrees(params.Worktrees{Sub: "rm", Name: "wt1", Force: true}); err != nil {
+	if err := newReal("", fd, &fakeDriver{}).Rm(params.Rm{Node: "wt1", Yes: true, Force: true, Volume: true}); err != nil {
 		t.Fatalf("force rm: %v", err)
 	}
 	if len(fd.removed) != 1 || fd.removed[0] != data {
@@ -88,7 +90,7 @@ func TestWorktreeRmForceDiscards(t *testing.T) {
 func TestWorktreeRmCleanNeedsNoForce(t *testing.T) {
 	fd := baseData()
 	seedWorktreeNode(fd, "clean", wtState{branch: "dabs/x"}) // no work
-	if err := newReal("", fd, &fakeDriver{}).Worktrees(params.Worktrees{Sub: "rm", Name: "clean"}); err != nil {
+	if err := newReal("", fd, &fakeDriver{}).Rm(params.Rm{Node: "clean", Yes: true}); err != nil {
 		t.Fatalf("rm clean: %v", err)
 	}
 	if len(fd.removed) != 1 {
@@ -96,35 +98,36 @@ func TestWorktreeRmCleanNeedsNoForce(t *testing.T) {
 	}
 }
 
-// CONTRACT: prune reaps clean worktrees but keeps the ones with work.
-func TestWorktreePruneKeepsWork(t *testing.T) {
+// CONTRACT: `rm --clean-worktrees` reaps clean worktrees but keeps the ones with
+// work — the batch sweep over every worktree.
+func TestWorktreeCleanSweepKeepsWork(t *testing.T) {
 	fd := baseData()
 	seedWorktreeNode(fd, "clean1", wtState{})
 	seedWorktreeNode(fd, "dirty1", wtState{ahead: 1})
 	seedWorktreeNode(fd, "clean2", wtState{})
-	if err := newReal("", fd, &fakeDriver{}).Worktrees(params.Worktrees{Sub: "prune"}); err != nil {
-		t.Fatalf("prune: %v", err)
+	if err := newReal("", fd, &fakeDriver{}).Rm(params.Rm{CleanWorktrees: true}); err != nil {
+		t.Fatalf("rm --clean-worktrees: %v", err)
 	}
 	if len(fd.removed) != 2 {
-		t.Fatalf("prune should remove the 2 clean worktrees, removed %v", fd.removed)
+		t.Fatalf("sweep should remove the 2 clean worktrees, removed %v", fd.removed)
 	}
 	for _, r := range fd.removed {
 		if strings.Contains(r, "dirty1") {
-			t.Fatalf("prune discarded a worktree with work: %s", r)
+			t.Fatalf("sweep discarded a worktree with work: %s", r)
 		}
 	}
 }
 
-// CONTRACT: prune --force reaps everything, work and all.
-func TestWorktreePruneForceReapsAll(t *testing.T) {
+// CONTRACT: `rm --clean-worktrees --force` reaps everything, work and all.
+func TestWorktreeCleanSweepForceReapsAll(t *testing.T) {
 	fd := baseData()
 	seedWorktreeNode(fd, "clean1", wtState{})
 	seedWorktreeNode(fd, "dirty1", wtState{dirty: true})
-	if err := newReal("", fd, &fakeDriver{}).Worktrees(params.Worktrees{Sub: "prune", Force: true}); err != nil {
-		t.Fatalf("prune --force: %v", err)
+	if err := newReal("", fd, &fakeDriver{}).Rm(params.Rm{CleanWorktrees: true, Force: true}); err != nil {
+		t.Fatalf("rm --clean-worktrees --force: %v", err)
 	}
 	if len(fd.removed) != 2 {
-		t.Fatalf("prune --force should remove all, removed %v", fd.removed)
+		t.Fatalf("forced sweep should remove all, removed %v", fd.removed)
 	}
 }
 
@@ -195,17 +198,17 @@ func TestWorktreeLsSkipsStrayEntries(t *testing.T) {
 	}
 }
 
-// CONTRACT: prune enumerates only nodes dabs provisioned — it must never try to
-// reap a stray entry that happens to sit under nodes/.
-func TestWorktreePruneSkipsStrayEntries(t *testing.T) {
+// CONTRACT: the clean-worktrees sweep enumerates only nodes dabs provisioned — it
+// must never try to reap a stray entry that happens to sit under nodes/.
+func TestWorktreeCleanSweepSkipsStrayEntries(t *testing.T) {
 	fd := baseData()
 	data := seedWorktreeNode(fd, "real1", wtState{}) // clean → reaped
 	seedStray(fd, ".DS_Store")
 	seedStray(fd, "scratch")
-	if err := newReal("", fd, &fakeDriver{}).Worktrees(params.Worktrees{Sub: "prune"}); err != nil {
-		t.Fatalf("prune: %v", err)
+	if err := newReal("", fd, &fakeDriver{}).Rm(params.Rm{CleanWorktrees: true}); err != nil {
+		t.Fatalf("rm --clean-worktrees: %v", err)
 	}
 	if len(fd.removed) != 1 || fd.removed[0] != data {
-		t.Fatalf("prune should reap only the real node, removed %v", fd.removed)
+		t.Fatalf("sweep should reap only the real node, removed %v", fd.removed)
 	}
 }

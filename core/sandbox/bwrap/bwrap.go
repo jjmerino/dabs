@@ -23,7 +23,6 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
-	"unsafe"
 
 	"github.com/jjmerino/dabs/core/sandbox"
 )
@@ -218,6 +217,12 @@ func (d Driver) enter(instance string, cmd []string) (*exec.Cmd, error) {
 	if !haveHome {
 		args = append(args, "--setenv", "HOME", "/root")
 	}
+	// End bwrap's own option parsing before the box command. Without this a
+	// command whose first token starts with '-' (e.g. `exec box -- --version`)
+	// is parsed as a bwrap flag instead of run in the box.
+	if len(cmd) > 0 {
+		args = append(args, "--")
+	}
 	args = append(args, cmd...)
 	return exec.Command("bwrap", args...), nil
 }
@@ -257,13 +262,11 @@ func (d Driver) Run(instance string, cmd []string) error {
 		return err
 	}
 	defer unlock()
-	// Attach stdin only from a real terminal. Wiring a non-terminal stdin (an
-	// open pipe with no EOF) makes an interactive command like `sh` block
-	// forever; leaving it nil gives the process /dev/null → EOF, so it exits
-	// instead of hanging. (Matches the apple driver.)
-	if stdinIsTerminal() {
-		c.Stdin = os.Stdin
-	}
+	// Forward the host stdin so a pipe or heredoc into `dabs exec`
+	// reaches the box command. With no piped input os.Stdin is a terminal or
+	// /dev/null, both of which yield EOF, so a non-interactive command still
+	// exits instead of hanging.
+	c.Stdin = os.Stdin
 	c.Stdout = os.Stdout
 	c.Stderr = os.Stderr
 	if err := c.Run(); err != nil {
@@ -277,13 +280,6 @@ func (d Driver) Run(instance string, cmd []string) error {
 		return fmt.Errorf("bwrap: run in %s: %w", instance, err)
 	}
 	return nil
-}
-
-// stdinIsTerminal reports whether stdin is a real TTY (Linux TCGETS ioctl).
-func stdinIsTerminal() bool {
-	var t syscall.Termios
-	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, os.Stdin.Fd(), syscall.TCGETS, uintptr(unsafe.Pointer(&t)))
-	return errno == 0
 }
 
 // Exec runs cmd inside the instance non-interactively and returns combined

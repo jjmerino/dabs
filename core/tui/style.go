@@ -24,7 +24,7 @@ import (
 // redirected, captured by a script — they must degrade to plain text: no
 // glyphs, no ANSI. lipgloss already drops color for a non-TTY, but the literal
 // Unicode glyphs (✓ ✗ ⚠) survive and corrupt machine parsing (e.g. a script
-// doing `dabs up | awk '{print $1}'` would grab the ✓). Deciding once here
+// doing `dabs recipe --detach | awk '{print $1}'` would grab the ✓). Deciding once here
 // keeps piped output clean and parsable while a real terminal stays pretty.
 var stdoutIsTTY = isatty.IsTerminal(os.Stdout.Fd()) || isatty.IsCygwinTerminal(os.Stdout.Fd())
 

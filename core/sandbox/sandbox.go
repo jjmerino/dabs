@@ -85,8 +85,8 @@ type Image struct {
 }
 
 // ImageStore is an OPTIONAL driver capability: a driver that keeps a reapable
-// local image store implements it so `dabs images` can list what a build left
-// behind and `dabs images prune` can reclaim it. A driver without a local store
+// local image store implements it so `dabs prune --dry` can list what a build
+// left behind and `dabs prune` can reclaim it. A driver without a local store
 // (e.g. a remote server) simply does not implement it, and the action skips it.
 type ImageStore interface {
 	// Images lists the images this driver has built and still holds.

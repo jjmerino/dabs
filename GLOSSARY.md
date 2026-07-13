@@ -20,15 +20,16 @@ The disposable, host-isolated environment an agent or command runs in — a
 pristine machine that sees only what its image installed, with no view of the
 host. The primary user-facing noun in `AGENTS.md` and `README.md`.
 *Used in:* `AGENTS.md` (throughout), `README.md:3` ("Each box is a pristine…"),
-`cli/commands.go:26` (`up` help: "start a NEW detached box"),
+`cli/commands.go` (`recipe --detach` help: "boots a NEW detached box"),
 `core/sandbox/sandbox.go:14,44` ("attached into a box", "one running box").
 
 ### instance
 One concrete, running box, born pristine from an image and named
-`<name>-<hex-id>`. Every `up` yields a new instance; the id disambiguates
-multiple boxes from the same recipe. The name you pass to `run`/`exec`/`down`.
+`<name>-<hex-id>`. Every `recipe --detach` yields a new instance; the id
+disambiguates multiple boxes from the same recipe. The name you pass to
+`exec`/`rm`.
 *Used in:* `core/sandbox/sandbox.go:35,51-55` (Info, Driver.Up/Run/Down),
-`cli/commands.go:27-29` (`exec`/`run`/`down` help), `README.md:6,63,68,89,96`.
+`cli/commands.go` (`exec`/`rm` help), `README.md`.
 
 ### sandbox
 The environment abstraction as a whole — the isolation mechanism, and the term
@@ -60,11 +61,11 @@ Build a recipe's box **image** (once per Dockerfile change). Resolves a recipe
 *Used in:* `cli/commands.go:19`, `core/actions/build.go:11-15`,
 `core/sandbox/sandbox.go:37-42` (`Driver.Build`).
 
-### up
+### recipe --detach
 Boot a NEW pristine detached box from a recipe (no command); prints the instance
-name. Every `up` is a fresh box.
-*Used in:* `cli/commands.go:26`, `core/actions/real.go`/`buildup_test.go`,
-`core/sandbox/sandbox.go:45` (`Driver.Up`), `README.md:61,68`.
+name. Every `recipe --detach` is a fresh box.
+*Used in:* `cli/commands.go` (`recipe` help), `core/actions/up.go`,
+`core/sandbox/sandbox.go:45` (`Driver.Up`), `README.md`.
 
 ### cast
 Run a recipe onto an **existing** worktree (by name from `worktrees ls`) instead
@@ -82,24 +83,28 @@ so pipes/globs/`&&` work. No `--` needed.
 Run an EXACT argv inside an instance (no shell). The low-level exact peek.
 *Used in:* `cli/commands.go:27`, `core/sandbox/sandbox.go:49` (`Driver.Exec`).
 
-### do
+### recipe -- <cmd…>
 Run a one-off command in a throwaway box via the project **default** recipe
 (else the bundled `sh` box), appending the command to that recipe's command.
 Prompts y/N first.
-*Used in:* `cli/commands.go:22,55-59` (`runDo`), `AGENTS.md` ("dabs do").
+*Used in:* `cli/commands.go` (`runRecipe`), `AGENTS.md`.
 
 ### recipe (verb) / recipes
 `recipe <name> [cmd…]` runs a named recipe box (no name → default). `recipes`
 lists the known recipes and what each mounts.
 *Used in:* `cli/commands.go:21,24,41-53,90-101`, `core/actions/recipe.go`.
 
-### down
-Stop a box and ARCHIVE its node — the box is removed but its node is kept as the
-record of what ran and from where. `--multiple` acts on all matches (a name
-matching several is otherwise refused), `--dry` previews, `--force` skips the
-prompt.
-*Used in:* `cli/commands.go:29`, `core/actions/down.go:11-15`,
-`core/sandbox/sandbox.go:53` (`Driver.Down`).
+### rm
+The single reaper: stop a box AND remove its node and spaces (cascading to
+whatever stands on it). Stopping a live box or losing held data needs consent —
+`-y`/`--yes`, or an interactive y/N; without it rm previews what it would take
+and exits nonzero. `--keep` ARCHIVES instead: stop the box but keep its node as
+the record of what ran and from where. `--multiple` acts on all matches (a name
+matching several is otherwise refused; the count is shown first), `--volume`
+also reaps the volume, `--dry` previews, `--force` discards a worktree's
+unreviewed git work.
+*Used in:* `cli/commands.go`, `core/actions/rm.go`, `core/actions/instance.go`,
+`core/sandbox/sandbox.go` (`Driver.Down`).
 
 ### ls
 List what dabs owns as a node tree, grouped by fleet member; `--all` also shows
@@ -123,14 +128,14 @@ rm <name> | prune] [--force]`.
 
 ### recipe
 A fully declarative description of a box: image, workdir, command, env, sources,
-target, keep. The unit `up`/`recipe`/`do`/`cast`/`build` all resolve. Resolution
+target, keep. The unit `recipe`/`cast`/`build` all resolve. Resolution
 order: bundled (`sh`) → `~/.dabs/recipes.yaml` (global) → `./dabs.yaml` (project),
 later winning.
 *Used in:* `core/recipe/recipe.go:28-40` (`Recipe`), `AGENTS.md`, `dabs.yaml`.
 
 ### registry / default
 A recipes file: a top-level `recipes:` map plus an optional `default:` naming
-the recipe `dabs recipe`/`do` runs when given no name.
+the recipe `dabs recipe` runs when given no name.
 *Used in:* `core/recipe/recipe.go:22-26` (`Registry`), `AGENTS.md`.
 
 ### image
@@ -190,7 +195,7 @@ ephemeral space. Reaped via `dabs worktrees`.
 *Used in:* `core/recipe/recipe.go:75,89`, `AGENTS.md`.
 
 ### copy
-A snapshot taken at `up` time — the box owns it, the host is untouched.
+A snapshot taken at box-start time — the box owns it, the host is untouched.
 *Used in:* `core/recipe/recipe.go:76,90`.
 
 ---
@@ -213,17 +218,16 @@ nest, a worktree is never cut inside a box.
 
 ### space
 One of the three directories every node offers. Which one a recipe mounts
-declares what happens to the bytes — convention, not configuration: `down` reads
+declares what happens to the bytes — convention, not configuration: `rm` reads
 the space, not the recipe.
 
-| space | `down` |
+| space | `rm` |
 |---|---|
-| `volume/` | keeps it |
+| `volume/` | keeps it (unless `--volume`) |
 | `ephemeral/` | asks before deleting a non-empty one |
 | `tmp/` | removes it silently |
 
-*Used in:* `core/actions/node.go:106-126`, `core/actions/down.go:54-95`
-(`reapBoxSpaces`).
+*Used in:* `core/actions/node.go`, `core/actions/rm.go` (`reapSpaces`).
 
 ### $NODE_VOLUME / $NODE_EPHEMERAL / $NODE_TMP
 The box node's three spaces, supplied by dabs to source paths so a recipe can
@@ -234,9 +238,9 @@ exported into the box's environment.
 
 ### $PARENT_VOLUME / $PARENT_EPHEMERAL / $PARENT_TMP
 The same three spaces of the box's PARENT place (the project/workdir/worktree the
-box stands on) rather than the box's own node. A fresh `up` mints a new box node
+box stands on) rather than the box's own node. A fresh box mints a new box node
 with an empty `$NODE_VOLUME`, but the parent place persists — so `$PARENT_VOLUME`
-is where a box keeps what it wants back on the next `up` (the shipped `claude`
+is where a box keeps what it wants back on the next box (the shipped `claude`
 recipe stores sessions there so they reload). Substituted in source paths ONLY.
 *Used in:* `core/actions/recipe.go` (`spaceVars`, `expandPathWith`), `dabs.yaml`
 (`claude`/`claudewt`/`scratch` recipes).
@@ -288,12 +292,12 @@ each name it differently — inside a single `dabs --help` listing:
 
 | Stage | Command | Noun used | Evidence |
 |-------|---------|-----------|----------|
-| make  | `up`    | **box**       | `cli/commands.go:26` "start a NEW detached box" |
+| make  | `recipe --detach` | **box** | `cli/commands.go` "boots a NEW detached box" |
 | build image | `build` | **box image** / **sandbox** | `cli/commands.go:19` "build a recipe's box image"; `core/sandbox` calls it a sandbox image |
 | list  | `ls`    | **sandboxes** | `cli/commands.go:30` "list sandboxes" |
 | list (empty output) | `ls` | **instances** | `core/actions/ls.go:40` prints "(no instances)" |
-| reach in | `exec`/`run` | **instance** | `cli/commands.go:27-28` "inside an instance" |
-| kill  | `down`  | **instances** | `cli/commands.go:29` "stop + remove instances by name" |
+| reach in | `exec` | **instance** | `cli/commands.go` "run a command inside a box" |
+| kill  | `rm`    | **nodes** | `cli/commands.go` "stop a box and remove its node" |
 
 So `dabs ls` is *itself* internally inconsistent: its help says "sandboxes" but
 its empty-state output says "(no instances)".
@@ -306,7 +310,7 @@ i.e. "a box's instance name"), and confine **sandbox** to the driver/contract
 layer (`core/sandbox`, `sandbox.Driver`, `Spec`) where it names the abstraction,
 not the user's object. Retire **environment** as a loose synonym. Concretely, the
 minimal help-string fixes would be: `ls` help → "list boxes"; `ls` empty output →
-"(no boxes)"; `exec`/`run`/`down` help → "box" (retaining "instance name" where a
+"(no boxes)"; `exec`/`rm` help → "box" (retaining "instance name" where a
 specific id is meant).
 
 ### 2. `ps` vs `ls` — the discovery gap
@@ -326,7 +330,7 @@ Same artifact, two names — folds into the resolution of cluster #1 (drivers ke
 ### What tested WELL (leave alone)
 
 The reach-in and teardown vocabulary was used confidently and correctly by naive
-users: `dabs run <instance>` and `dabs down <instance>`. The source kinds
-(`mount`/`mkmount`/`worktree`/`copy`), `recipe`, `cast`, `up`, and `do` did not
+users: `dabs exec <instance>` and `dabs rm <instance>`. The source kinds
+(`mount`/`mkmount`/`worktree`/`copy`), `recipe`, and `cast` did not
 surface as points of confusion. The confusion is specifically the lifecycle
 noun, and specifically at boot/list/image time.

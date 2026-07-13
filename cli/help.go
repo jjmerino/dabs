@@ -20,8 +20,8 @@ type HelpRequestedError struct{ Text string }
 func (HelpRequestedError) Error() string { return "help requested" }
 
 // wantsHelp reports whether the first argument is a help flag. Help is only
-// recognized as the FIRST token so that pass-through commands (run/exec/do/
-// recipe/cast) still forward a later `--help` to the command run in the box.
+// recognized as the FIRST token so that pass-through commands (exec/recipe)
+// still forward a later `--help` to the command run in the box.
 func wantsHelp(args []string) bool {
 	return len(args) > 0 && (args[0] == "-h" || args[0] == "--help")
 }

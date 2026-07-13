@@ -1,11 +1,12 @@
 package actions_test
 
-// Component tests for `dabs build` and `dabs up`, which now resolve a RECIPE
+// Component tests for `dabs build` and `dabs recipe --detach`, which now resolve a RECIPE
 // (the manifest is gone) and reuse the recipe engine. Driven through the public
 // API with the sandbox.Driver and data.Data seams faked; assertions are from
 // the CONTRACT, not the implementation.
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -195,7 +196,7 @@ func TestBuildBareImageSaysNothingToBuild(t *testing.T) {
 
 // --- up ----------------------------------------------------------------------
 
-// CONTRACT: `dabs up` brings up a DETACHED box (image, env, workdir) and, unlike
+// CONTRACT: `dabs recipe --detach` brings up a DETACHED box (image, env, workdir) and, unlike
 // `dabs recipe`, does NOT run the recipe's command and does NOT tear it down.
 func TestUpBringsUpDetachedNoCommandNoDown(t *testing.T) {
 	y := `default: base
@@ -207,7 +208,7 @@ recipes:
 `
 	fd := baseData()
 	drv := &fakeDriver{built: map[string]bool{"img": true}}
-	if err := newReal(y, fd, drv).Up(params.Up{}); err != nil {
+	if err := newReal(y, fd, drv).Recipe(params.Recipe{Detach: true}); err != nil {
 		t.Fatalf("Up: %v", err)
 	}
 	up := onlyUp(t, drv)
@@ -222,7 +223,7 @@ recipes:
 	}
 }
 
-// CONTRACT: `dabs up` prepares a recipe's sources exactly as `dabs recipe` does
+// CONTRACT: `dabs recipe --detach` prepares a recipe's sources exactly as `dabs recipe` does
 // — the same declared mount reaches the driver.
 func TestUpMountsSourcesLikeRecipe(t *testing.T) {
 	y := `default: m
@@ -236,7 +237,7 @@ recipes:
 	fd := baseData()
 	fd.exists["/data"] = true
 	drv := &fakeDriver{built: map[string]bool{"img": true}}
-	if err := newReal(y, fd, drv).Up(params.Up{}); err != nil {
+	if err := newReal(y, fd, drv).Recipe(params.Recipe{Detach: true}); err != nil {
 		t.Fatalf("Up: %v", err)
 	}
 	up := onlyUp(t, drv)
@@ -245,7 +246,7 @@ recipes:
 	}
 }
 
-// CONTRACT: a recipe's `target` routes `dabs up`'s box to that fleet driver —
+// CONTRACT: a recipe's `target` routes `dabs recipe --detach`'s box to that fleet driver —
 // and it works even though a remote/server driver's HasImage returns false BY
 // DESIGN (it cannot cheaply probe). The remote fake mirrors that: gating `up` on
 // HasImage would have wrongly rejected the remote box (the review's blocker).
@@ -264,7 +265,7 @@ recipes:
 		map[string]sandbox.Driver{"local": local, "remote": remote},
 		[]string{"local", "remote"}, fstest.MapFS{}, fd,
 	)
-	if err := r.Up(params.Up{}); err != nil {
+	if err := r.Recipe(params.Recipe{Detach: true}); err != nil {
 		t.Fatalf("Up: %v", err)
 	}
 	if len(remote.ups) != 1 || len(local.ups) != 0 {
@@ -291,7 +292,7 @@ recipes:
 		map[string]sandbox.Driver{"local": local, "remote": remote},
 		[]string{"local", "remote"}, fstest.MapFS{}, fd,
 	)
-	if err := r.Up(params.Up{}); err != nil {
+	if err := r.Recipe(params.Recipe{Detach: true}); err != nil {
 		t.Fatalf("Up: %v", err)
 	}
 	if len(remote.ups) != 1 || remote.ups[0].Name != "m" {
@@ -299,7 +300,7 @@ recipes:
 	}
 }
 
-// CONTRACT: `dabs up` must NOT build the recipe's own Dockerfile locally — it
+// CONTRACT: `dabs recipe --detach` must NOT build the recipe's own Dockerfile locally — it
 // boots what `dabs build` produced. A LOCAL inline-{dockerfile} image that isn't
 // built yet fails clearly (pointing at `dabs build`) rather than building
 // in-place.
@@ -311,7 +312,7 @@ recipes:
 `
 	fd := baseData()
 	drv := &fakeDriver{} // HasImage("base") is false — nothing built yet
-	err := newReal(y, fd, drv).Up(params.Up{})
+	err := newReal(y, fd, drv).Recipe(params.Recipe{Detach: true})
 	if err == nil || !strings.Contains(err.Error(), "dabs build") {
 		t.Fatalf("want an 'image not built — run dabs build' error, got %v", err)
 	}
@@ -323,7 +324,7 @@ recipes:
 	}
 }
 
-// CONTRACT: `dabs up`'s output must be self-explanatory: the instance is named
+// CONTRACT: `dabs recipe --detach`'s output must be self-explanatory: the instance is named
 // after the IMAGE, so the line must name the RECIPE too; it must say no command
 // was run (up deliberately starts none); and it must hand over the next steps —
 // reap, shell in, and how to run the recipe's own command (there is no verb for
@@ -339,21 +340,77 @@ recipes:
 	drv := &fakeDriver{built: map[string]bool{"img": true}}
 	r := newReal(y, fd, drv)
 	out := captureStdout(t, func() {
-		if err := r.Up(params.Up{}); err != nil {
+		if err := r.Recipe(params.Recipe{Detach: true}); err != nil {
 			t.Fatalf("Up: %v", err)
 		}
 	})
+	// The canonical handle is the NODE ID (recipe-prefixed), not the instance;
+	// the instance is kept on its own line, and the hint lines use the node id.
+	nodeID := boxNodeIDFrom(t, fd)
 	for _, want := range []string{
 		"recipe up: review",
-		"id: img-inst",
+		"id: " + nodeID,
+		"instance: img-inst",
 		"no command was run",
-		"bring down: dabs down img-inst",
-		"sh in: dabs exec img-inst -- sh",
-		`run recipe command: dabs exec img-inst -- sh -c 'cd /work && claude -p '\''go'\'''`,
+		"bring down: dabs rm " + nodeID,
+		"sh in: dabs exec " + nodeID + " -- sh",
+		`run recipe command: dabs exec ` + nodeID + ` -- sh -c 'cd /work && claude -p '\''go'\'''`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("up output missing %q; got:\n%s", want, out)
 		}
+	}
+	if !strings.HasPrefix(nodeID, "review-") {
+		t.Errorf("node id %q should be recipe-prefixed", nodeID)
+	}
+}
+
+// boxNodeIDFrom returns the id of the box node the fake driver's `--detach` run
+// wrote — minted fresh each run, so a test reads it back rather than hardcoding.
+func boxNodeIDFrom(t *testing.T, fd *fakeData) string {
+	t.Helper()
+	for path, data := range fd.files {
+		if !strings.HasSuffix(path, "dabs-node.json") {
+			continue
+		}
+		if strings.Contains(string(data), `"kind": "box"`) {
+			var n struct {
+				ID   string `json:"id"`
+				Kind string `json:"kind"`
+			}
+			if err := json.Unmarshal(data, &n); err == nil && n.Kind == "box" {
+				return n.ID
+			}
+		}
+	}
+	t.Fatalf("no box node written")
+	return ""
+}
+
+// CONTRACT: when the recipe's command IS exactly `sh`, the "run recipe command"
+// line already renders `dabs exec <inst> -- sh`, so the "sh in:" line would
+// repeat it under a second label — it is dropped, leaving one line.
+func TestUpOutputShCommandDropsRedundantShInLine(t *testing.T) {
+	y := `default: box
+recipes:
+  box:
+    image: img
+    command: [sh]
+`
+	fd := baseData()
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	r := newReal(y, fd, drv)
+	out := captureStdout(t, func() {
+		if err := r.Recipe(params.Recipe{Detach: true}); err != nil {
+			t.Fatalf("Up: %v", err)
+		}
+	})
+	if strings.Contains(out, "sh in:") {
+		t.Errorf("sh in: line should be dropped when command is sh; got:\n%s", out)
+	}
+	nodeID := boxNodeIDFrom(t, fd)
+	if !strings.Contains(out, "run recipe command: dabs exec "+nodeID+" -- sh") {
+		t.Errorf("run recipe command line missing; got:\n%s", out)
 	}
 }
 
@@ -369,7 +426,7 @@ recipes:
 	drv := &fakeDriver{built: map[string]bool{"img": true}}
 	r := newReal(y, fd, drv)
 	out := captureStdout(t, func() {
-		if err := r.Up(params.Up{}); err != nil {
+		if err := r.Recipe(params.Recipe{Detach: true}); err != nil {
 			t.Fatalf("Up: %v", err)
 		}
 	})

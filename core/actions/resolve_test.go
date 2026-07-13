@@ -29,7 +29,7 @@ func TestExactLocalMatchNeverContactsServer(t *testing.T) {
 	server := &fakeDriver{kind: "ssh", lsPanic: true}
 	drv := fleet([]string{"local", "homelab"}, map[string]sandbox.Driver{"local": local, "homelab": server})
 
-	if err := drv.Run(params.Run{Instance: "box-abc123", Cmd: []string{"true"}}); err != nil {
+	if err := drv.Exec(params.Exec{Instance: "box-abc123", Cmd: []string{"true"}}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if len(local.runs) != 1 {
@@ -49,7 +49,7 @@ func TestExactMatchOnSecondLocalDriverNeverContactsServer(t *testing.T) {
 		map[string]sandbox.Driver{"local": apple, "docker": docker, "homelab": server},
 	)
 
-	if err := drv.Run(params.Run{Instance: "box-docker01", Cmd: []string{"true"}}); err != nil {
+	if err := drv.Exec(params.Exec{Instance: "box-docker01", Cmd: []string{"true"}}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if len(docker.runs) != 1 {
@@ -65,7 +65,7 @@ func TestServerOnlyNameStillResolves(t *testing.T) {
 	server := &fakeDriver{kind: "ssh", lsCall: &lsHit, infos: []sandbox.Info{{Name: "remote-xyz", Driver: "ssh"}}}
 	drv := fleet([]string{"local", "homelab"}, map[string]sandbox.Driver{"local": local, "homelab": server})
 
-	if err := drv.Run(params.Run{Instance: "remote-xyz", Cmd: []string{"true"}}); err != nil {
+	if err := drv.Exec(params.Exec{Instance: "remote-xyz", Cmd: []string{"true"}}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if !lsHit {
@@ -76,13 +76,48 @@ func TestServerOnlyNameStillResolves(t *testing.T) {
 	}
 }
 
-// CONTRACT: a blank name on run/exec/down is refused, reaches no driver, and is
+// twoBoxes is a driver holding a couple of running boxes plus an unrelated one,
+// for name-resolution safety checks.
+func twoBoxes() *fakeDriver {
+	return &fakeDriver{infos: []sandbox.Info{
+		{Name: "demo-a1b2", Status: "running", Driver: "fake"},
+		{Name: "demo-c3d4", Status: "running", Driver: "fake"},
+		{Name: "other-e5f6", Status: "running", Driver: "fake"},
+	}}
+}
+
+// CONTRACT: a prefix that lands on TWO distinct boxes across the two handle
+// namespaces — one box by its node id, a DIFFERENT box by its instance name —
+// is ambiguous for exec, not a silent pick of one. Both handles must be checked;
+// matching one namespace to the exclusion of the other is the bug.
+func TestExecCrossNamespacePrefixIsAmbiguous(t *testing.T) {
+	fd := baseData()
+	// Box A: its NODE id starts with "abc"; its instance does not.
+	seedBoxNode(fd, "abc-node-1", "shell-1111")
+	// Box B: its INSTANCE name starts with "abc"; its node id does not.
+	seedBoxNode(fd, "zzz-node-2", "abc-box-2")
+	drv := &fakeDriver{infos: []sandbox.Info{
+		{Name: "shell-1111", Status: "running"},
+		{Name: "abc-box-2", Status: "running"},
+	}}
+	err := newReal("", fd, drv).Exec(params.Exec{Instance: "abc", Cmd: []string{"true"}})
+	if err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("cross-namespace prefix must be ambiguous, got %v", err)
+	}
+	if len(drv.execs) != 0 || len(drv.runs) != 0 {
+		t.Fatalf("must touch NO box on ambiguity, execs=%v runs=%v", drv.execs, drv.runs)
+	}
+}
+
+// CONTRACT: a blank name on run/exec/rm is refused, reaches no driver, and is
 // never reported as "ambiguous" — blank matches nothing, not everything.
 func TestBlankInstanceNameMatchesNothingOnEveryVerb(t *testing.T) {
 	verbs := map[string]func(actions.Real, string) error{
-		"run":  func(a actions.Real, n string) error { return a.Run(params.Run{Instance: n, Cmd: []string{"echo"}}) },
+		"exec-shell": func(a actions.Real, n string) error {
+			return a.Exec(params.Exec{Instance: n, Cmd: []string{"echo"}, Shell: true})
+		},
 		"exec": func(a actions.Real, n string) error { return a.Exec(params.Exec{Instance: n, Cmd: []string{"echo"}}) },
-		"down": func(a actions.Real, n string) error { return a.Down(params.Down{Instance: n}) },
+		"rm":   func(a actions.Real, n string) error { return a.Rm(params.Rm{Node: n}) },
 	}
 	for _, name := range []string{"", "   ", "\t"} {
 		for label, call := range verbs {

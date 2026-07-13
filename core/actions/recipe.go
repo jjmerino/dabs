@@ -877,39 +877,84 @@ func (r Real) mergeRecipeFile(reg *recipe.Registry, path string) error {
 }
 
 // ensureImage makes the recipe's image available and returns the name to run.
-// A bare name reuses an already-built image, building it from the bundled recipe
-// (images/<name>) if missing. An inline {dockerfile,context} reuses an
-// already-built image too, and is built as the recipe's own name only when
-// missing — an edited Dockerfile is rebuilt by the explicit `dabs build` verb.
+// It reuses an already-built image only when the SOURCE it was built from is
+// unchanged (see ensureImageFresh); a changed or unrecorded source rebuilds.
 func (r Real) ensureImage(drv sandbox.Driver, recipeName string, img recipe.ImageRef) (string, error) {
+	name, _, err := r.ensureImageFresh(drv, recipeName, img)
+	return name, err
+}
+
+// ensureImageFresh makes the recipe's image available, returns the name to run,
+// and reports whether it (re)built. It reuses a built image only when its
+// recorded source digest matches the current source; a changed digest or a
+// missing record (a legacy image, or one never built by this dabs) rebuilds and
+// SAYS why, so an agent reading the output can see a build ran and why.
+//
+//   - inline {dockerfile,context}: digest-gated on the Dockerfile bytes, built
+//     as the recipe's own name.
+//   - a BUNDLED bare name (images/<name>): digest-gated on the embedded files,
+//     built from the bundled recipe — this is what self-heals a stale bundled
+//     image (curl added to images/shell).
+//   - a NON-bundled bare name (staged/pulled elsewhere, no source dabs owns):
+//     reused if present, else reported missing — there is nothing here to digest
+//     or rebuild from.
+func (r Real) ensureImageFresh(drv sandbox.Driver, recipeName string, img recipe.ImageRef) (name string, built bool, err error) {
 	if img.Dockerfile != "" {
-		built, err := drv.HasImage(recipeName)
+		digest, err := r.currentInlineDigest(img)
 		if err != nil {
-			return "", err
+			return "", false, err
 		}
-		if built {
-			return recipeName, nil
+		reuse, reason, err := r.imageReuse(drv, recipeName, digest)
+		if err != nil {
+			return "", false, err
 		}
-		return r.buildDockerImage(drv, recipeName, img)
+		if reuse {
+			return recipeName, false, nil
+		}
+		r.sayRebuild(reason)
+		if _, err := r.buildDockerImage(drv, recipeName, img); err != nil {
+			return "", false, err
+		}
+		return recipeName, true, nil
 	}
-	name := img.Name
+	name = img.Name
 	if name == "" {
-		return "", fmt.Errorf("recipe %q: image has no name and no dockerfile", recipeName)
-	}
-	built, err := drv.HasImage(name)
-	if err != nil {
-		return "", err
-	}
-	if built {
-		return name, nil
+		return "", false, fmt.Errorf("recipe %q: image has no name and no dockerfile", recipeName)
 	}
 	if !r.hasBundledImage(name) {
-		return "", fmt.Errorf("recipe %q: image %q is not built and dabs has no bundled recipe for it", recipeName, name)
+		built, err := drv.HasImage(name)
+		if err != nil {
+			return "", false, err
+		}
+		if built {
+			return name, false, nil
+		}
+		return "", false, fmt.Errorf("recipe %q: image %q is not built and dabs has no bundled recipe for it", recipeName, name)
 	}
-	if err := r.buildImageIfMissing(drv, name, name); err != nil {
-		return "", err
+	digest, err := r.currentBundledDigest(name)
+	if err != nil {
+		return "", false, err
 	}
-	return name, nil
+	reuse, reason, err := r.imageReuse(drv, name, digest)
+	if err != nil {
+		return "", false, err
+	}
+	if reuse {
+		return name, false, nil
+	}
+	r.sayRebuild(reason)
+	if err := r.buildBundledImage(drv, name, digest); err != nil {
+		return "", false, err
+	}
+	return name, true, nil
+}
+
+// sayRebuild prints why a rebuild is happening (empty reason: a plain first
+// build, which needs no explanation).
+func (r Real) sayRebuild(reason string) {
+	if reason != "" {
+		fmt.Fprintln(os.Stdout, tui.Muted(reason))
+	}
 }
 
 // buildDockerImage builds a recipe's inline {dockerfile,context} image as the
@@ -931,6 +976,14 @@ func (r Real) buildDockerImage(drv sandbox.Driver, recipeName string, img recipe
 	}
 	if err := drv.Build(sandbox.BuildSpec{Name: recipeName, Dockerfile: dockerfile, Context: ctxAbs}); err != nil {
 		return "", err
+	}
+	// Record the source this image was built from, so a later boot can tell a
+	// stale image (edited Dockerfile) from a fresh one. Best-effort: a record
+	// failure only costs one extra rebuild next time, never a stale reuse.
+	if digest, derr := r.currentInlineDigest(img); derr == nil {
+		if err := r.recordImageDigest(recipeName, digest); err != nil {
+			fmt.Fprintln(os.Stderr, tui.Warn("image %s: could not record build digest (%v) — it will rebuild next time", recipeName, err))
+		}
 	}
 	return recipeName, nil
 }
@@ -1350,27 +1403,28 @@ func randHex(n int) string {
 	return hex.EncodeToString(b)
 }
 
-// buildImageIfMissing builds the image named imageName from the bundled recipe
-// (images/<provider>), unless the driver reports it is already built — so
-// repeated runs skip the redundant rebuild.
-func (r Real) buildImageIfMissing(drv sandbox.Driver, provider, imageName string) error {
-	built, err := drv.HasImage(imageName)
-	if err != nil {
-		return err
-	}
-	if built {
-		return nil
-	}
-	ctxDir, err := r.stageImage(provider)
+// buildBundledImage builds a bundled image from its embedded recipe
+// (images/<name>) and records the source digest it was built from, so a later
+// boot can tell a stale bundled image (changed embedded files) from a fresh one.
+// The caller has already decided a build is warranted, so this does not re-check
+// existence.
+func (r Real) buildBundledImage(drv sandbox.Driver, name, digest string) error {
+	ctxDir, err := r.stageImage(name)
 	if err != nil {
 		return err
 	}
 	defer r.data.RemoveAll(ctxDir)
-	return drv.Build(sandbox.BuildSpec{
-		Name:       imageName,
+	if err := drv.Build(sandbox.BuildSpec{
+		Name:       name,
 		Dockerfile: filepath.Join(ctxDir, "Dockerfile"),
 		Context:    ctxDir,
-	})
+	}); err != nil {
+		return err
+	}
+	if err := r.recordImageDigest(name, digest); err != nil {
+		fmt.Fprintln(os.Stderr, tui.Warn("image %s: could not record build digest (%v) — it will rebuild next time", name, err))
+	}
+	return nil
 }
 
 // stageImage materializes a bundled image recipe into a temp directory the

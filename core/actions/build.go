@@ -35,10 +35,13 @@ func (r Real) Build(p params.Build) error {
 			return err
 		}
 		fmt.Fprintln(os.Stdout, tui.Success("%s built", tui.Accent(name)))
+	} else if _, built, err := r.ensureImageFresh(drv, name, rec.Image); err != nil {
+		return err
+	} else if built {
+		// A bundled image whose embedded source changed rebuilds here too (its
+		// "why" line already printed) — so the message must not claim a no-op.
+		fmt.Fprintln(os.Stdout, tui.Success("%s built", tui.Accent(rec.Image.Name)))
 	} else {
-		if _, err := r.ensureImage(drv, name, rec.Image); err != nil {
-			return err
-		}
 		fmt.Fprintln(os.Stdout, tui.Success("using image %s (nothing to build)", tui.Accent(rec.Image.Name)))
 	}
 	return nil

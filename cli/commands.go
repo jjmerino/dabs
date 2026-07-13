@@ -34,7 +34,7 @@ var Commands = map[string]Command{
 type cmdDoc struct{ Help, Args string }
 
 var commandDocs = map[string]cmdDoc{
-	"build":     {"build a recipe's box image: build [recipe|path] (no name → dabs.yaml default)", "build [recipe|path]"},
+	"build":     {"build a recipe's box image: build [recipe|path] (no name → dabs.yaml default). A boot rebuilds automatically when the Dockerfile or a bundled image's files change; a change only to build-context files a `COPY .` pulls in is not detected — run `dabs prune` then build to pick it up", "build [recipe|path]"},
 	"recipe":    {"run a recipe box: recipe [name] [cmd…] (unknown/omitted name → the default recipe, else sh, with the cmd appended); --worktree <wt> binds an existing worktree (git works in-box); --no-command boots a NEW box and runs no command (--detach: unstable alias — may later mean a true background detach)", "recipe [name] [cmd… | --no-command] [--worktree <wt>]"},
 	"recipes":   {"list the known recipes and what each mounts", "recipes [--print]"},
 	"worktrees": {"inspect worktree nodes (reap with `dabs rm <name>` or `dabs rm --clean-worktrees`): worktrees [ls | diff <name>]", "worktrees [ls | diff <name>]"},

@@ -16,12 +16,17 @@ jobs:
       - run: go vet ./...
       - run: go test ./...
 
-  # The e2e suite drives the real dabs CLI, boots real bwrap boxes, and rewrites
-  # $HOME/.dabs — so it only runs somewhere sandboxed. Locally that is the
-  # dabseption docker box (./run_e2e.sh); here the runner itself is the sandbox:
-  # a throwaway hermetic VM, so no outer box is needed. The suite's guard
-  # accepts GITHUB_ACTIONS as that sandbox.
-  e2e:
+  # The e2e suite drives the real dabs CLI and rewrites $HOME/.dabs — so it only
+  # runs somewhere sandboxed. Locally that is the dabseption docker box
+  # (./run_e2e.sh); here the runner itself is the sandbox: a throwaway hermetic
+  # VM, so no outer box is needed. The suite's guard accepts GITHUB_ACTIONS as
+  # that sandbox.
+  #
+  # The suite never names a driver — dabs picks the platform's own. This job is
+  # the LINUX flavor, so the driver dabs will pick is bubblewrap, and the steps
+  # provision what THAT driver needs. Other platforms would be sibling jobs
+  # (e.g. a macOS runner exercising the apple driver) with their own provisioning.
+  e2e-linux-bubblewrap:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

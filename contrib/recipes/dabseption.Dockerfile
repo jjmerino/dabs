@@ -17,8 +17,11 @@ WORKDIR /work
 
 FROM golang:1.23-bookworm
 
+# tmux is here so the box's dabs can be driven as a TERMINAL, not just as a
+# process.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential meson ninja-build pkg-config libcap-dev ca-certificates curl git \
+      tmux ncurses-term \
     && rm -rf /var/lib/apt/lists/*
 RUN curl -fsSL https://github.com/containers/bubblewrap/releases/download/v0.11.0/bubblewrap-0.11.0.tar.xz -o /tmp/bw.tar.xz \
     && cd /tmp && tar xf bw.tar.xz && cd bubblewrap-0.11.0 \

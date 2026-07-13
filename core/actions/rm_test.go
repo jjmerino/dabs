@@ -169,3 +169,67 @@ func TestRmEmptyEphemeralReapsSilently(t *testing.T) {
 		t.Errorf("a node with only empty spaces should be removed; got:\n%s", out)
 	}
 }
+
+// seedNode makes fd look as if dabs had provisioned an arbitrary-kind node,
+// optionally under a parent, so a cascade (project → workdirs) can be built.
+func seedNode(fd *fakeData, id, kind, parent string) {
+	if fd.dirs == nil {
+		fd.dirs = map[string][]string{}
+	}
+	fd.dirs[nodeBase] = append(fd.dirs[nodeBase], id)
+	if fd.files == nil {
+		fd.files = map[string][]byte{}
+	}
+	fd.files[nodeBase+"/"+id+"/dabs-node.json"] = []byte(
+		`{"id":"` + id + `","kind":"` + kind + `","parent":"` + parent + `","recipe":"r","created":"` + id + `"}`)
+}
+
+// CONTRACT: a cascade reap asks ONCE. Non-interactively it prints ONE aggregated
+// data summary (not a line per node) and refuses without -y, reaping nothing.
+func TestRmCascadeSummarizesDataAndRefusesWithoutYes(t *testing.T) {
+	fd := baseData()
+	seedNode(fd, "proj", "project", "")
+	seedNode(fd, "wd1", "workdir", "proj")
+	seedNode(fd, "wd2", "workdir", "proj")
+	spaceHeld(fd, "wd1", "ephemeral")
+	spaceHeld(fd, "wd2", "ephemeral")
+
+	var err error
+	out := captureStdout(t, func() {
+		err = newReal("", fd, &fakeDriver{}).Rm(params.Rm{Node: "proj"})
+	})
+	if err == nil {
+		t.Fatal("non-interactive cascade must refuse (pass -y), got nil")
+	}
+	if !strings.Contains(out, "2 node(s) hold ephemeral data") {
+		t.Errorf("want ONE aggregated ephemeral line for both holders; got:\n%s", out)
+	}
+	if len(fd.rmAll) != 0 {
+		t.Errorf("a refused cascade reaped something: %v", fd.rmAll)
+	}
+}
+
+// CONTRACT: the single -y (or one interactive yes) reaps the WHOLE set, ephemeral
+// included, with no further per-node questions.
+func TestRmCascadeYesReapsWholeSetIncludingEphemeral(t *testing.T) {
+	fd := baseData()
+	seedNode(fd, "proj", "project", "")
+	seedNode(fd, "wd1", "workdir", "proj")
+	seedNode(fd, "wd2", "workdir", "proj")
+	spaceHeld(fd, "wd1", "ephemeral")
+	spaceHeld(fd, "wd2", "ephemeral")
+
+	if err := newReal("", fd, &fakeDriver{}).Rm(params.Rm{Node: "proj", Yes: true}); err != nil {
+		t.Fatalf("rm -y: %v", err)
+	}
+	for _, id := range []string{"wd1", "wd2"} {
+		if !rmAllHas(fd, nodeBase+"/"+id+"/ephemeral") {
+			t.Errorf("%s ephemeral not reaped by the batch -y: %v", id, fd.rmAll)
+		}
+	}
+	for _, id := range []string{"proj", "wd1", "wd2"} {
+		if !rmAllHas(fd, nodeBase+"/"+id) {
+			t.Errorf("%s node dir not removed: %v", id, fd.rmAll)
+		}
+	}
+}

@@ -47,21 +47,34 @@ func (r Real) Rm(p params.Rm) error {
 			}
 		}
 	}
+	// Build the view once: it is BOTH the preview and the source of the data
+	// summary below, so the preview and the reap can never disagree about what
+	// holds data. No live query is made, so a downed box reads as gone.
+	views := r.viewNodes(doomed, nil)
+	eph, vol, tmp := countHeldSpaces(views)
+
+	// ONE question covers the whole set. Consent is needed to remove more than the
+	// named node, or to delete data a reap would lose — a held ephemeral, or a held
+	// volume with --volume. tmp is scratch and never needs asking. On yes the whole
+	// set reaps with no further per-node prompts (batchYes carries that consent).
+	batchYes := p.Yes
+	showed := false
 	if len(doomed) > 1 && !p.Yes {
 		var b strings.Builder
-		fmt.Fprintf(&b, "Removing %s reaps %d nodes:\n", tui.Accent(p.Node), len(doomed))
-		// The set is archived by definition of a cascade preview — no live query is
-		// made, so a downed box reads as gone, which is what it is.
-		b.WriteString(renderForest(r.viewNodes(doomed, nil), rmColumns, 2))
+		fmt.Fprintf(&b, "Removing %s reaps %d node(s):\n", tui.Accent(p.Node), len(doomed))
+		b.WriteString(renderForest(views, rmColumns, 2))
+		b.WriteString(reapDataSummary(eph, vol, tmp, p.Volume))
 		// With no terminal there is nobody to ask, and asking anyway would block on
 		// a pipe forever. Say what it would take, and take nothing.
 		if !tui.Interactive() {
 			fmt.Fprint(os.Stdout, b.String())
 			return fmt.Errorf("rm %s: kept — pass -y to remove it and what stands on it", p.Node)
 		}
-		if !r.confirm(b.String() + "Remove them?") {
+		if !r.confirm(b.String() + "Proceed?") {
 			return fmt.Errorf("rm %s: kept", p.Node)
 		}
+		batchYes = true
+		showed = true
 	}
 
 	// A worktree node holds git work no space rule can see: uncommitted changes or
@@ -84,11 +97,57 @@ func (r Real) Rm(p params.Rm) error {
 				return fmt.Errorf("rm %s: %w", n.ID, err)
 			}
 		}
-		if err := r.reapSpaces(n, spacePolicy{yes: p.Yes, volume: p.Volume, removeNode: true}); err != nil {
+		if err := r.reapSpaces(n, spacePolicy{yes: batchYes, volume: p.Volume, removeNode: true, quiet: showed}); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// countHeldSpaces tallies, across a whole view forest, how many nodes hold data
+// in each space — the aggregate a cascade reap asks about ONCE instead of node
+// by node.
+func countHeldSpaces(roots []*NodeView) (eph, vol, tmp int) {
+	var walk func(v *NodeView)
+	walk = func(v *NodeView) {
+		if v.Ephemeral == CellHeld {
+			eph++
+		}
+		if v.Volume == CellHeld {
+			vol++
+		}
+		if v.Tmp == CellHeld {
+			tmp++
+		}
+		for _, c := range v.Children {
+			walk(c)
+		}
+	}
+	for _, r := range roots {
+		walk(r)
+	}
+	return
+}
+
+// reapDataSummary is the one-line-per-space footer under a cascade preview: what
+// holds data, and what a reap does with it. ephemeral goes on proceed; volume is
+// kept unless --volume; tmp is scratch and always cleared.
+func reapDataSummary(eph, vol, tmp int, volume bool) string {
+	var b strings.Builder
+	if eph > 0 {
+		b.WriteString(tui.Warn("%d node(s) hold ephemeral data — deleted on proceed", eph) + "\n")
+	}
+	if vol > 0 {
+		if volume {
+			b.WriteString(tui.Warn("%d node(s) hold volume data — deleted on proceed (--volume)", vol) + "\n")
+		} else {
+			b.WriteString(tui.Muted("%d node(s) hold volume data — kept (pass --volume to delete)", vol) + "\n")
+		}
+	}
+	if tmp > 0 {
+		b.WriteString(tui.Muted("%d node(s) hold tmp scratch — always cleared", tmp) + "\n")
+	}
+	return b.String()
 }
 
 // rmColumns are the columns a cascade preview draws: the tree, each node's
@@ -126,7 +185,9 @@ func (r Real) guardWorktreeWork(n Node, force bool) error {
 // removeNode is what separates the two verbs: `rm` takes the marker away, `down`
 // leaves it. A downed box is ARCHIVED — what ran, and from where, outlives the
 // box, and that is the whole reason a node exists.
-type spacePolicy struct{ yes, volume, removeNode bool }
+// quiet suppresses the per-space "kept" line: a cascade reap already reported
+// the aggregate (see reapDataSummary), so repeating it per node is noise.
+type spacePolicy struct{ yes, volume, removeNode, quiet bool }
 
 // reapSpaces applies the ONE rule about node spaces, so `down`, `rm` and
 // `worktrees rm` cannot disagree about what a space means:
@@ -172,8 +233,10 @@ func (r Real) reapSpaces(n Node, pol spacePolicy) error {
 		}
 		if held && !sp.consent(dir) {
 			kept++
-			fmt.Fprintln(os.Stdout, tui.Warn("%s kept: %s", sp.space, dir)+
-				tui.Muted("   (dabs rm %s %s to reap it)", n.ID, sp.how))
+			if !pol.quiet {
+				fmt.Fprintln(os.Stdout, tui.Warn("%s kept: %s", sp.space, dir)+
+					tui.Muted("   (dabs rm %s %s to reap it)", n.ID, sp.how))
+			}
 			continue
 		}
 		// About to reap this space. A worktree's checkout lives in ephemeral, so

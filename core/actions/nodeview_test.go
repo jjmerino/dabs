@@ -211,3 +211,21 @@ func TestRenderForestColumnsAndGlyphs(t *testing.T) {
 		t.Errorf("legend drawn without a space column:\n%s", noSpace)
 	}
 }
+
+// A workdir's Where is its OWN on-disk folder (where the copy lives), not the
+// recorded source — which for a workdir is the parent project's directory. This
+// resolves from storage, so it is right even for records that stored the source.
+func TestViewNodesWorkdirWhereIsItsCopyFolder(t *testing.T) {
+	work := vBase + "wd/ephemeral/work"
+	fd := &vFakeData{statOK: map[string]bool{work: true}}
+	// Dir records the SOURCE (the project) — the pre-fix value; Where must not use it.
+	nodes := []Node{{ID: "wd", Kind: KindWorkdir, Dir: "/some/repo", Created: "1"}}
+
+	v := newViewReal(fd).viewNodes(nodes, nil)[0]
+	if !strings.Contains(v.Where, "wd/ephemeral/work") {
+		t.Errorf("workdir Where = %q, want its copy folder", v.Where)
+	}
+	if strings.Contains(v.Where, "/some/repo") {
+		t.Errorf("workdir Where leaked the source path: %q", v.Where)
+	}
+}

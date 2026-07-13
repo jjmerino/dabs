@@ -81,3 +81,91 @@ func TestRmMultipleFlagReapsAll(t *testing.T) {
 		t.Fatalf("want both boxes downed, got %v", drv.downs)
 	}
 }
+
+// spaceHeld makes a node's space read as holding files, so spaceHolds — the ONE
+// check the reap preview and the reap itself both use — reports it non-empty.
+func spaceHeld(fd *fakeData, id, space string) {
+	if fd.dirs == nil {
+		fd.dirs = map[string][]string{}
+	}
+	fd.dirs[nodeBase+"/"+id+"/"+space] = []string{"a-file"}
+}
+
+func rmAllHas(fd *fakeData, p string) bool {
+	for _, x := range fd.rmAll {
+		if x == p {
+			return true
+		}
+	}
+	return false
+}
+
+// CONTRACT: a held ephemeral space is NOT reaped without consent — and because
+// consent is declined here (non-interactive), the node is KEPT, not removed. The
+// old code prompted for every node and then removed empty ones regardless; this
+// pins the "declined → kept" half so it cannot regress.
+func TestRmHeldEphemeralWithoutConsentKeepsNode(t *testing.T) {
+	fd := baseData()
+	seedBoxNode(fd, "hold-aaaa", "inst-a")
+	spaceHeld(fd, "hold-aaaa", "ephemeral")
+	drv := &fakeDriver{infos: []sandbox.Info{{Name: "inst-a", Status: "running"}}}
+
+	out := captureStdout(t, func() {
+		if err := newReal("", fd, drv).Rm(params.Rm{Node: "hold-aaaa"}); err != nil {
+			t.Fatalf("rm: %v", err)
+		}
+	})
+	if !strings.Contains(out, "ephemeral kept") {
+		t.Errorf("held ephemeral without -y should be KEPT; got:\n%s", out)
+	}
+	if strings.Contains(out, "removed") {
+		t.Errorf("a node whose ephemeral was kept must NOT be removed; got:\n%s", out)
+	}
+	if rmAllHas(fd, nodeBase+"/hold-aaaa") {
+		t.Errorf("node dir reaped despite a kept ephemeral: %v", fd.rmAll)
+	}
+	if rmAllHas(fd, nodeBase+"/hold-aaaa/ephemeral") {
+		t.Errorf("held ephemeral reaped without consent: %v", fd.rmAll)
+	}
+}
+
+// CONTRACT: -y consents, so the held ephemeral is reaped and the node removed.
+func TestRmHeldEphemeralWithConsentReaps(t *testing.T) {
+	fd := baseData()
+	seedBoxNode(fd, "reap-aaaa", "inst-a")
+	spaceHeld(fd, "reap-aaaa", "ephemeral")
+	drv := &fakeDriver{infos: []sandbox.Info{{Name: "inst-a", Status: "running"}}}
+
+	out := captureStdout(t, func() {
+		if err := newReal("", fd, drv).Rm(params.Rm{Node: "reap-aaaa", Yes: true}); err != nil {
+			t.Fatalf("rm -y: %v", err)
+		}
+	})
+	if !strings.Contains(out, "removed") {
+		t.Errorf("rm -y should reap the held ephemeral and remove the node; got:\n%s", out)
+	}
+	if !rmAllHas(fd, nodeBase+"/reap-aaaa/ephemeral") {
+		t.Errorf("held ephemeral not reaped with -y: %v", fd.rmAll)
+	}
+}
+
+// CONTRACT: an EMPTY ephemeral is reaped silently — never prompted about, never
+// "kept" — and the node is removed. This is the half the old code got wrong: it
+// prompted for empty spaces and ignored the answer.
+func TestRmEmptyEphemeralReapsSilently(t *testing.T) {
+	fd := baseData()
+	seedBoxNode(fd, "gone-aaaa", "inst-a") // no space entries → all empty
+	drv := &fakeDriver{infos: []sandbox.Info{{Name: "inst-a", Status: "running"}}}
+
+	out := captureStdout(t, func() {
+		if err := newReal("", fd, drv).Rm(params.Rm{Node: "gone-aaaa"}); err != nil {
+			t.Fatalf("rm: %v", err)
+		}
+	})
+	if strings.Contains(out, "kept") || strings.Contains(out, "holds files") {
+		t.Errorf("empty ephemeral must be reaped silently, not prompted/kept; got:\n%s", out)
+	}
+	if !strings.Contains(out, "removed") {
+		t.Errorf("a node with only empty spaces should be removed; got:\n%s", out)
+	}
+}

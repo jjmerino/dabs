@@ -1613,3 +1613,63 @@ func workdirNodes(t *testing.T, fd *fakeData) []string {
 	sort.Strings(out)
 	return out
 }
+
+// nodeRec is the subset of a node record these tests assert on.
+type nodeRec struct{ ID, Kind, Parent string }
+
+func allNodeRecs(fd *fakeData) []nodeRec {
+	var out []nodeRec
+	for path, b := range fd.files {
+		if !strings.HasSuffix(path, "/dabs-node.json") {
+			continue
+		}
+		var n nodeRec
+		if json.Unmarshal(b, &n) == nil {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+func oneOfKind(t *testing.T, ns []nodeRec, kind string) nodeRec {
+	t.Helper()
+	var hits []nodeRec
+	for _, n := range ns {
+		if n.Kind == kind {
+			hits = append(hits, n)
+		}
+	}
+	if len(hits) != 1 {
+		t.Fatalf("want exactly one %s node, got %d: %v", kind, len(hits), ns)
+	}
+	return hits[0]
+}
+
+// CONTRACT: a live `mount: .` provisions NO middle workdir — the box stands
+// directly on the project (the diamond's direct edge). Only copy/worktree add a
+// place between project and box.
+func TestMountBoxParentsOnProjectNotAWorkdir(t *testing.T) {
+	fd := baseData()
+	fd.exists["/cwd"] = true
+	y := `recipes:
+  m:
+    image: img
+    command: [x]
+    sources:
+      - mount: .
+        path: /work
+`
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	if err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "m"}); err != nil {
+		t.Fatalf("recipe: %v", err)
+	}
+	if wd := workdirNodes(t, fd); len(wd) != 0 {
+		t.Fatalf("mount made workdir nodes %v, want none", wd)
+	}
+	nodes := allNodeRecs(fd)
+	box := oneOfKind(t, nodes, "box")
+	proj := oneOfKind(t, nodes, "project")
+	if box.Parent != proj.ID {
+		t.Fatalf("box parent = %q, want the project %q directly (no workdir between)", box.Parent, proj.ID)
+	}
+}

@@ -63,12 +63,20 @@ func (c *CLI) runRecipe(args []string) error {
 	// --detach boots a NEW pristine DETACHED box and runs no command; it takes an
 	// optional recipe name or dabs.yaml path and no appended command. --worktree
 	// <wt> binds an existing worktree to the recipe's `.` source (git works in-box)
-	// instead of the cwd, and composes with --detach. Both are dabs flags, so `--`
-	// (the escape hatch above) still routes a literal `--detach`/`--worktree`
-	// command token to the default recipe untouched.
+	// instead of the cwd, and composes with --detach.
+	//
+	// dabs's own flags END at the first bare `--`: everything after it is the
+	// appended command, verbatim, whatever recipe was named. Without that stop,
+	// this scan reached into the user's command and ate its `--detach`/`--worktree`
+	// tokens — `recipe sh -- mytool --worktree x` silently lost two of mytool's
+	// arguments to dabs.
 	var rest []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
+		if a == "--" {
+			rest = append(rest, args[i+1:]...)
+			break
+		}
 		switch {
 		case a == "--detach":
 			p.Detach = true

@@ -76,6 +76,26 @@ func TestRunDelegatesToActions(t *testing.T) {
 			},
 		},
 		{
+			name: "recipe: dabs flags end at --; the command keeps its own --detach",
+			args: []string{"recipe", "m", "--", "mytool", "--detach"},
+			want: func(t *testing.T, f *fakeActions) {
+				if len(f.recipe) != 1 || f.recipe[0].Detach ||
+					len(f.recipe[0].Args) != 3 || f.recipe[0].Args[2] != "--detach" {
+					t.Errorf("got %+v, want one Recipe{Args:[m mytool --detach]} with Detach:false", f.recipe)
+				}
+			},
+		},
+		{
+			name: "recipe: a --worktree after -- belongs to the command, not dabs",
+			args: []string{"recipe", "--worktree", "wt1", "m", "--", "mytool", "--worktree", "x"},
+			want: func(t *testing.T, f *fakeActions) {
+				if len(f.recipe) != 1 || f.recipe[0].Worktree != "wt1" ||
+					len(f.recipe[0].Args) != 4 || f.recipe[0].Args[2] != "--worktree" || f.recipe[0].Args[3] != "x" {
+					t.Errorf("got %+v, want one Recipe{Worktree:wt1 Args:[m mytool --worktree x]}", f.recipe)
+				}
+			},
+		},
+		{
 			name: "exec with exact argv after -- stays exact",
 			args: []string{"exec", "demo-0", "--", "echo", "--flag", "hi"},
 			want: func(t *testing.T, f *fakeActions) {

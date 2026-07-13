@@ -292,6 +292,37 @@ func TestUpCreatesDistinctInstances(t *testing.T) {
 	wantContains(t, out, b)
 }
 
+// dabs's own flags end at the first bare `--`: everything after it is the
+// appended command, verbatim. The flag scan used to keep reading past it and eat
+// the command's OWN `--detach`/`--worktree` tokens — `recipe sh -- mytool
+// --worktree x` silently lost two of mytool's arguments to dabs, and a trailing
+// `--detach` flipped the whole run into a detached boot.
+func TestRecipeDashDashShieldsTheCommandsOwnFlags(t *testing.T) {
+	clean(t)
+	dir := filepath.Join(home, "e2e-dashdash")
+	bugRecipe(t, dir, "echoer", "")
+
+	// `--detach` after `--` is the command's: sh -c 'echo tok-ok' --detach runs
+	// (the token lands in $0, unused) — it must NOT boot a detached box.
+	out, code := runInStdin(dir, "y\n", "dabs recipe echoer -- -c 'echo tok-ok' --detach")
+	wantExit(t, 0, code)
+	wantContains(t, out, "tok-ok")
+	if containsFold(out, "detached") || containsFold(out, "runs no command") {
+		t.Fatalf("a --detach after -- was eaten by dabs instead of reaching the command:\n%s", out)
+	}
+
+	// A trailing `--worktree` after `--` is the command's too — it used to error
+	// with "--worktree needs a worktree name" without ever running anything.
+	out, code = runInStdin(dir, "y\n", "dabs recipe echoer -- -c 'echo wt-ok' --worktree")
+	wantExit(t, 0, code)
+	wantContains(t, out, "wt-ok")
+
+	// And before the `--`, flags are still dabs's: --detach boots, runs nothing.
+	out, code = runInStdin(dir, "", "dabs recipe echoer --detach")
+	wantExit(t, 0, code)
+	wantContains(t, out, "instance:")
+}
+
 // A reaped box leaves its NODE behind — the marker of what ran and from where —
 // so `ls` still shows it, as gone. What must not survive a reap is a LIVE box.
 func TestLsAfterReapShowsNoLiveBox(t *testing.T) {

@@ -1,0 +1,31 @@
+name: release
+
+# Pushing a version tag builds the four release binaries and attaches them to
+# the tag's GitHub release — the install script downloads these, so nothing is
+# ever compiled on a user's machine.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  binaries:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build darwin/linux × amd64/arm64
+        run: |
+          for os in darwin linux; do for arch in amd64 arm64; do
+            GOOS=$os GOARCH=$arch CGO_ENABLED=0 \
+              go build -trimpath -ldflags="-s -w" -o "dist/dabs_${os}_${arch}" .
+          done; done
+          ls -la dist/
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" dist/* --clobber

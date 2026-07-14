@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/jjmerino/dabs/core/params"
 	"github.com/jjmerino/dabs/core/tui"
@@ -110,9 +112,23 @@ func (r Real) reapInactiveHolder(name string, nodes []Node) error {
 	return nil
 }
 
-// reserveNodeDir is the exclusive create that makes a claim exclusive. A dir
-// that exists but holds no node record is litter from a boot that died before
-// writing one — reclaimed once; a dir with a record is a concurrent winner.
+// claimMarker is the receipt a reservation leaves in the node dir until the
+// node record lands: its presence and age are what tell a CONCURRENT claim (in
+// the window between another boot's reserve and its record) apart from the
+// litter of a boot that died there. Without it, reclaiming would reopen the
+// very race the reservation closes — deleting a live claim and letting two
+// boots share one name.
+const claimMarker = "dabs-claim"
+
+// claimStale is how old a claim marker must be before its dir counts as
+// litter. A claim-to-record window spans provisioning and a box boot —
+// seconds, occasionally a minute; anything this old is a boot that died.
+const claimStale = 15 * time.Minute
+
+// reserveNodeDir is the exclusive create that makes a claim exclusive — the
+// same mint lock ensureProjectNode uses. On finding the dir taken: a node
+// record means a winner (refuse); a FRESH claim marker means a boot mid-claim
+// (refuse — retry shortly); a stale or absent marker is litter, reclaimed once.
 func (r Real) reserveNodeDir(name string) error {
 	root, err := r.resolveNodesRoot()
 	if err != nil {
@@ -128,13 +144,18 @@ func (r Real) reserveNodeDir(name string) error {
 	for range [2]int{} {
 		err := r.data.Mkdir(dir, 0o755)
 		if err == nil {
-			return nil
+			return r.data.WriteFile(filepath.Join(dir, claimMarker), []byte(stampNow()+"\n"), 0o644)
 		}
 		if !errors.Is(err, fs.ErrExist) {
 			return err
 		}
 		if _, rerr := r.readNode(name); rerr == nil {
 			return fmt.Errorf("--name %q: another boot just claimed it", name)
+		}
+		if b, rerr := r.data.ReadFile(filepath.Join(dir, claimMarker)); rerr == nil {
+			if at, perr := time.Parse(time.RFC3339, strings.TrimSpace(string(b))); perr == nil && time.Since(at) < claimStale {
+				return fmt.Errorf("--name %q: another boot is claiming it right now (or died within %s) — retry shortly, or `dabs rm %s`", name, claimStale, name)
+			}
 		}
 		if err := r.data.RemoveAll(dir); err != nil {
 			return err

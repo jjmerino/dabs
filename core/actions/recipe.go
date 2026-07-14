@@ -118,15 +118,6 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 		}
 		worktree = full
 	}
-	// The claim comes LAST among the refusals — after the confirm and every
-	// argument check — so a boot refused for any other reason has not touched
-	// the name's holder, and a claim that succeeds reserves the name (the
-	// exclusive dir create) right before provisioning uses it.
-	if nodeName != "" {
-		if err := r.claimNodeName(nodeName); err != nil {
-			return err
-		}
-	}
 	// Look before running: the default-recipe path ALWAYS confirms — it exists to
 	// run an arbitrary command in a box, so it must never launch unprompted, even
 	// with no appended command. A named recipe confirms only when a
@@ -150,6 +141,21 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 	drv, err := r.driverFor(rec.Target) // "" = local; a recipe may target a driver/server
 	if err != nil {
 		return err
+	}
+	// The claim runs after the confirm and after every name-independent
+	// refusal — including the PURE image check below: an image that can never
+	// be had refuses while nothing has happened yet. The image BUILD stays
+	// after source validation (a bad source must fail before any docker build
+	// runs), so a failed build can still follow a successful claim — like a
+	// failed boot, that is a death mid-flight, and the reservation's claim
+	// marker lets the next attempt reclaim the dir (see reserveNodeDir).
+	if nodeName != "" {
+		if err := r.preflightImage(drv, name, rec.Image); err != nil {
+			return err
+		}
+		if err := r.claimNodeName(nodeName); err != nil {
+			return err
+		}
 	}
 
 	// Cut the PLACE first: a box names its parent's spaces ($PARENT_VOLUME), and a
@@ -249,6 +255,9 @@ func (r Real) provisionNodes(name string, rec recipe.Recipe, worktree, nodeName 
 			if kind, _, err := s.Kind(); err == nil && (kind == "worktree" || kind == "copy") {
 				places++
 			}
+		}
+		if places == 0 {
+			return fmt.Errorf("recipe %q: has no image and no source that makes a place — nothing for --name %s to name", name, nodeName)
 		}
 		if places > 1 {
 			return fmt.Errorf("recipe %q: --name %s names ONE node, and this recipe provisions %d places", name, nodeName, places)
@@ -980,6 +989,31 @@ func (r Real) ensureImageFresh(drv sandbox.Driver, recipeName string, img recipe
 		return "", false, err
 	}
 	return name, true, nil
+}
+
+// preflightImage is the check-only half of ensureImage: it refuses an image
+// that can NEVER be had — a bare name that is neither built nor bundled, with
+// nothing to build it from. It builds nothing and records nothing, so it may
+// run before a name is claimed; whether a buildable image is fresh stays
+// ensureImage's question, asked after source validation.
+func (r Real) preflightImage(drv sandbox.Driver, recipeName string, img recipe.ImageRef) error {
+	if img.Dockerfile != "" {
+		return nil // buildable: ensureImage's problem, after validation
+	}
+	if img.Name == "" {
+		return fmt.Errorf("recipe %q: image has no name and no dockerfile", recipeName)
+	}
+	if r.hasBundledImage(img.Name) {
+		return nil // buildable from the bundled recipe
+	}
+	built, err := drv.HasImage(img.Name)
+	if err != nil {
+		return err
+	}
+	if !built {
+		return fmt.Errorf("recipe %q: image %q is not built and dabs has no bundled recipe for it", recipeName, img.Name)
+	}
+	return nil
 }
 
 // serveUnbuildable reports whether an image a rebuild wanted may be served

@@ -55,9 +55,16 @@ func (r Real) upDetached(arg, worktree, nodeName string) error {
 	if err != nil {
 		return err
 	}
-	// The claim comes last among the refusals, so a boot refused for any other
-	// reason has not touched the name's holder (provisionNodes claims for the
-	// boxless path above).
+	// The image is resolved first — WITHOUT building the recipe's own
+	// Dockerfile: `--detach` boots an image a prior `dabs build` produced (it
+	// may run where no builder exists) — and the claim runs after it and every
+	// other name-independent refusal, so a boot refused for those reasons has
+	// not touched the name's holder (provisionNodes claims for the boxless
+	// path above).
+	image, err := r.resolveBuiltImage(drv, name, rec.Image, rec.Target)
+	if err != nil {
+		return err
+	}
 	if nodeName != "" {
 		if err := r.claimNodeName(nodeName); err != nil {
 			return err
@@ -73,14 +80,7 @@ func (r Real) upDetached(arg, worktree, nodeName string) error {
 	if err != nil {
 		return err
 	}
-	// Validate sources before any side effect, then resolve the image WITHOUT
-	// building the recipe's own Dockerfile: `--detach` boots an image a prior
-	// `dabs build` produced (it may run where no builder exists).
 	resolved, err := r.validateSources(name, sources, vars, hosts)
-	if err != nil {
-		return err
-	}
-	image, err := r.resolveBuiltImage(drv, name, rec.Image, rec.Target)
 	if err != nil {
 		return err
 	}

@@ -14,16 +14,20 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jjmerino/dabs/core/params"
 	"github.com/jjmerino/dabs/core/sandbox"
 )
 
+// keep: true — a non-keep boot FULLY reaps its node after the command (#59),
+// so pins about the node's record need the box kept.
 const namedBootRecipe = `default: base
 recipes:
   base:
     image: { dockerfile: Dockerfile, context: . }
     command: [x]
+    keep: true
     sources:
       - mount: /data
         path: /work
@@ -169,17 +173,93 @@ func TestRefusedBootLeavesInactiveHolderAlone(t *testing.T) {
 }
 
 // CONTRACT: the claim RESERVES the name with an exclusive dir create (the mint
-// lock). A leftover dir with no record — an earlier boot that died between
-// claim and record — is reclaimed, not a permanent squat.
+// lock). A leftover dir with no record and no fresh claim marker — an earlier
+// boot that died there, long enough ago — is reclaimed, not a permanent squat.
 func TestNamedBootReclaimsRecordlessDir(t *testing.T) {
 	fd := namedBootData(t)
-	fd.made = append(fd.made, nodeBase+"/feature-x") // dir exists, no record
+	fd.made = append(fd.made, nodeBase+"/feature-x") // dir exists, no record, no marker
 	drv := &fakeDriver{}
 	if _, err := bootNamed(t, fd, drv, "feature-x"); err != nil {
 		t.Fatalf("recordless dir must be reclaimed, got %v", err)
 	}
 	if _, ok := fd.files[nodeBase+"/feature-x/dabs-node.json"]; !ok {
 		t.Fatalf("name not claimed after reclaim; files: %v", keysOf(fd.files))
+	}
+}
+
+// CONTRACT: the reservation is a LOCK, not a suggestion. A dir holding a FRESH
+// claim marker is another boot mid-claim (the window between its reserve and
+// its record) — refused, never deleted from under it. A STALE marker is a dead
+// boot's litter and is reclaimed. A record that landed just after our listing
+// refuses too.
+func TestNamedBootRespectsConcurrentClaim(t *testing.T) {
+	fresh := namedBootData(t)
+	fresh.made = append(fresh.made, nodeBase+"/feature-x")
+	fresh.files[nodeBase+"/feature-x/dabs-claim"] = []byte(time.Now().UTC().Format(time.RFC3339) + "\n")
+	if _, err := bootNamed(t, fresh, &fakeDriver{}, "feature-x"); err == nil || !strings.Contains(err.Error(), "claiming it right now") {
+		t.Fatalf("a fresh concurrent claim must refuse, got %v", err)
+	}
+	if rmAllHas(fresh, nodeBase+"/feature-x") {
+		t.Fatalf("a live claim was deleted from under its boot: %v", fresh.rmAll)
+	}
+
+	stale := namedBootData(t)
+	stale.made = append(stale.made, nodeBase+"/feature-x")
+	stale.files[nodeBase+"/feature-x/dabs-claim"] = []byte(time.Now().Add(-time.Hour).UTC().Format(time.RFC3339) + "\n")
+	if _, err := bootNamed(t, stale, &fakeDriver{}, "feature-x"); err != nil {
+		t.Fatalf("a stale claim is litter and must be reclaimed, got %v", err)
+	}
+
+	// The record landed between our node listing and the reserve: a winner.
+	won := namedBootData(t)
+	won.made = append(won.made, nodeBase+"/feature-x")
+	won.files[nodeBase+"/feature-x/dabs-node.json"] = []byte(`{"id":"feature-x","kind":"box","recipe":"r","created":"t"}`)
+	if _, err := bootNamed(t, won, &fakeDriver{}, "feature-x"); err == nil || !strings.Contains(err.Error(), "just claimed it") {
+		t.Fatalf("a landed concurrent record must refuse, got %v", err)
+	}
+}
+
+// CONTRACT: every refusal that does not need the name comes BEFORE the claim —
+// a declined confirm, a missing image, a boxless recipe with nothing to name —
+// so a refused boot leaves the name's inactive holder untouched.
+func TestRefusalsBeforeClaimLeaveHolderAlone(t *testing.T) {
+	// Declined confirm (an appended command always confirms).
+	fd := namedBootData(t)
+	seedNode(fd, "probe", "project", "")
+	var err error
+	out := captureStdout(t, func() {
+		err = newReal(namedBootRecipe, fd, &fakeDriver{}).WithConfirm(func(string) bool { return false }).
+			Recipe(params.Recipe{Args: []string{"base", "echo"}, NodeName: "probe"})
+	})
+	if err == nil {
+		t.Fatal("declined confirm must refuse the boot")
+	}
+	if rmAllHas(fd, nodeBase+"/probe") || strings.Contains(out, "reaping") {
+		t.Fatalf("a declined confirm reaped the name's holder:\n%s\nrmAll=%v", out, fd.rmAll)
+	}
+
+	// Missing image (bare name, not built, not bundled).
+	fd2 := baseData()
+	fd2.exists["/data"] = true
+	seedNode(fd2, "probe", "project", "")
+	y := "recipes:\n  m:\n    image: img\n    command: [x]\n    sources:\n      - mount: /data\n        path: /work\n"
+	if err := newReal(y, fd2, &fakeDriver{}).Recipe(params.Recipe{Name: "m", NodeName: "probe"}); err == nil {
+		t.Fatal("missing image must refuse the boot")
+	}
+	if rmAllHas(fd2, nodeBase+"/probe") {
+		t.Fatalf("a missing-image refusal reaped the name's holder: %v", fd2.rmAll)
+	}
+
+	// A boxless recipe with no place to name.
+	fd3 := baseData()
+	fd3.exists["/data"] = true
+	seedNode(fd3, "probe", "project", "")
+	y3 := "recipes:\n  m:\n    sources:\n      - mount: /data\n        path: /work\n"
+	if err := newReal(y3, fd3, &fakeDriver{}).Recipe(params.Recipe{Name: "m", NodeName: "probe"}); err == nil {
+		t.Fatal("a boxless mount-only recipe with --name must refuse")
+	}
+	if rmAllHas(fd3, nodeBase+"/probe") {
+		t.Fatalf("a nothing-to-name refusal reaped the name's holder: %v", fd3.rmAll)
 	}
 }
 

@@ -36,7 +36,7 @@
       },
       {
         "group": "Reference",
-        "pages": ["reference/cli", "reference/recipe-schema", "caveats", "testing"]
+        "pages": ["reference/cli", "reference/recipe-schema", "caveats"]
       }
     ]
   },

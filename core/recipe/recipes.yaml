@@ -2,9 +2,17 @@
 # lists them. Copy an entry into ~/.dabs/recipes.yaml to tweak it, or add your
 # own there — user entries override these by name.
 #
-# dabs ships ONE recipe: `sh`, the generic clean-box example below. Anything
-# project- or tool-specific (e.g. a Claude Code box that mounts your auth vault)
-# lives in a ~/.dabs/recipes.yaml or a project's ./dabs.yaml — not here.
+# dabs ships FIVE recipes, all fully generic (they mount nothing personal):
+#
+#   sh          a shell in a clean box over your current directory
+#   wt          cut a git worktree, no box
+#   wtbox       a shell in a clean box over a fresh git worktree
+#   scratch     copy the cwd into a directory node, no box
+#   scratchbox  a shell in a clean box over a throwaway copy of the cwd
+#
+# Anything project- or tool-specific (e.g. a Claude Code box that mounts your
+# auth vault) lives in a ~/.dabs/recipes.yaml or a project's ./dabs.yaml — not
+# here.
 recipes:
 
   # dabs recipe sh — a shell in a clean box over your current directory. The
@@ -18,4 +26,51 @@ recipes:
       # Your current directory, mounted live — edits inside the box persist on
       # the host. Swap `mount:` for `copy:` to hand the box a disposable snapshot.
       - mount: .
+        path: /work
+
+  # dabs recipe wt — a recipe with NO image: it cuts a git worktree off the
+  # current repo's HEAD and stops. A place is not a box; a box is one more node
+  # that stacks on a place. Point one at it later with
+  # `dabs recipe <recipe> --worktree <node>`, or none at all. Reap with
+  # `dabs worktrees` / `dabs rm <node>`.
+  wt:
+    description: cut a worktree, no box
+    sources:
+      - worktree: .
+        at: $NODE_HELD/worktree           # where the checkout lands: rm asks before reaping it
+
+  # dabs recipe wtbox — a shell in a clean box over a FRESH git worktree cut off
+  # the current repo's HEAD. Your working tree stays untouched; the worktree is
+  # kept after the box exits — review and reap with `dabs worktrees`. Git is
+  # BLIND inside the box (the worktree's `.git` points into the parent repo's
+  # object store, which is not mounted); to get working git in-box, cast a
+  # recipe onto an EXISTING worktree with `--worktree <node>`.
+  wtbox:
+    description: shell in a clean box over a fresh git worktree
+    image: shell
+    command: [sh]
+    sources:
+      - worktree: .
+        path: /work
+
+  # dabs recipe scratch — copy the cwd into a directory node and stop; no git
+  # needed, no box. The copy lands in the node's held space (so `rm` asks before
+  # reaping it, and you can read it on the host). Several of these work in
+  # parallel over a directory that is not a repo.
+  scratch:
+    description: copy the cwd into a directory node, no box
+    sources:
+      - copy: .
+        at: $NODE_HELD/work               # where the copy lands: rm asks before reaping it
+
+  # dabs recipe scratchbox — a shell in a clean box over a throwaway COPY of the
+  # cwd. No git, nothing shared: the box gets its own snapshot at /work and the
+  # host is never written, so several of these run in parallel over the same
+  # directory without touching each other or your tree.
+  scratchbox:
+    description: shell in a clean box over a throwaway copy of the cwd
+    image: shell
+    command: [sh]
+    sources:
+      - copy: .
         path: /work

@@ -1172,6 +1172,163 @@ func resetNodes(t *testing.T) {
 	os.Remove(journalPath())
 }
 
+// --- Bundled recipes: sh / wt / wtbox / scratch / scratchbox ------------------
+// Each must work on an installed-only dabs: a directory with NO dabs.yaml and
+// NO ~/.dabs/recipes.yaml, served by the BUNDLED registry alone.
+
+// bundledOnly strips every non-bundled registry, so the recipe under test can
+// only have come from the binary itself. It also restores the staged `shell`
+// image from the box's pristine copy: the box has no builder, so a `dabs prune`
+// run by an earlier test would otherwise leave the bundled box recipes nothing
+// to boot from.
+func bundledOnly(t *testing.T) {
+	t.Helper()
+	resetNodes(t)
+	userRecipes := filepath.Join(home, ".dabs", "recipes.yaml")
+	os.Remove(userRecipes)
+	t.Cleanup(func() { os.Remove(userRecipes) })
+
+	staged := filepath.Join(home, ".dabs-staged-images", "shell")
+	dest := filepath.Join(home, ".dabs", "images", "shell")
+	if _, err := os.Stat(dest); os.IsNotExist(err) {
+		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if out, err := exec.Command("cp", "-a", staged, dest).CombinedOutput(); err != nil {
+			t.Fatalf("restore staged shell image: %v\n%s", err, out)
+		}
+	}
+}
+
+// bootBundled boots a bundled box recipe detached from dir and returns its
+// instance name, reaping the box when the test ends.
+func bootBundled(t *testing.T, dir, name string) string {
+	t.Helper()
+	out, code := runIn(dir, "dabs recipe "+name+" --detach")
+	if code != 0 {
+		t.Fatalf("bundled recipe %s --detach failed (%d): %s", name, code, out)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if inst, ok := strings.CutPrefix(strings.TrimSpace(line), "instance: "); ok {
+			inst = strings.TrimSpace(inst)
+			t.Cleanup(func() { run("dabs rm " + inst + " --yes") })
+			return inst
+		}
+	}
+	t.Fatalf("recipe %s --detach printed no instance line: %q", name, out)
+	return ""
+}
+
+// CONTRACT: `wt` ships BUNDLED — `cd my/project && dabs recipe wt` cuts a
+// worktree. It makes a place, no box: the checkout lands in the node's held
+// space, so `rm` asks before reaping it.
+func TestBundledWtRecipeWorksWithoutAnyRegistry(t *testing.T) {
+	bundledOnly(t)
+	repo := filepath.Join(home, "e2e-bundled-wt")
+	gitRepo(t, repo) // deliberately NO dabs.yaml in it
+
+	if out, code := run("dabs recipes"); code != 0 || !strings.Contains(out, "wt") {
+		t.Fatalf("`dabs recipes` must list the bundled wt (%d):\n%s", code, out)
+	}
+	if out, code := runIn(repo, "dabs recipe wt"); code != 0 {
+		t.Fatalf("bundled recipe wt failed (%d): %s", code, out)
+	}
+	wts := worktreeDirs(t)
+	if len(wts) != 1 {
+		t.Fatalf("want one worktree node, got %v", wts)
+	}
+	// The checkout is a real worktree of the repo, in the node's HELD space.
+	if _, err := os.Stat(filepath.Join(worktreeData(wts[0]), "tracked.txt")); err != nil {
+		t.Fatalf("worktree checkout missing the repo's file: %v", err)
+	}
+}
+
+// CONTRACT: `wtbox` ships BUNDLED — a shell box over a FRESH worktree. The box
+// sees the repo's files at /work; the repo's own tree is untouched by in-box
+// writes (they land in the worktree).
+func TestBundledWtboxRecipeWorksWithoutAnyRegistry(t *testing.T) {
+	bundledOnly(t)
+	repo := filepath.Join(home, "e2e-bundled-wtbox")
+	gitRepo(t, repo)
+
+	inst := bootBundled(t, repo, "wtbox")
+	out, code := run("dabs exec " + inst + " -- cat /work/tracked.txt")
+	if code != 0 || !strings.Contains(out, "v1") {
+		t.Fatalf("box does not see the worktree checkout at /work (%d): %s", code, out)
+	}
+	if out, code := run("dabs exec " + inst + " 'echo boxed > /work/boxed.txt'"); code != 0 {
+		t.Fatalf("write in box failed (%d): %s", code, out)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "boxed.txt")); !os.IsNotExist(err) {
+		t.Fatalf("in-box write must land in the worktree, not the repo's own tree (err=%v)", err)
+	}
+	wts := worktreeDirs(t)
+	if len(wts) != 1 {
+		t.Fatalf("want one worktree node, got %v", wts)
+	}
+	if _, err := os.Stat(filepath.Join(worktreeData(wts[0]), "boxed.txt")); err != nil {
+		t.Fatalf("in-box write not in the worktree checkout: %v", err)
+	}
+}
+
+// CONTRACT: `scratch` ships BUNDLED — copy the cwd into a directory node and
+// stop; no box, and NO git needed. The copy lands in the node's held space.
+func TestBundledScratchRecipeWorksWithoutAnyRegistry(t *testing.T) {
+	bundledOnly(t)
+	dir := filepath.Join(home, "e2e-bundled-scratch") // a plain dir, not a repo
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "seed.txt"), []byte("s1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if out, code := runIn(dir, "dabs recipe scratch"); code != 0 {
+		t.Fatalf("bundled recipe scratch failed (%d): %s", code, out)
+	}
+	dirs := nodesOfKind(t, "workdir")
+	if len(dirs) != 1 {
+		t.Fatalf("want one workdir node, got %v", dirs)
+	}
+	copied := filepath.Join(nodesDir(), dirs[0], "held", "work", "seed.txt")
+	b, err := os.ReadFile(copied)
+	if err != nil || string(b) != "s1\n" {
+		t.Fatalf("copy missing from the node's held space (%v): %q", err, b)
+	}
+	// A place, no box: a write to the copy must not appear in the origin dir.
+	if err := os.WriteFile(filepath.Join(nodesDir(), dirs[0], "held", "work", "new.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "new.txt")); !os.IsNotExist(err) {
+		t.Fatalf("scratch must be a COPY — write leaked to the origin dir (err=%v)", err)
+	}
+}
+
+// CONTRACT: `scratchbox` ships BUNDLED — a shell box over a throwaway COPY of
+// the cwd; no git needed, the host is never written.
+func TestBundledScratchboxRecipeWorksWithoutAnyRegistry(t *testing.T) {
+	bundledOnly(t)
+	dir := filepath.Join(home, "e2e-bundled-scratchbox") // a plain dir, not a repo
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "seed.txt"), []byte("s1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	inst := bootBundled(t, dir, "scratchbox")
+	out, code := run("dabs exec " + inst + " -- cat /work/seed.txt")
+	if code != 0 || !strings.Contains(out, "s1") {
+		t.Fatalf("box does not see the copy at /work (%d): %s", code, out)
+	}
+	if out, code := run("dabs exec " + inst + " 'echo boxed > /work/boxed.txt'"); code != 0 {
+		t.Fatalf("write in box failed (%d): %s", code, out)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "boxed.txt")); !os.IsNotExist(err) {
+		t.Fatalf("scratchbox must be a COPY — in-box write reached the host dir (err=%v)", err)
+	}
+}
+
 // readFile returns a file's contents (fatal on error), for asserting on the log.
 func readFile(t *testing.T, path string) string {
 	t.Helper()

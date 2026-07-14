@@ -227,6 +227,24 @@ func TestStagedImageWithoutBuilderIsServedAsIs(t *testing.T) {
 		t.Fatal("a failed build (builder present) must fail the boot, not serve the stale image")
 	}
 
+	// A record EXISTS and the source CHANGED: the freshness contract demands a
+	// rebuild, and with no builder the boot must FAIL — never quietly serve a
+	// build known to be stale.
+	changing := &fstest.MapFile{Data: []byte("FROM alpine\nRUN apk add --no-cache git\n")}
+	imgs4 := fstest.MapFS{"images/shell/Dockerfile": changing}
+	fd4 := baseData()
+	fd4.exists["/data"] = true
+	fd4.files = map[string][]byte{fd4.home + "/.dabs/recipes.yaml": recipes}
+	drv4 := &fakeDriver{} // a builder, for the first boot
+	if err := actions.New(map[string]sandbox.Driver{"local": drv4}, []string{"local"}, imgs4, fd4).Recipe(params.Recipe{Name: "s"}); err != nil {
+		t.Fatalf("first boot (builds and records): %v", err)
+	}
+	changing.Data = []byte("FROM alpine\nRUN apk add --no-cache git curl\n") // source changes...
+	drv4.buildErr = noBuilder                                                // ...and the builder is gone
+	if err := actions.New(map[string]sandbox.Driver{"local": drv4}, []string{"local"}, imgs4, fd4).Recipe(params.Recipe{Name: "s"}); err == nil {
+		t.Fatal("a recorded image whose source changed must not be served when the rebuild cannot run")
+	}
+
 	// No builder AND no image: nothing to serve — the boot fails with the
 	// driver's own no-builder error.
 	fd3 := baseData()

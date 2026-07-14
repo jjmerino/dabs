@@ -31,12 +31,12 @@ func (r Real) Rm(p params.Rm) error {
 	return r.rmResolved(p, nodes, r.memoBoxStates())
 }
 
-// rmResolved is Rm past the lookups: the node list and the fleet query are the
-// caller's, so a batch reap (rmInactive, rmCleanWorktrees) lists nodes once and
-// asks the fleet once for the whole sweep instead of per node. states is called
-// only when a box is among the doomed, so a reap that touches no box never
-// pays a fleet query.
-func (r Real) rmResolved(p params.Rm, nodes []Node, states func() map[string]boxState) error {
+// rmResolved is Rm past the lookups: the node list and the drivers' answer are
+// the caller's, so a batch reap (rmInactive, rmCleanWorktrees) lists nodes once
+// and asks the drivers once for the whole sweep instead of per node. states is
+// called only when a box is among the doomed, so a reap that touches no box
+// never queries a driver.
+func (r Real) rmResolved(p params.Rm, nodes []Node, states func() driversAnswer) error {
 	targets, err := rmMatches(p.Node, nodes, p.Multiple)
 	if err != nil {
 		return err
@@ -65,15 +65,16 @@ func (r Real) rmResolved(p params.Rm, nodes []Node, states func() map[string]box
 	// Build the view once: it is BOTH the preview and the source of the data
 	// summary below, so the preview and the reap can never disagree about what
 	// holds data. Space state comes from the view; box liveness comes from the
-	// same fleet query `ls` runs, so the preview and `ls` say the same thing
+	// same drivers query `ls` runs, so the preview and `ls` say the same thing
 	// about which boxes are running — a stop is a loss the preview must show.
-	state := map[string]boxState{}
+	ans := driversAnswer{state: map[string]boxState{}, complete: true}
 	for _, n := range doomed {
 		if n.Kind == KindBox {
-			state = states()
+			ans = states()
 			break
 		}
 	}
+	state := ans.state
 	views := r.viewNodes(doomed, state)
 	held, vol, tmp := countHoldingSpaces(views)
 
@@ -133,11 +134,15 @@ func (r Real) rmResolved(p params.Rm, nodes []Node, states func() map[string]box
 	}
 
 	// Deepest first: a box comes down before the place it was mounted on goes.
-	// An instance the fleet did not report is already gone — no down to attempt,
-	// no driver round-trip to pay for it.
+	// An instance absent from a COMPLETE drivers' answer is already gone — no
+	// down to attempt, no driver round-trip to pay for it. An INCOMPLETE answer
+	// (a driver errored or timed out) proves nothing about absence, so the down
+	// is attempted anyway: downInstance resolves the instance itself, and a
+	// transient failure that has passed still stops the box.
 	for i := len(doomed) - 1; i >= 0; i-- {
 		n := doomed[i]
-		if _, present := state[n.Instance]; n.Kind == KindBox && n.Instance != "" && present {
+		_, present := state[n.Instance]
+		if n.Kind == KindBox && n.Instance != "" && (present || !ans.complete) {
 			if err := r.downInstance(n.Instance); err != nil {
 				return fmt.Errorf("rm %s: %w", n.ID, err)
 			}
@@ -197,14 +202,17 @@ func (r Real) rmCleanWorktrees(p params.Rm) error {
 }
 
 // liveBoxOn reports whether a live box stands anywhere on n's subtree. states
-// is called only when a box is actually there, so a boxless sweep never pays a
-// fleet query.
-func (r Real) liveBoxOn(n Node, nodes []Node, states func() map[string]boxState) bool {
+// is called only when a box is actually there, so a boxless sweep never
+// queries a driver. An INCOMPLETE answer (a driver errored or timed out)
+// cannot confirm any box gone, so every box counts as live — the sweep keeps
+// the worktree rather than stopping a machine on a guess.
+func (r Real) liveBoxOn(n Node, nodes []Node, states func() driversAnswer) bool {
 	for _, d := range descendantsOf(n, nodes) {
 		if d.Kind != KindBox || d.Instance == "" {
 			continue
 		}
-		if _, up := states()[d.Instance]; up {
+		ans := states()
+		if _, up := ans.state[d.Instance]; up || !ans.complete {
 			return true
 		}
 	}
@@ -322,15 +330,15 @@ func (r Real) rmInactive(p params.Rm) error {
 	if err != nil {
 		return err
 	}
-	state := r.boxStates()
-	_, inactiveRoots := r.activeSubtrees(nodes, state)
+	ans := r.boxStates()
+	_, inactiveRoots := r.activeSubtrees(nodes, ans.state)
 	if len(inactiveRoots) == 0 {
 		fmt.Fprintln(os.Stdout, tui.Muted("no inactive subtrees"))
 		return nil
 	}
-	// Inactive roots are disjoint subtrees, so one node list and one fleet answer
-	// serve every reap in the sweep.
-	states := func() map[string]boxState { return state }
+	// Inactive roots are disjoint subtrees, so one node list and one drivers'
+	// answer serve every reap in the sweep.
+	states := func() driversAnswer { return ans }
 	for _, rid := range inactiveRoots {
 		if err := r.rmResolved(params.Rm{Node: rid, Yes: true, Dry: p.Dry}, nodes, states); err != nil {
 			return fmt.Errorf("rm --inactive %s: %w", rid, err)
@@ -339,15 +347,16 @@ func (r Real) rmInactive(p params.Rm) error {
 	return nil
 }
 
-// memoBoxStates defers the fleet query and caches its answer: the fleet is
-// asked the first time the answer is needed, and never again for this reap.
-func (r Real) memoBoxStates() func() map[string]boxState {
-	var state map[string]boxState
-	return func() map[string]boxState {
-		if state == nil {
-			state = r.boxStates()
+// memoBoxStates defers the drivers query and caches its answer: the drivers
+// are asked the first time the answer is needed, and never again for this reap.
+func (r Real) memoBoxStates() func() driversAnswer {
+	var ans *driversAnswer
+	return func() driversAnswer {
+		if ans == nil {
+			a := r.boxStates()
+			ans = &a
 		}
-		return state
+		return *ans
 	}
 }
 

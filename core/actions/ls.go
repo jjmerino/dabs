@@ -356,22 +356,32 @@ func (r Real) nodeSpaceDirs(n Node) []string {
 // is part of what it is.
 type boxState struct{ status, where string }
 
-// boxStates asks every driver in the fleet which boxes it holds — the same
-// query `ls` runs — keyed by instance name. Any view built from it agrees with
-// `ls` about which boxes are live; a driver that errors contributes nothing,
-// so its boxes read as gone rather than failing the caller.
-func (r Real) boxStates() map[string]boxState {
-	state := map[string]boxState{}
+// driversAnswer is one query of every driver: which instances they hold, and
+// whether every driver actually answered. An instance absent from a COMPLETE
+// answer is gone; absent from an incomplete one, it is merely unconfirmed.
+type driversAnswer struct {
+	state    map[string]boxState
+	complete bool
+}
+
+// boxStates asks every driver which boxes it holds — the same query `ls`
+// runs — keyed by instance name. Any view built from it agrees with `ls`
+// about which boxes are live; a driver that errors contributes nothing, so
+// its boxes read as gone rather than failing the caller — and the answer is
+// marked incomplete, so a reap does not treat that silence as absence.
+func (r Real) boxStates() driversAnswer {
+	ans := driversAnswer{state: map[string]boxState{}, complete: true}
 	for _, key := range r.order {
 		infos, err := lsTimeout(r.drivers[key], remoteTimeout)
 		if err != nil {
+			ans.complete = false
 			continue
 		}
 		for _, in := range infos {
-			state[in.Name] = boxState{status: in.Status, where: key}
+			ans.state[in.Name] = boxState{status: in.Status, where: key}
 		}
 	}
-	return state
+	return ans
 }
 
 // lsColumns are the columns `ls` draws for every node: the tree, its kind, the

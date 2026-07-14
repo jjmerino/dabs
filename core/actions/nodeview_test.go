@@ -69,11 +69,10 @@ func (f *vFakeData) ExpandEnv(s string) string                    { return s }
 func (f *vFakeData) GitToplevel(string) (string, error)           { return "", fs.ErrNotExist }
 func (f *vFakeData) GitHasCommits(string) bool                    { return false }
 func (f *vFakeData) GitAddWorktree(string, string, string) error  { return nil }
-func (f *vFakeData) GitDiff(wt string) (string, error) {
-	if g, ok := f.git[wt]; ok && !g.landed {
-		return "diff", nil
-	}
-	return "", nil
+func (f *vFakeData) GitDiff(string) (string, error)               { return "", nil }
+func (f *vFakeData) GitLanded(wt string) (bool, error) {
+	g, ok := f.git[wt]
+	return ok && g.landed, nil
 }
 func (f *vFakeData) GitRemoveWorktree(string) error      { return nil }
 func (f *vFakeData) GitCommonDir(string) (string, error) { return "", fs.ErrNotExist }

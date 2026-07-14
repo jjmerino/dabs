@@ -136,6 +136,27 @@ func (OS) GitState(worktree string) (string, bool, int, error) {
 	return strings.TrimSpace(string(branch)), dirty, ahead, nil
 }
 
+// GitLanded asks git the content question directly: `merge-tree --write-tree
+// base HEAD` computes the tree a real merge would produce, without touching
+// any checkout. That tree equal to the base's own tree means the branch adds
+// nothing — landed, however it landed (a squash included). A conflicting or
+// failed merge-tree is not proof of anything, so it reads as not landed.
+func (OS) GitLanded(worktree string) (bool, error) {
+	base := baseRef(worktree)
+	if base == "" {
+		return false, nil
+	}
+	merged, err := exec.Command("git", "-C", worktree, "merge-tree", "--write-tree", base, "HEAD").Output()
+	if err != nil {
+		return false, nil
+	}
+	baseTree, err := exec.Command("git", "-C", worktree, "rev-parse", base+"^{tree}").Output()
+	if err != nil {
+		return false, fmt.Errorf("git rev-parse %s^{tree}: %v", base, err)
+	}
+	return strings.TrimSpace(string(merged)) == strings.TrimSpace(string(baseTree)), nil
+}
+
 func (OS) GitDiff(worktree string) (string, error) {
 	var b strings.Builder
 	if base := baseRef(worktree); base != "" {

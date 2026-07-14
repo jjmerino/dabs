@@ -235,18 +235,15 @@ func (r Real) worktreeJudgment(path string, dirty bool, ahead int) Cell {
 	return CellNoDiff
 }
 
-// aheadCarriesContent reports whether the worktree holds content the base does
-// not. An empty diff means the work LANDED (a squash merge: commits ahead,
-// bytes already in the base). GitDiff also carries uncommitted tracked edits,
-// so a dirty landed branch reads as carrying content — the guard refuses a
-// dirty worktree anyway, so nothing reap-safe is misjudged. A diff error reads
-// as carrying content: never report reviewed what cannot be shown.
+// aheadCarriesContent reports whether the worktree's commits hold content the
+// base does not — GitLanded's question, inverted. An error reads as carrying
+// content: never report reviewed what cannot be shown.
 func (r Real) aheadCarriesContent(path string) bool {
-	d, err := r.data.GitDiff(path)
+	landed, err := r.data.GitLanded(path)
 	if err != nil {
 		return true
 	}
-	return strings.TrimSpace(d) != ""
+	return !landed
 }
 
 // Column names a drawable field. A renderer is told which to draw and in what

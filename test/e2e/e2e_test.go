@@ -1359,16 +1359,18 @@ func TestRecipeLocalDabsYamlDefault(t *testing.T) {
 	out, code := runIn(dir, "dabs recipes")
 	wantExit(t, 0, code)
 	// The default marker is a lipgloss badge that degrades to a bare word when
-	// piped; it sits on the default recipe's LINE (in the description cell — the
-	// name column is padded to alignment, so the gap width is the column's).
+	// piped; it sits on the default recipe's LINE, in the description cell. The
+	// probe recipe has no description, so its piped line is exactly the two
+	// fields "probe default" — a dropped badge or a stray extra cell both fail.
 	marked := false
 	for _, l := range strings.Split(out, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(l), "probe") && strings.Contains(l, "default") {
+		f := strings.Fields(l)
+		if len(f) == 2 && f[0] == "probe" && f[1] == "default" {
 			marked = true
 		}
 	}
 	if !marked {
-		t.Fatalf("default recipe's line carries no default marker:\n%s", out)
+		t.Fatalf("default recipe's line is not exactly `probe default`:\n%s", out)
 	}
 
 	// No name → the default-recipe path, which confirms before running: feed `y`.

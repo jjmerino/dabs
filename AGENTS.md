@@ -23,8 +23,10 @@ know what is in it:
   unknown/absent name falls back to the bundled `sh` box. Name the recipe you mean:
   `dabs recipe sh -c 'echo hi'`.
 - **Which recipes exist**. `dabs recipes` lists them one line each — name and
-  description; `dabs recipes --print` dumps the bundled ones in full (image,
-  sources, command).
+  description. Full detail (image, command, sources) exists only in the YAML
+  itself: `dabs recipes --print` dumps the BUNDLED registry in full; for a user
+  or project recipe, read `~/.dabs/recipes.yaml` or the project's `dabs.yaml` —
+  no dabs command prints their mounts.
 
 ## The loop
 

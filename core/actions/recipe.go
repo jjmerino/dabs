@@ -787,9 +787,15 @@ func (r Real) Recipes(p params.Recipes) error {
 	}
 	rows := make([][]string, 0, len(names))
 	for _, n := range names {
-		desc := tui.Muted(reg.Recipes[n].Description)
+		// "%s" keeps a user-authored description inert: Muted formats its
+		// arguments, and a bare % in a description is content, not a verb.
+		desc := tui.Muted("%s", reg.Recipes[n].Description)
 		if n == reg.Default {
-			desc += " " + tui.Badge("default")
+			if reg.Recipes[n].Description == "" {
+				desc = tui.Badge("default")
+			} else {
+				desc += " " + tui.Badge("default")
+			}
 		}
 		rows = append(rows, []string{tui.Accent(n), desc})
 	}

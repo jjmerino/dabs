@@ -202,6 +202,7 @@ func Rows(headers []string, rows [][]string) string {
 	pad := func(s string, w int) string { return s + strings.Repeat(" ", w-lipgloss.Width(s)) }
 	var b strings.Builder
 	line := func(cells []string, header bool) {
+		var ln strings.Builder
 		for i := 0; i < n; i++ {
 			cell := ""
 			if i < len(cells) {
@@ -212,12 +213,15 @@ func Rows(headers []string, rows [][]string) string {
 			}
 			if i < n-1 { // pad interior columns; trailing column needs no padding
 				cell = pad(cell, widths[i])
-				b.WriteString(cell)
-				b.WriteString("  ")
+				ln.WriteString(cell)
+				ln.WriteString("  ")
 			} else {
-				b.WriteString(cell)
+				ln.WriteString(cell)
 			}
 		}
+		// An empty trailing cell would leave the interior padding dangling;
+		// no cell means anything by its trailing spaces, so they go.
+		b.WriteString(strings.TrimRight(ln.String(), " "))
 		b.WriteByte('\n')
 	}
 	if headers != nil {

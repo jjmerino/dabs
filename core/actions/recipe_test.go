@@ -21,6 +21,7 @@ import (
 	"github.com/jjmerino/dabs/core/actions"
 	"github.com/jjmerino/dabs/core/data"
 	"github.com/jjmerino/dabs/core/params"
+	"github.com/jjmerino/dabs/core/recipe"
 	"github.com/jjmerino/dabs/core/sandbox"
 )
 
@@ -1197,9 +1198,19 @@ func TestRecipesListsNameAndDescription(t *testing.T) {
 	if strings.Contains(out, "image=") || strings.Contains(out, "cmd=") || strings.Contains(out, "→") {
 		t.Fatalf("recipes output still carries image=/cmd=/source detail; output:\n%s", out)
 	}
-	// One line per recipe: the registry merges the user recipe with the bundled
-	// ones, so each named recipe occupies exactly one row.
-	for _, ln := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+	// One line per recipe — a count, not just no-blanks, so a reintroduced
+	// per-recipe detail line fails even without an image=/cmd= marker. The
+	// registry is the bundled recipes plus the one project recipe above.
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	reg, err := recipe.Parse(recipe.Bundled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := len(reg.Names()) + 1
+	if len(lines) != want {
+		t.Fatalf("recipes printed %d lines for %d recipes:\n%s", len(lines), want, out)
+	}
+	for _, ln := range lines {
 		if strings.TrimSpace(ln) == "" {
 			t.Fatalf("blank line in recipes output:\n%s", out)
 		}

@@ -158,27 +158,39 @@ func (r Real) recordedImageDigest(image string) (digest string, found bool, err 
 	return m.Digest, true, nil
 }
 
+// imageStaleness names why an image may not be served as-is. The distinction
+// matters past the message: a rebuild that cannot run may fall back to the
+// image ONLY when there is no record contradicting it (see serveUnbuildable).
+type imageStaleness int
+
+const (
+	imageFresh    imageStaleness = iota // exists, record matches — serve it
+	imageMissing                        // not built yet
+	imageNoRecord                       // exists, no build record (legacy or staged)
+	imageChanged                        // exists, and the recorded source differs
+)
+
 // imageReuse decides whether a built image may be served as-is: it must EXIST and
 // its recorded source digest must equal current. When it may not, reason explains
 // why a rebuild will run (for the operator or agent reading the output); reason
 // is empty when the image simply is not built yet (a plain first build — no news).
-func (r Real) imageReuse(drv sandbox.Driver, name, current string) (reuse bool, reason string, err error) {
+func (r Real) imageReuse(drv sandbox.Driver, name, current string) (stale imageStaleness, reason string, err error) {
 	built, err := drv.HasImage(name)
 	if err != nil {
-		return false, "", err
+		return imageMissing, "", err
 	}
 	if !built {
-		return false, "", nil
+		return imageMissing, "", nil
 	}
 	recorded, found, err := r.recordedImageDigest(name)
 	if err != nil {
-		return false, "", err
+		return imageMissing, "", err
 	}
 	if !found {
-		return false, fmt.Sprintf("image %s: no build record — rebuilding", name), nil
+		return imageNoRecord, fmt.Sprintf("image %s: no build record — rebuilding", name), nil
 	}
 	if recorded != current {
-		return false, fmt.Sprintf("image %s: Dockerfile changed — rebuilding", name), nil
+		return imageChanged, fmt.Sprintf("image %s: Dockerfile changed — rebuilding", name), nil
 	}
-	return true, "", nil
+	return imageFresh, "", nil
 }

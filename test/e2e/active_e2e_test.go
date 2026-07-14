@@ -97,7 +97,7 @@ func TestLeftoverFilesKeepASubtreeActive(t *testing.T) {
 
 // TestEmptyDirTreeIsEmpty (the E2-4 pin, as activity): a space containing only
 // nested EMPTY directories holds nothing. So a node whose only content is such a
-// tree draws no ⚠, is reaped with no consent prompt, and counts as inactive. A
+// tree draws no held ●, is reaped with no consent prompt, and counts as inactive. A
 // project marker (which persists) is used so the empty-dir tree is what decides.
 func TestEmptyDirTreeIsEmpty(t *testing.T) {
 	clean(t)
@@ -121,13 +121,13 @@ func TestEmptyDirTreeIsEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// --inactive shows the marker (its subtree is inactive); its held cell has no ⚠.
+	// --inactive shows the marker (its subtree is inactive); its held cell shows no ●.
 	inactive, code := run("dabs ls --inactive")
 	if code != 0 {
 		t.Fatalf("ls --inactive failed (%d): %s", code, inactive)
 	}
 	row := rowWith(t, inactive, proj)
-	if strings.Contains(row, "⚠") {
+	if strings.Contains(row, "●") {
 		t.Fatalf("a tree of only empty dirs marked as holding files (E2-4); row=%q\n%s", row, inactive)
 	}
 

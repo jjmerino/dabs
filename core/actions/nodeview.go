@@ -22,8 +22,8 @@ type Cell int
 
 const (
 	CellNA       Cell = iota // "—"  not applicable to this node kind
-	CellEmpty                // "✓"  space present, holds nothing (safe to reap)
-	CellHolds                // "⚠"  space holds files a reap would lose
+	CellEmpty                // ""   space present, holds nothing (safe to reap)
+	CellHolds                // "●"  space holds files a reap would lose
 	CellLive                 // box:      running
 	CellGone                 // box:      gone (no live instance)
 	CellNoDiff               // worktree: no unreviewed work
@@ -36,9 +36,9 @@ const (
 func (c Cell) Symbol() string {
 	switch c {
 	case CellEmpty:
-		return "✓"
+		return ""
 	case CellHolds:
-		return "⚠"
+		return "●"
 	case CellLive:
 		return "live"
 	case CellGone:
@@ -59,14 +59,14 @@ func (c Cell) String() string { return c.Symbol() }
 // NodeView is a display-ready snapshot of a node and its subtree — a TRUE tree,
 // computed once, so any renderer consumes it with no further fs/driver call.
 type NodeView struct {
-	ID        string
-	Kind      NodeKind
-	Where     string // the "where": cwd (project) / on-disk folder (workdir, worktree) / instance (box)
-	Volume    Cell   // CellEmpty / CellHolds
-	Held      Cell
-	Tmp       Cell
-	State     Cell // box: live/gone · worktree: no-diff/has work/unmerged · else CellNA
-	Children  []*NodeView
+	ID       string
+	Kind     NodeKind
+	Where    string // the "where": cwd (project) / on-disk folder (workdir, worktree) / instance (box)
+	Volume   Cell   // CellEmpty / CellHolds
+	Held     Cell
+	Tmp      Cell
+	State    Cell // box: live/gone · worktree: no-diff/has work/unmerged · else CellNA
+	Children []*NodeView
 }
 
 // viewNodes turns a SET of nodes into view trees. It is the ONE place node
@@ -112,12 +112,12 @@ func (r Real) viewNodes(nodes []Node, state map[string]boxState) []*NodeView {
 // comes only from the passed map; worktree state comes from local git.
 func (r Real) viewNode(n Node, state map[string]boxState) *NodeView {
 	v := &NodeView{
-		ID:        n.ID,
-		Kind:      n.Kind,
-		Volume:    r.spaceCell(n.ID, SpaceVolume),
-		Held:      r.heldCell(n.ID),
-		Tmp:       r.spaceCell(n.ID, SpaceTmp),
-		State:     CellNA,
+		ID:     n.ID,
+		Kind:   n.Kind,
+		Volume: r.spaceCell(n.ID, SpaceVolume),
+		Held:   r.heldCell(n.ID),
+		Tmp:    r.spaceCell(n.ID, SpaceTmp),
+		State:  CellNA,
 	}
 	switch n.Kind {
 	case KindBox:
@@ -190,7 +190,7 @@ func (r Real) spaceCell(id, space string) Cell {
 
 // heldCell reports whether a node's held space holds anything, reading the
 // current held/ dir OR a legacy ephemeral/ one an older dabs wrote — so a legacy
-// node still shows the ⚠ that guards its files.
+// node still shows the ● that guards its files.
 func (r Real) heldCell(id string) Cell {
 	dir, err := r.resolveHeldSpace(id)
 	if err != nil {
@@ -371,11 +371,6 @@ func renderForest(roots []*NodeView, cols []Column, indent int) string {
 		header[i] = tui.Muted(columnTitle(c))
 	}
 	writeLine(header)
-	if hasSpaceColumn(cols) {
-		b.WriteString(pad)
-		b.WriteString(tui.Muted("✓ empty  ⚠ holds files"))
-		b.WriteByte('\n')
-	}
 	for _, r := range rows {
 		cells := make([]string, len(cols))
 		for i, c := range cols {
@@ -386,26 +381,12 @@ func renderForest(roots []*NodeView, cols []Column, indent int) string {
 	return b.String()
 }
 
-// hasSpaceColumn reports whether any space column is drawn, so the legend that
-// explains ✓ ⚠ — is only printed when those glyphs actually appear.
-func hasSpaceColumn(cols []Column) bool {
-	for _, c := range cols {
-		if c == ColVol || c == ColHeld || c == ColTmp {
-			return true
-		}
-	}
-	return false
-}
-
-// styleCell colors a space cell: a held space is warned (amber), an empty or
-// n/a space recedes (muted).
+// styleCell colors a space cell: a space that holds files shows the amber ●;
+// an empty space shows nothing; n/a recedes (muted).
 func styleCell(c Cell) string {
 	switch c {
 	case CellHolds:
-		if w := tui.Warn(""); lipgloss.Width(w) > 0 {
-			return w // a terminal: amber warn glyph
-		}
-		return c.Symbol() // piped: the plain glyph, still parsable
+		return tui.Holds()
 	default:
 		return tui.Muted(c.Symbol())
 	}

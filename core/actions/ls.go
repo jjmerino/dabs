@@ -68,7 +68,6 @@ func (r Real) Ls(p params.Ls) error {
 		}
 		nodes = append(nodes, n)
 	}
-	work := r.worktreeWork(nodes)
 	if p.Inactive {
 		if len(nodes) == 0 {
 			fmt.Fprintln(os.Stdout, tui.Muted("no inactive subtrees"))
@@ -158,11 +157,7 @@ func (r Real) Ls(p params.Ls) error {
 		if len(sections[key]) == 0 && !isServer(kinds[key]) {
 			continue
 		}
-		head := header(key, kinds[key])
-		if anyWork(sections[key], work) {
-			head += tui.Muted("   * has work you have not reviewed — dabs worktrees diff <name>")
-		}
-		fmt.Fprintln(os.Stdout, tui.Heading(head))
+		fmt.Fprintln(os.Stdout, tui.Heading(header(key, kinds[key])))
 		if len(sections[key]) == 0 {
 			fmt.Fprintln(os.Stdout, tui.Indent(tui.Muted("(nothing running)"), 2))
 			continue
@@ -354,39 +349,6 @@ func (r Real) nodeSpaceDirs(n Node) []string {
 		dirs = append(dirs, d)
 	}
 	return dirs
-}
-
-// worktreeWork marks the worktree nodes holding something a reap would destroy:
-// uncommitted changes, or commits no other branch has. It is the same question
-// `dabs worktrees` answers with HAS WORK — asked here so a tree of places cannot
-// read as a tree of things that do not matter.
-func (r Real) worktreeWork(nodes []Node) map[string]bool {
-	work := map[string]bool{}
-	for _, n := range nodes {
-		if n.Kind != KindWorktree {
-			continue
-		}
-		path, err := r.resolveNodeData(n.ID)
-		if err != nil {
-			continue
-		}
-		_, dirty, ahead, err := r.data.GitState(path)
-		if err != nil {
-			continue
-		}
-		work[n.ID] = dirty || ahead > 0
-	}
-	return work
-}
-
-// anyWork reports whether any node listed holds unreviewed work.
-func anyWork(nodes []Node, work map[string]bool) bool {
-	for _, n := range nodes {
-		if work[n.ID] {
-			return true
-		}
-	}
-	return false
 }
 
 // boxState is what a driver says about a box right now, and which driver said it.

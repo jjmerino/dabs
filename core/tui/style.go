@@ -57,7 +57,17 @@ const (
 	warnGlyph  = "⚠"
 	arrowGlyph = "→"
 	dotGlyph   = "•"
+	holdsGlyph = "●"
 )
+
+// Holds is the amber "●" a space cell shows when it holds files. Piped, the
+// glyph stays — a script reads the same token a terminal draws — without color.
+func Holds() string {
+	if !stdoutIsTTY {
+		return holdsGlyph
+	}
+	return warnStyle.Render(holdsGlyph)
+}
 
 // Heading styles a section title (usage banner, fleet header, …).
 func Heading(s string) string {

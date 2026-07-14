@@ -196,8 +196,9 @@ func TestViewNodesWorktreeState(t *testing.T) {
 	}
 }
 
-// renderForest draws exactly the requested columns, the tree glyphs for nested
-// nodes, and the space legend only when a space column is present.
+// renderForest draws exactly the requested columns and the tree glyphs for
+// nested nodes. A space cell that holds files is the ● glyph; an empty one is
+// BLANK — no glyph, no legend, nothing but the columns asked for.
 func TestRenderForestColumnsAndGlyphs(t *testing.T) {
 	proj := &NodeView{ID: "proj", Kind: KindProject, State: CellNA, Where: "/repo"}
 	box := &NodeView{ID: "box", Kind: KindBox, State: CellLive, Where: "inst",
@@ -206,23 +207,19 @@ func TestRenderForestColumnsAndGlyphs(t *testing.T) {
 
 	out := renderForest([]*NodeView{proj}, []Column{ColNode, ColKind, ColVol, ColState}, 2)
 
-	for _, want := range []string{"NODE", "KIND", "VOL", "STATE", "proj", "box", "live", "└─ "} {
+	for _, want := range []string{"NODE", "KIND", "VOL", "STATE", "proj", "box", "live", "└─ ", "●"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("render missing %q:\n%s", want, out)
 		}
 	}
-	if !strings.Contains(out, "✓ empty  ⚠ holds files") {
-		t.Errorf("space legend missing when a space column is drawn:\n%s", out)
+	for _, banned := range []string{"✓", "⚠", "holds files"} {
+		if strings.Contains(out, banned) {
+			t.Errorf("render contains %q — empty cells are blank and there is no legend:\n%s", banned, out)
+		}
 	}
 	// A column not asked for is not drawn.
 	if strings.Contains(out, "WHERE") {
 		t.Errorf("WHERE drawn though not requested:\n%s", out)
-	}
-
-	// With no space column, no legend.
-	noSpace := renderForest([]*NodeView{proj}, []Column{ColNode, ColState}, 0)
-	if strings.Contains(noSpace, "holds files") {
-		t.Errorf("legend drawn without a space column:\n%s", noSpace)
 	}
 }
 

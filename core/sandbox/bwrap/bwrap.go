@@ -69,7 +69,7 @@ type instanceMeta struct {
 // image's flattened rootfs to the image dir, replacing any previous build.
 func (d Driver) Build(spec sandbox.BuildSpec) error {
 	if _, err := exec.LookPath("docker"); err != nil {
-		return fmt.Errorf("bwrap: 'docker' not found (dabs builds images with it); install: https://docs.docker.com/engine/install/")
+		return fmt.Errorf("bwrap: 'docker' not found (dabs builds images with it); install: https://docs.docker.com/engine/install/ (%w)", sandbox.ErrNoBuilder)
 	}
 	tag := "dabs-" + spec.Name
 	build := exec.Command("docker", "build", "-t", tag, "-f", spec.Dockerfile, spec.Context)

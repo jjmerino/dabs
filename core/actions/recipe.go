@@ -913,6 +913,9 @@ func (r Real) ensureImageFresh(drv sandbox.Driver, recipeName string, img recipe
 		}
 		r.sayRebuild(reason)
 		if _, err := r.buildDockerImage(drv, recipeName, img); err != nil {
+			if r.serveUnbuildable(drv, recipeName, err) {
+				return recipeName, false, nil
+			}
 			return "", false, err
 		}
 		return recipeName, true, nil
@@ -944,9 +947,33 @@ func (r Real) ensureImageFresh(drv sandbox.Driver, recipeName string, img recipe
 	}
 	r.sayRebuild(reason)
 	if err := r.buildBundledImage(drv, name, digest); err != nil {
+		if r.serveUnbuildable(drv, name, err) {
+			return name, false, nil
+		}
 		return "", false, err
 	}
 	return name, true, nil
+}
+
+// serveUnbuildable reports whether an image a rebuild wanted may be served
+// as-is instead: the driver carries no builder (sandbox.ErrNoBuilder) and the
+// image EXISTS. This is the STAGED image case — a rootfs placed in the image
+// dir by something other than a dabs build (a nested-sandboxing box's
+// Dockerfile stages `shell` this way), so it has no build record and the
+// freshness check asks for a rebuild that can never run there. The image the
+// driver holds is the only one there will ever be; it is served with a line
+// saying freshness was not verified. Any other build failure is not served
+// around.
+func (r Real) serveUnbuildable(drv sandbox.Driver, name string, buildErr error) bool {
+	if !errors.Is(buildErr, sandbox.ErrNoBuilder) {
+		return false
+	}
+	built, err := drv.HasImage(name)
+	if err != nil || !built {
+		return false
+	}
+	fmt.Fprintln(os.Stdout, tui.Muted("image %s: no builder here to refresh it — serving it as-is", name))
+	return true
 }
 
 // sayRebuild prints why a rebuild is happening (empty reason: a plain first

@@ -11,6 +11,14 @@
 // which resolves against Ls and then addresses the driver exactly.
 package sandbox
 
+import "errors"
+
+// ErrNoBuilder marks a Build refusal because the host carries no image builder
+// (bwrap builds with docker). A driver wraps it so a caller can tell "cannot
+// build HERE" from a failed build — and serve an already-present image instead
+// of failing a boot that never needed a build.
+var ErrNoBuilder = errors.New("no image builder on this host")
+
 // Mount is a live host directory (or file) attached into a box at Path.
 // Unlike image layers, a mount is read-write-through by default: writes inside
 // the box land on the host and persist past the box. Drivers that cannot mount

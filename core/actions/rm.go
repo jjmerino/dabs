@@ -28,6 +28,15 @@ func (r Real) Rm(p params.Rm) error {
 	if err != nil {
 		return err
 	}
+	return r.rmResolved(p, nodes, r.memoBoxStates())
+}
+
+// rmResolved is Rm past the lookups: the node list and the fleet query are the
+// caller's, so a batch reap (rmInactive, rmCleanWorktrees) lists nodes once and
+// asks the fleet once for the whole sweep instead of per node. states is called
+// only when a box is among the doomed, so a reap that touches no box never
+// pays a fleet query.
+func (r Real) rmResolved(p params.Rm, nodes []Node, states func() map[string]boxState) error {
 	targets, err := rmMatches(p.Node, nodes, p.Multiple)
 	if err != nil {
 		return err
@@ -61,7 +70,7 @@ func (r Real) Rm(p params.Rm) error {
 	state := map[string]boxState{}
 	for _, n := range doomed {
 		if n.Kind == KindBox {
-			state = r.boxStates()
+			state = states()
 			break
 		}
 	}
@@ -124,9 +133,11 @@ func (r Real) Rm(p params.Rm) error {
 	}
 
 	// Deepest first: a box comes down before the place it was mounted on goes.
+	// An instance the fleet did not report is already gone — no down to attempt,
+	// no driver round-trip to pay for it.
 	for i := len(doomed) - 1; i >= 0; i-- {
 		n := doomed[i]
-		if n.Kind == KindBox && n.Instance != "" {
+		if _, present := state[n.Instance]; n.Kind == KindBox && n.Instance != "" && present {
 			if err := r.downInstance(n.Instance); err != nil {
 				return fmt.Errorf("rm %s: %w", n.ID, err)
 			}
@@ -145,14 +156,18 @@ func (r Real) Rm(p params.Rm) error {
 // work is refused (its reap returns an error) and reported at the end, unless
 // --force approves discarding it. --dry previews each without removing anything.
 func (r Real) rmCleanWorktrees(p params.Rm) error {
-	nodes, err := r.listWorktreeNodes()
+	nodes, err := r.listNodes()
 	if err != nil {
 		return err
 	}
+	states := r.memoBoxStates()
 	var kept []string
 	for _, n := range nodes {
+		if n.Worktree == nil {
+			continue
+		}
 		one := params.Rm{Node: n.ID, Yes: true, Dry: p.Dry, Volume: false, Force: p.Force}
-		if err := r.Rm(one); err != nil {
+		if err := r.rmResolved(one, nodes, states); err != nil {
 			if strings.Contains(err.Error(), "unreviewed work") {
 				kept = append(kept, n.ID)
 				continue
@@ -278,17 +293,33 @@ func (r Real) rmInactive(p params.Rm) error {
 	if err != nil {
 		return err
 	}
-	_, inactiveRoots := r.activeSubtrees(nodes, r.boxStates())
+	state := r.boxStates()
+	_, inactiveRoots := r.activeSubtrees(nodes, state)
 	if len(inactiveRoots) == 0 {
 		fmt.Fprintln(os.Stdout, tui.Muted("no inactive subtrees"))
 		return nil
 	}
+	// Inactive roots are disjoint subtrees, so one node list and one fleet answer
+	// serve every reap in the sweep.
+	states := func() map[string]boxState { return state }
 	for _, rid := range inactiveRoots {
-		if err := r.Rm(params.Rm{Node: rid, Yes: true, Dry: p.Dry}); err != nil {
+		if err := r.rmResolved(params.Rm{Node: rid, Yes: true, Dry: p.Dry}, nodes, states); err != nil {
 			return fmt.Errorf("rm --inactive %s: %w", rid, err)
 		}
 	}
 	return nil
+}
+
+// memoBoxStates defers the fleet query and caches its answer: the fleet is
+// asked the first time the answer is needed, and never again for this reap.
+func (r Real) memoBoxStates() func() map[string]boxState {
+	var state map[string]boxState
+	return func() map[string]boxState {
+		if state == nil {
+			state = r.boxStates()
+		}
+		return state
+	}
 }
 
 // rmColumns are the columns a cascade preview draws: the tree, each node's

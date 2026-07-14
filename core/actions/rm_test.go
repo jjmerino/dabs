@@ -270,6 +270,54 @@ func TestRmInactiveSweepsOnlyInactive(t *testing.T) {
 	}
 }
 
+// CONTRACT: `rm --inactive` is a BATCH: nodes are listed and the fleet queried
+// ONCE for the whole sweep, however many inactive roots it reaps — never per
+// node. A gone box's instance is never contacted (no down attempt): the one
+// fleet answer already says it is dead.
+func TestRmInactiveQueriesFleetOnce(t *testing.T) {
+	fd := baseData()
+	seedBoxNode(fd, "gone-aaaa", "inst-a") // empty spaces, instance not in the fleet
+	seedBoxNode(fd, "gone-bbbb", "inst-b")
+	seedNode(fd, "proj-x", "project", "")
+	drv := &fakeDriver{} // fleet reports nothing → everything is inactive
+
+	if err := newReal("", fd, drv).Rm(params.Rm{Inactive: true}); err != nil {
+		t.Fatalf("rm --inactive: %v", err)
+	}
+	if drv.lsCount != 1 {
+		t.Errorf("rm --inactive queried the fleet %d times, want 1 for the whole sweep", drv.lsCount)
+	}
+	if len(drv.downs) != 0 {
+		t.Errorf("rm --inactive must not attempt to down gone instances: %v", drv.downs)
+	}
+	for _, id := range []string{"gone-aaaa", "gone-bbbb", "proj-x"} {
+		if !rmAllHas(fd, nodeBase+"/"+id) {
+			t.Errorf("%s not reaped by the sweep: %v", id, fd.rmAll)
+		}
+	}
+}
+
+// CONTRACT: `rm` of a box the fleet does not report skips the down entirely —
+// the one fleet query is the whole answer, no second per-instance round-trip.
+func TestRmGoneBoxSkipsDownAndSecondFleetQuery(t *testing.T) {
+	fd := baseData()
+	seedBoxNode(fd, "gone-aaaa", "inst-a")
+	drv := &fakeDriver{} // fleet does not report inst-a → already gone
+
+	if err := newReal("", fd, drv).Rm(params.Rm{Node: "gone-aaaa"}); err != nil {
+		t.Fatalf("rm: %v", err)
+	}
+	if drv.lsCount != 1 {
+		t.Errorf("rm of a gone box queried the fleet %d times, want 1", drv.lsCount)
+	}
+	if len(drv.downs) != 0 {
+		t.Errorf("rm of a gone box must not down anything: %v", drv.downs)
+	}
+	if !rmAllHas(fd, nodeBase+"/gone-aaaa") {
+		t.Errorf("gone box's node not removed: %v", fd.rmAll)
+	}
+}
+
 // seedNode makes fd look as if dabs had provisioned an arbitrary-kind node,
 // optionally under a parent, so a cascade (project → workdirs) can be built.
 func seedNode(fd *fakeData, id, kind, parent string) {

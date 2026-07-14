@@ -904,16 +904,16 @@ func (r Real) ensureImageFresh(drv sandbox.Driver, recipeName string, img recipe
 		if err != nil {
 			return "", false, err
 		}
-		reuse, reason, err := r.imageReuse(drv, recipeName, digest)
+		stale, reason, err := r.imageReuse(drv, recipeName, digest)
 		if err != nil {
 			return "", false, err
 		}
-		if reuse {
+		if stale == imageFresh {
 			return recipeName, false, nil
 		}
 		r.sayRebuild(reason)
 		if _, err := r.buildDockerImage(drv, recipeName, img); err != nil {
-			if r.serveUnbuildable(drv, recipeName, err) {
+			if r.serveUnbuildable(recipeName, stale, err) {
 				return recipeName, false, nil
 			}
 			return "", false, err
@@ -938,16 +938,16 @@ func (r Real) ensureImageFresh(drv sandbox.Driver, recipeName string, img recipe
 	if err != nil {
 		return "", false, err
 	}
-	reuse, reason, err := r.imageReuse(drv, name, digest)
+	stale, reason, err := r.imageReuse(drv, name, digest)
 	if err != nil {
 		return "", false, err
 	}
-	if reuse {
+	if stale == imageFresh {
 		return name, false, nil
 	}
 	r.sayRebuild(reason)
 	if err := r.buildBundledImage(drv, name, digest); err != nil {
-		if r.serveUnbuildable(drv, name, err) {
+		if r.serveUnbuildable(name, stale, err) {
 			return name, false, nil
 		}
 		return "", false, err
@@ -956,20 +956,18 @@ func (r Real) ensureImageFresh(drv sandbox.Driver, recipeName string, img recipe
 }
 
 // serveUnbuildable reports whether an image a rebuild wanted may be served
-// as-is instead: the driver carries no builder (sandbox.ErrNoBuilder) and the
-// image EXISTS. This is the STAGED image case — a rootfs placed in the image
-// dir by something other than a dabs build (a nested-sandboxing box's
-// Dockerfile stages `shell` this way), so it has no build record and the
-// freshness check asks for a rebuild that can never run there. The image the
-// driver holds is the only one there will ever be; it is served with a line
-// saying freshness was not verified. Any other build failure is not served
-// around.
-func (r Real) serveUnbuildable(drv sandbox.Driver, name string, buildErr error) bool {
-	if !errors.Is(buildErr, sandbox.ErrNoBuilder) {
-		return false
-	}
-	built, err := drv.HasImage(name)
-	if err != nil || !built {
+// as-is instead. Three conditions, all required: the build was refused because
+// the host carries no builder (sandbox.ErrNoBuilder); the image EXISTS; and the
+// rebuild was wanted only because there is NO build record. That last one is
+// the STAGED image case — a rootfs placed in the image dir by something other
+// than a dabs build (a nested-sandboxing box's Dockerfile stages `shell` this
+// way), where the rebuild can never run and the image the host holds is the
+// only one there will ever be. A record that says the source CHANGED is a
+// contradiction on file: serving that image would hand out a build known to be
+// stale, so the boot fails instead. Any other build failure is not served
+// around either.
+func (r Real) serveUnbuildable(name string, stale imageStaleness, buildErr error) bool {
+	if stale != imageNoRecord || !errors.Is(buildErr, sandbox.ErrNoBuilder) {
 		return false
 	}
 	fmt.Fprintln(os.Stdout, tui.Muted("image %s: no builder here to refresh it — serving it as-is", name))

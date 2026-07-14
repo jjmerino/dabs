@@ -33,22 +33,23 @@ var (
 // --- fake driver: records every op, returns canned results -------------------
 
 type fakeDriver struct {
-	built    map[string]bool // name -> HasImage answer
-	buildErr error           // if non-nil, Build fails (simulates a driver with no builder)
-	builds   []sandbox.BuildSpec
-	ups      []sandbox.Spec
-	upErr    error
-	execs    [][]string
-	execErr  error // if non-nil, Exec fails (simulates a box that cannot be entered)
-	runs     [][]string
-	runErr   error
-	downs    []string
-	nInst    int
-	infos    []sandbox.Info // what Ls reports (for name resolution in Down)
-	kind     string         // Kind() override; "" → "fake" (a local, non-server driver)
-	lsCall   *bool          // if non-nil, set true when Ls is called (proves contact)
-	lsCount  int            // how many times Ls was called (pins fleet-query batching)
-	lsPanic  bool           // if true, Ls panics — proves it was never called when the test passes
+	built     map[string]bool // name -> HasImage answer
+	buildErr  error           // if non-nil, Build fails (simulates a driver with no builder)
+	builds    []sandbox.BuildSpec
+	ups       []sandbox.Spec
+	upErr     error
+	execs     [][]string
+	execErr   error // if non-nil, Exec fails (simulates a box that cannot be entered)
+	runs      [][]string
+	runErr    error
+	downs     []string
+	nInst     int
+	infos     []sandbox.Info // what Ls reports (for name resolution in Down)
+	kind      string         // Kind() override; "" → "fake" (a local, non-server driver)
+	lsCall    *bool          // if non-nil, set true when Ls is called (proves contact)
+	lsCount   int            // how many times Ls was called (pins drivers-query batching)
+	lsErrOnce error          // if non-nil, the FIRST Ls call fails with it (a transient outage)
+	lsPanic   bool           // if true, Ls panics — proves it was never called when the test passes
 }
 
 func (d *fakeDriver) Build(s sandbox.BuildSpec) error {
@@ -92,6 +93,11 @@ func (d *fakeDriver) Ls() ([]sandbox.Info, error) {
 		*d.lsCall = true
 	}
 	d.lsCount++
+	if d.lsErrOnce != nil {
+		e := d.lsErrOnce
+		d.lsErrOnce = nil
+		return nil, e
+	}
 	return d.infos, nil
 }
 func (d *fakeDriver) Kind() string {

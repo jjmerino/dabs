@@ -1,5 +1,5 @@
 <p align="center">
-  <img src=".github/assets/header.png" alt="dabs" width="640">
+  <a href="https://www.dabs.dev/"><img src=".github/assets/header.png" alt="dabs" width="640"></a>
 </p>
 
 <p align="center">
@@ -7,6 +7,7 @@
   <a href="https://github.com/jjmerino/dabs/releases/latest"><img src="https://img.shields.io/github/v/release/jjmerino/dabs" alt="release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/jjmerino/dabs" alt="license"></a>
   <a href="go.mod"><img src="https://img.shields.io/github/go-mod/go-version/jjmerino/dabs" alt="go"></a>
+  <a href="https://docs.dabs.dev"><img src="https://img.shields.io/badge/docs-docs.dabs.dev-8E17FF" alt="docs"></a>
 </p>
 
 # dabs — dumb agent boxes

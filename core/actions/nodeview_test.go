@@ -25,8 +25,9 @@ type vFakeData struct {
 }
 
 type vGit struct {
-	dirty bool
-	ahead int
+	dirty  bool
+	ahead  int
+	landed bool // ahead, but the content is already in the base (a squash merge)
 }
 
 func (f *vFakeData) HomeDir() (string, error) { return "/home/t", nil }
@@ -68,9 +69,14 @@ func (f *vFakeData) ExpandEnv(s string) string                    { return s }
 func (f *vFakeData) GitToplevel(string) (string, error)           { return "", fs.ErrNotExist }
 func (f *vFakeData) GitHasCommits(string) bool                    { return false }
 func (f *vFakeData) GitAddWorktree(string, string, string) error  { return nil }
-func (f *vFakeData) GitDiff(string) (string, error)               { return "", nil }
-func (f *vFakeData) GitRemoveWorktree(string) error               { return nil }
-func (f *vFakeData) GitCommonDir(string) (string, error)          { return "", fs.ErrNotExist }
+func (f *vFakeData) GitDiff(wt string) (string, error) {
+	if g, ok := f.git[wt]; ok && !g.landed {
+		return "diff", nil
+	}
+	return "", nil
+}
+func (f *vFakeData) GitRemoveWorktree(string) error      { return nil }
+func (f *vFakeData) GitCommonDir(string) (string, error) { return "", fs.ErrNotExist }
 
 // panicDriver proves laziness: viewNodes must never reach a driver, so any call
 // that would (Ls above all) blows up the test loudly.
@@ -167,14 +173,16 @@ func TestViewNodesWorktreeState(t *testing.T) {
 	dirtyWT := vBase + "wt-dirty/held/worktree"
 	cleanWT := vBase + "wt-clean/held/worktree"
 	aheadWT := vBase + "wt-ahead/held/worktree"
+	landedWT := vBase + "wt-landed/held/worktree"
 	fd := &vFakeData{
-		statOK: map[string]bool{dirtyWT: true, cleanWT: true, aheadWT: true},
-		git:    map[string]vGit{dirtyWT: {dirty: true}, aheadWT: {ahead: 1}},
+		statOK: map[string]bool{dirtyWT: true, cleanWT: true, aheadWT: true, landedWT: true},
+		git:    map[string]vGit{dirtyWT: {dirty: true}, aheadWT: {ahead: 1}, landedWT: {ahead: 4, landed: true}},
 	}
 	nodes := []Node{
 		{ID: "wt-dirty", Kind: KindWorktree, Worktree: &NodeWorktree{Branch: "dabs/d"}, Created: "1"},
 		{ID: "wt-clean", Kind: KindWorktree, Worktree: &NodeWorktree{Branch: "dabs/c"}, Created: "2"},
 		{ID: "wt-ahead", Kind: KindWorktree, Worktree: &NodeWorktree{Branch: "dabs/a"}, Created: "3"},
+		{ID: "wt-landed", Kind: KindWorktree, Worktree: &NodeWorktree{Branch: "dabs/l"}, Created: "4"},
 	}
 	roots := newViewReal(fd).viewNodes(nodes, nil)
 	byID := map[string]*NodeView{}
@@ -186,6 +194,11 @@ func TestViewNodesWorktreeState(t *testing.T) {
 	}
 	if byID["wt-ahead"].State != CellUnmerged {
 		t.Errorf("ahead worktree State = %v, want CellUnmerged", byID["wt-ahead"].State)
+	}
+	// Ahead but landed (a squash merge): the content is in the base, so the
+	// judgment is no-diff — commit count is not the question.
+	if byID["wt-landed"].State != CellNoDiff {
+		t.Errorf("landed worktree State = %v, want CellNoDiff", byID["wt-landed"].State)
 	}
 	if byID["wt-clean"].State != CellNoDiff {
 		t.Errorf("clean worktree State = %v, want CellNoDiff", byID["wt-clean"].State)

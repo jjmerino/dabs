@@ -382,7 +382,10 @@ func (r Real) guardWorktreeWork(n Node, force bool) error {
 	if err != nil {
 		return err
 	}
-	if dirty || ahead > 0 {
+	// The same judgment `ls`/`worktrees ls` print: commits ahead whose content
+	// already landed in the base (a squash merge) are reviewed work, and
+	// discarding the checkout loses nothing — no --force for that.
+	if dirty || (ahead > 0 && r.aheadCarriesContent(path)) {
 		return fmt.Errorf("%s has unreviewed work (uncommitted=%v, %d commit(s) ahead) — review with `dabs worktrees diff %s`, then rm --force to discard", n.ID, dirty, ahead, n.ID)
 	}
 	return nil

@@ -86,6 +86,51 @@ func TestWorktreeRmForceDiscards(t *testing.T) {
 	}
 }
 
+// CONTRACT: a SQUASH-MERGED worktree removes without --force. Its commits are
+// ahead of the base for ever (a squash never lands them in history), but its
+// content diff is empty — the work is reviewed and landed, and discarding the
+// checkout loses nothing. Demanding --force here made the safest reap wear the
+// discard-work flag.
+func TestWorktreeRmSquashMergedNeedsNoForce(t *testing.T) {
+	fd := baseData()
+	data := seedWorktreeNode(fd, "wt1", wtState{ahead: 4, landed: true})
+	if err := newReal("", fd, &fakeDriver{}).Rm(params.Rm{Node: "wt1", Yes: true}); err != nil {
+		t.Fatalf("rm of a squash-merged worktree must need no --force: %v", err)
+	}
+	if len(fd.removed) != 1 || fd.removed[0] != data {
+		t.Fatalf("squash-merged checkout not removed: %v", fd.removed)
+	}
+}
+
+// CONTRACT: the sweep takes squash-merged worktrees too — landed work is not
+// unreviewed work.
+func TestWorktreeCleanSweepTakesSquashMerged(t *testing.T) {
+	fd := baseData()
+	seedWorktreeNode(fd, "landed1", wtState{ahead: 2, landed: true})
+	seedWorktreeNode(fd, "dirty1", wtState{ahead: 1})
+	if err := newReal("", fd, &fakeDriver{}).Rm(params.Rm{CleanWorktrees: true}); err != nil {
+		t.Fatalf("rm --clean-worktrees: %v", err)
+	}
+	if len(fd.removed) != 1 || !strings.Contains(fd.removed[0], "landed1") {
+		t.Fatalf("sweep should take the landed worktree and keep the unmerged one: %v", fd.removed)
+	}
+}
+
+// CONTRACT: `worktrees ls` and the ls STATE column read a squash-merged branch
+// as no-diff, not unmerged — the judgment is content, not commit count.
+func TestWorktreeLsSquashMergedReadsNoDiff(t *testing.T) {
+	fd := baseData()
+	seedWorktreeNode(fd, "landed1", wtState{branch: "dabs/aa", ahead: 3, landed: true})
+	out := captureStdout(t, func() {
+		if err := newReal("", fd, &fakeDriver{}).Worktrees(params.Worktrees{Sub: "ls"}); err != nil {
+			t.Fatalf("ls: %v", err)
+		}
+	})
+	if !strings.Contains(out, "no-diff") || strings.Contains(out, "unmerged") {
+		t.Fatalf("squash-merged worktree must read no-diff, not unmerged:\n%s", out)
+	}
+}
+
 // CONTRACT: a clean worktree removes without --force.
 func TestWorktreeRmCleanNeedsNoForce(t *testing.T) {
 	fd := baseData()

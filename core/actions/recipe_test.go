@@ -134,6 +134,7 @@ type wtState struct {
 	branch string
 	dirty  bool
 	ahead  int
+	landed bool // commits ahead whose content is already in the base (a squash merge)
 }
 
 func (f *fakeData) HomeDir() (string, error) { return f.home, nil }
@@ -252,7 +253,12 @@ func (f *fakeData) GitState(wt string) (string, bool, int, error) {
 	s := f.states[wt]
 	return s.branch, s.dirty, s.ahead, nil
 }
-func (f *fakeData) GitDiff(wt string) (string, error) { return "diff of " + wt, nil }
+func (f *fakeData) GitDiff(wt string) (string, error) {
+	if st, ok := f.states[wt]; ok && st.landed {
+		return "", nil // the base already holds every byte — a squash merge landed it
+	}
+	return "diff of " + wt, nil
+}
 func (f *fakeData) GitRemoveWorktree(wt string) error {
 	f.removed = append(f.removed, wt)
 	return nil

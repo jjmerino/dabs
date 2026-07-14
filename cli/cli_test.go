@@ -44,6 +44,7 @@ type fakeActions struct {
 	rm     []params.Rm
 	prune  []params.Prune
 	recipe []params.Recipe
+	cd     []params.Cd
 	err    error // returned from every action
 }
 
@@ -51,6 +52,7 @@ func (f *fakeActions) Build(p params.Build) error               { f.build = appe
 func (f *fakeActions) Recipe(p params.Recipe) error             { f.recipe = append(f.recipe, p); return f.err }
 func (f *fakeActions) Recipes(params.Recipes) error             { return f.err }
 func (f *fakeActions) Worktrees(params.Worktrees) error         { return f.err }
+func (f *fakeActions) Cd(p params.Cd) error                     { f.cd = append(f.cd, p); return f.err }
 func (f *fakeActions) Exec(p params.Exec) error                 { f.exec = append(f.exec, p); return f.err }
 func (f *fakeActions) Rm(p params.Rm) error                     { f.rm = append(f.rm, p); return f.err }
 func (f *fakeActions) Ls(p params.Ls) error                     { f.ls = append(f.ls, p); return f.err }

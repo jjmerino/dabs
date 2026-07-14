@@ -125,6 +125,12 @@ type Recipe struct {
 	// `dabs exec` (and `dabs rm` to reap). Args[0], when present, is the recipe
 	// name or a dabs.yaml path; no command is appended in this mode.
 	Detach bool
+	// NodeName (--name) is the id the boot's LEAF node gets — the box when the
+	// recipe boots one, else the place it provisions — instead of a minted id.
+	// A chosen name is the node's one handle: shown wherever ids are shown,
+	// resolvable wherever ids resolve. It must be unique across known nodes; an
+	// INACTIVE holder is reaped on the fly, an active one refuses the boot.
+	NodeName string
 }
 
 // Recipes are the inputs to listing the known recipes.
@@ -138,6 +144,12 @@ type Worktrees struct {
 	Name string // for diff
 }
 
+// Cd is the input to printing a node's directory — the WHERE `ls` shows — as a
+// bare absolute path, for `cd "$(dabs cd <node>)"`.
+type Cd struct {
+	Node string // node id/name (or box instance), git-style prefixes accepted
+}
+
 // Actions is the contract every action provider satisfies: the real
 // implementations in core/actions, fakes in tests, RPC clients later.
 type Actions interface {
@@ -145,6 +157,7 @@ type Actions interface {
 	Recipe(Recipe) error
 	Recipes(Recipes) error
 	Worktrees(Worktrees) error
+	Cd(Cd) error
 	Exec(Exec) error
 	Ls(Ls) error
 	Rm(Rm) error

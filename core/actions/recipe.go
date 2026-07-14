@@ -45,21 +45,21 @@ func (r Real) Recipe(p params.Recipe) error {
 		if len(p.Args) > 0 {
 			arg = p.Args[0]
 		}
-		return r.upDetached(arg, p.Worktree)
+		return r.upDetached(arg, p.Worktree, p.NodeName)
 	}
 	reg, err := r.loadRegistry()
 	if err != nil {
 		return err
 	}
 	if p.Name != "" {
-		return r.runRecipe(reg, p.Name, p.Worktree, nil, false)
+		return r.runRecipe(reg, p.Name, p.Worktree, nil, false, p.NodeName)
 	}
 	if p.Default || len(p.Args) == 0 {
 		name := reg.Default
 		if name == "" {
 			name = "sh" // no project default → the bundled generic shell box
 		}
-		return r.runRecipe(reg, name, "", p.Args, true)
+		return r.runRecipe(reg, name, "", p.Args, true, p.NodeName)
 	}
 	name := p.Args[0]
 	// A first positional whose SHAPE is a path names a dabs.yaml to load and run,
@@ -70,12 +70,12 @@ func (r Real) Recipe(p params.Recipe) error {
 		if err != nil {
 			return err
 		}
-		return r.runRecipe(pathReg, pathName, p.Worktree, p.Args[1:], false)
+		return r.runRecipe(pathReg, pathName, p.Worktree, p.Args[1:], false, p.NodeName)
 	}
 	if _, ok := reg.Recipes[name]; !ok {
 		return fmt.Errorf("no recipe %q (known: %s) — or `dabs recipe -- %s` to run it as a command on the default recipe", name, strings.Join(reg.Names(), ", "), name)
 	}
-	return r.runRecipe(reg, name, p.Worktree, p.Args[1:], false)
+	return r.runRecipe(reg, name, p.Worktree, p.Args[1:], false, p.NodeName)
 }
 
 // runRecipe is the shared engine behind `dabs recipe` (with or without
@@ -86,7 +86,7 @@ func (r Real) Recipe(p params.Recipe) error {
 // Everything the box does is declared in the recipe. `extra` is appended to the
 // recipe's command; when it is non-empty the caller must first approve the
 // recipe and the exact command (nothing is built or run until they do).
-func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []string, alwaysConfirm bool) error {
+func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []string, alwaysConfirm bool, nodeName string) error {
 	rec, err := reg.Get(name)
 	if err != nil {
 		return err
@@ -95,12 +95,19 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 	if err := r.checkSources(name, rec.Sources, boxless); err != nil {
 		return err
 	}
+	// A chosen name is claimed before anything is provisioned, so a refused
+	// claim costs nothing — and an inactive holder is reaped here, once.
+	if nodeName != "" {
+		if err := r.claimNodeName(nodeName); err != nil {
+			return err
+		}
+	}
 	command := append(append([]string{}, rec.Command...), extra...)
 	// A recipe with no image is a recipe for a PLACE, not a box: it provisions its
 	// nodes (a worktree, a directory) and stops. Nodes do not need a box; a box
 	// mounts what a node owns.
 	if boxless {
-		return r.provisionNodes(name, rec, worktree)
+		return r.provisionNodes(name, rec, worktree, nodeName)
 	}
 	// An empty recipe command has nothing to run, and appended argv cannot supply
 	// one: it is appended to the recipe's command, so with no command it would
@@ -149,7 +156,7 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 	if err != nil {
 		return err
 	}
-	boxID, vars, err := r.mintBoxNode(name, tip)
+	boxID, vars, err := r.mintBoxNode(name, tip, nodeName)
 	if err != nil {
 		return err
 	}
@@ -228,9 +235,22 @@ func pathDepth(p string) int {
 // whatever places the recipe declares, and prints them. There is no box, so
 // nothing is mounted and nothing is torn down — the places persist, and a later
 // recipe (or `dabs recipe --worktree`) can put a box on one.
-func (r Real) provisionNodes(name string, rec recipe.Recipe, worktree string) error {
+func (r Real) provisionNodes(name string, rec recipe.Recipe, worktree, nodeName string) error {
 	if worktree != "" {
 		return fmt.Errorf("recipe %q: has no image, so there is no box to put onto a worktree", name)
+	}
+	// With no box, the place IS the leaf a --name names. One name, one node: a
+	// recipe declaring several places cannot spread one name over them.
+	if nodeName != "" {
+		places := 0
+		for _, s := range rec.Sources {
+			if kind, _, err := s.Kind(); err == nil && (kind == "worktree" || kind == "copy") {
+				places++
+			}
+		}
+		if places > 1 {
+			return fmt.Errorf("recipe %q: --name %s names ONE node, and this recipe provisions %d places", name, nodeName, places)
+		}
 	}
 	project, err := r.ensureProjectNode(name)
 	if err != nil {
@@ -255,7 +275,7 @@ func (r Real) provisionNodes(name string, rec recipe.Recipe, worktree string) er
 			if err != nil {
 				return fmt.Errorf("recipe %q: worktree %s: %w", name, origin, err)
 			}
-			wt, branch, id, err := r.addWorktree(top, name, project)
+			wt, branch, id, err := r.addWorktree(top, name, project, nodeName)
 			if err != nil {
 				return err
 			}
@@ -263,6 +283,9 @@ func (r Real) provisionNodes(name string, rec recipe.Recipe, worktree string) er
 			made++
 		case "copy":
 			id, _ := mintNodeID(filepath.Base(host))
+			if nodeName != "" {
+				id = nodeName
+			}
 			dir, err := r.workdirData(id)
 			if err != nil {
 				return err
@@ -302,9 +325,13 @@ func (r Real) workdirData(id string) (string, error) {
 // mintBoxNode names the box's node before the box exists, and returns the three
 // space paths a recipe may name as $NODE_VOLUME / $NODE_HELD / $NODE_TMP.
 // The id is minted first because a source may mount a space, and a mount needs a
-// path before the driver is called.
-func (r Real) mintBoxNode(recipeName, parent string) (id string, vars map[string]string, err error) {
+// path before the driver is called. nodeName, when set, IS the id — the box is
+// the boot's leaf, so a --name lands here (claimed by the caller already).
+func (r Real) mintBoxNode(recipeName, parent, nodeName string) (id string, vars map[string]string, err error) {
 	id, _ = mintNodeID(recipeName)
+	if nodeName != "" {
+		id = nodeName
+	}
 	vars, err = r.spaceVars(id, "NODE")
 	if err != nil {
 		return "", nil, err
@@ -1109,11 +1136,16 @@ func withinRoot(root, target string) bool {
 // it — but `rm` asks first when it holds work. It returns the checkout path
 // (what the box mounts) and the branch. Requires at least one commit (a born
 // HEAD). parent is the node this one stacks on.
-func (r Real) addWorktree(top, recipeName, parent string) (path, branch, id string, err error) {
+func (r Real) addWorktree(top, recipeName, parent, nodeName string) (path, branch, id string, err error) {
 	if !r.data.GitHasCommits(top) {
 		return "", "", "", fmt.Errorf("recipe: repo has no commits yet — make an initial commit first")
 	}
 	id, short := mintNodeID(filepath.Base(top))
+	if nodeName != "" {
+		// The chosen name is the node's one handle, and the branch carries it
+		// too: dabs/<name>, the same shape minted worktrees get.
+		id, short = nodeName, nodeName
+	}
 	branch = "dabs/" + short
 
 	dir, err := r.resolveNodeSpace(id, SpaceHeld)

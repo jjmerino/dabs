@@ -523,28 +523,9 @@ func rmMatches(name string, nodes []Node, multiple bool) ([]Node, error) {
 	if strings.TrimSpace(name) == "" {
 		return nil, fmt.Errorf("a name is required (see dabs ls)")
 	}
-	var hits []Node
-	for _, n := range nodes {
-		if n.ID == name {
-			return []Node{n}, nil
-		}
-		if strings.HasPrefix(n.ID, name) {
-			hits = append(hits, n)
-		}
-	}
-	// Fall back to the box instance name only when no node id matched, so the
-	// canonical handle always wins over the record it turned out to be.
-	if len(hits) == 0 {
-		for _, n := range nodes {
-			if n.Kind == KindBox && n.Instance == name {
-				return []Node{n}, nil
-			}
-		}
-		for _, n := range nodes {
-			if n.Kind == KindBox && n.Instance != "" && strings.HasPrefix(n.Instance, name) {
-				hits = append(hits, n)
-			}
-		}
+	hits := matchNodes(name, nodes)
+	if len(hits) == 1 {
+		return hits, nil
 	}
 	if len(hits) > 1 && !multiple {
 		var ids []string
@@ -555,6 +536,36 @@ func rmMatches(name string, nodes []Node, multiple bool) ([]Node, error) {
 		return nil, fmt.Errorf("%q matches %d nodes; pass --multiple to rm all of them", name, len(hits))
 	}
 	return hits, nil
+}
+
+// matchNodes resolves a name against the nodes, git-style: an exact NODE id
+// wins outright, then node-id prefixes; only when neither hits does a raw box
+// INSTANCE name resolve as a fallback (exact, then prefix). One hit is THE
+// node; several is ambiguity for the caller's policy to judge; none is none.
+// A blank name matches nothing — never everything.
+func matchNodes(name string, nodes []Node) []Node {
+	var hits []Node
+	for _, n := range nodes {
+		if n.ID == name {
+			return []Node{n}
+		}
+		if strings.HasPrefix(n.ID, name) {
+			hits = append(hits, n)
+		}
+	}
+	if len(hits) == 0 {
+		for _, n := range nodes {
+			if n.Kind == KindBox && n.Instance == name {
+				return []Node{n}
+			}
+		}
+		for _, n := range nodes {
+			if n.Kind == KindBox && n.Instance != "" && strings.HasPrefix(n.Instance, name) {
+				hits = append(hits, n)
+			}
+		}
+	}
+	return hits
 }
 
 // descendantsOf returns every node standing on n, nearest first.

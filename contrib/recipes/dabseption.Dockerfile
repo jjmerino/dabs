@@ -9,10 +9,11 @@
 # one image serves every branch.
 
 # The image the dabs inside boots, matching images/shell (what the bundled `sh`
-# recipe uses). `COPY --from` below flattens it into a rootfs, so the box needs no
-# docker of its own.
+# recipe uses — git for worktrees, curl+certs so a fresh box can fetch).
+# `COPY --from` below flattens it into a rootfs, so the box needs no docker of
+# its own.
 FROM alpine:3.20 AS shellimg
-RUN apk add --no-cache git
+RUN apk add --no-cache git curl ca-certificates
 WORKDIR /work
 
 FROM golang:1.23-bookworm

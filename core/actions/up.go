@@ -18,7 +18,7 @@ import (
 // `dabs exec` (and `dabs rm` to reap). worktree, when set, binds an EXISTING dabs
 // worktree to the recipe's `.` source (mounting its parent .git so git works
 // in-box) instead of the cwd — the `--detach` form of `dabs recipe --worktree`.
-func (r Real) upDetached(arg, worktree string) error {
+func (r Real) upDetached(arg, worktree, nodeName string) error {
 	reg, name, err := r.resolveRecipe(arg)
 	if err != nil {
 		return err
@@ -31,11 +31,18 @@ func (r Real) upDetached(arg, worktree string) error {
 	if err := r.checkSources(name, rec.Sources, boxless); err != nil {
 		return err
 	}
+	// A chosen name is claimed before anything is provisioned, so a refused
+	// claim costs nothing — and an inactive holder is reaped here, once.
+	if nodeName != "" {
+		if err := r.claimNodeName(nodeName); err != nil {
+			return err
+		}
+	}
 	// A recipe with no image is a recipe for a PLACE, not a box. `--detach` on one
 	// provisions its nodes and stops — the same outcome as a plain `dabs recipe`,
 	// so the two paths agree instead of `--detach` erroring on a boxless recipe.
 	if boxless {
-		return r.provisionNodes(name, rec, worktree)
+		return r.provisionNodes(name, rec, worktree, nodeName)
 	}
 	// `--worktree <wt>` binds an existing worktree to the `.` source (mounting its
 	// parent .git so git works in-box) instead of cutting a fresh place.
@@ -61,7 +68,7 @@ func (r Real) upDetached(arg, worktree string) error {
 	if err != nil {
 		return err
 	}
-	boxID, vars, err := r.mintBoxNode(name, tip)
+	boxID, vars, err := r.mintBoxNode(name, tip, nodeName)
 	if err != nil {
 		return err
 	}

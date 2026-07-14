@@ -1,0 +1,124 @@
+---
+title: "Recipes"
+description: "Declare a box once — image, mounts, env, command — and run it by name"
+---
+
+A recipe is the whole box spec, written declaratively. dabs ships five generic
+ones; anything project- or tool-specific is yours to add.
+
+<Info>Screens verified by `tests/test_recipes.py`.</Info>
+
+## The bundled five
+
+```bash
+dabs recipes
+```
+
+| recipe | what it does |
+|---|---|
+| `sh` | shell in a clean box over your current directory (live mount) |
+| `wt` | cut a git worktree, no box |
+| `wtbox` | shell in a clean box over a fresh git worktree |
+| `scratch` | copy the cwd into a directory node, no box |
+| `scratchbox` | shell in a clean box over a throwaway copy of the cwd |
+
+`dabs recipes --print` dumps the bundled YAML in full — the best starting point
+for writing your own.
+
+## Write your own
+
+Project recipes live in `./dabs.yaml`; personal ones in
+`~/.dabs/recipes.yaml`. Resolution is **bundled → global → project**, later
+winning. This is a complete recipe:
+
+```yaml
+default: hello
+recipes:
+  hello:
+    description: demo box for the recipes walkthrough
+    image: shell
+    command: [sh]
+    env: { GREETING: hello-recipes }
+    sources:
+      - mount: .
+        path: /work
+```
+
+Drop that in your project and it joins the registry immediately:
+
+```text
+hello       demo box for the recipes walkthrough  default
+scratch     copy the cwd into a directory node, no box
+scratchbox  shell in a clean box over a throwaway copy of the cwd
+sh          shell in a clean box over your current directory
+wt          cut a worktree, no box
+wtbox       shell in a clean box over a fresh git worktree
+```
+
+<Warning>
+**Recipes provision; they don't prompt.** A recipe's `command` must not bake in
+agent instructions — keep prompts in the caller (or a skill) and keep the
+recipe reusable.
+</Warning>
+
+## Running one — three shapes
+
+```bash
+dabs recipe hello                 # a known recipe, its own command
+dabs recipe hello -c 'echo hi'    # a known recipe, your tokens APPENDED
+dabs recipe -- echo hi            # the default recipe, your command appended
+```
+
+**Appending is literal.** Trailing tokens are appended to the recipe's
+`command` argv. Against `command: [sh]`, `dabs recipe sh -c 'echo hi'` runs
+`sh -c 'echo hi'` — but `dabs recipe -- echo hi` runs `sh echo hi`, which asks
+`sh` to open a *file* named `echo`. Read the confirmation carefully: it always
+shows the exact final command.
+
+## The confirmation
+
+Handing a box an arbitrary command always asks first, showing the recipe, its
+mounts, and the exact command:
+
+```text
+╭────────────────────────────────────╮
+│ recipe "sh"                        │
+│   image=shell                      │
+│   mount    . → /work               │
+│ command: sh -c echo appended to sh │
+╰────────────────────────────────────╯
+┃ Proceed?
+┃
+┃   Yes     No
+```
+
+Answer **Yes** and it runs, then removes the box when the command exits:
+
+```text
+running: sh -c echo appended to sh
+
+appended to sh
+✓ sh-________ removed
+```
+
+Answer **No** and nothing is built or run: `dabs: recipe "sh": aborted`.
+
+## A typo never becomes a command
+
+A first token that is neither `--` nor a known recipe is an error, not a
+command:
+
+```text
+dabs: no recipe "nosuch" (known: scratch, scratchbox, sh, wt, wtbox) — or `dabs recipe -- nosuch` to run it as a command on the default recipe
+```
+
+## The `default:` key
+
+A registry's `default:` names the recipe that `dabs build`, `dabs recipe`
+(no name), and `dabs recipe -- <cmd>` resolve to.
+
+<Warning>
+A `default:` is **not a shell**. If it names an agent (say, a `claude -p` box),
+a bare `dabs recipe -- echo hi` appends your argv to *the agent's* command
+line. Set no default unless one recipe is the obvious "just run it" choice.
+</Warning>

@@ -1,0 +1,61 @@
+---
+title: "Exec: reaching into a box"
+description: "One verb, two forms — a shell line or an exact argv"
+---
+
+`dabs exec` is the single reach-in verb. The `--` separator picks the form.
+
+<Info>Screens verified by `tests/test_exec.py`.</Info>
+
+## Shell form (no `--`)
+
+Tokens are joined into one `sh -c` line **inside the box** — pipes, globs, and
+`&&` work:
+
+```bash
+dabs exec sh-________ 'cd /work && echo *'
+```
+
+```text
+dabs.yaml  data
+```
+
+## Exact-argv form (`--`)
+
+Everything after `--` is an exact argv, no shell involved — nothing expands:
+
+```bash
+dabs exec sh-________ -- echo '*'
+```
+
+```text
+*
+```
+
+Use it when arguments must arrive untouched (paths with spaces, `$` you don't
+want expanded, program flags that look like dabs flags).
+
+## Knowing you're in a box
+
+dabs sets `DABS_NAME` inside every box to the box's instance name, so a
+program can detect it is sandboxed:
+
+```bash
+dabs exec sh-________ 'echo I am $DABS_NAME'
+```
+
+```text
+I am shell-____________
+```
+
+## Handles and errors
+
+Any unambiguous prefix of a node id (or instance name) resolves, git-style. A
+name that matches nothing is a clean error:
+
+```text
+dabs: no box matches "nothere" (see dabs ls)
+```
+
+A name matching **more than one** box is refused too — dabs never guesses
+which box you meant. Disambiguate with more characters, from `dabs ls`.

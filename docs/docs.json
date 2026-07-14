@@ -1,0 +1,48 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "dabs",
+  "description": "dumb agent boxes — disposable sandboxes, worktrees, and workspaces you can hand to an AI agent",
+  "appearance": {
+    "default": "dark",
+    "strict": true
+  },
+  "colors": {
+    "primary": "#8E17FF",
+    "light": "#B05CFF",
+    "dark": "#6600C7"
+  },
+  "logo": {
+    "light": "/logo/dabs.svg",
+    "dark": "/logo/dabs.svg"
+  },
+  "favicon": "/logo/dabs.svg",
+  "navigation": {
+    "groups": [
+      {
+        "group": "Get started",
+        "pages": ["index", "quickstart", "concepts"]
+      },
+      {
+        "group": "Guides",
+        "pages": [
+          "guides/recipes",
+          "guides/sources",
+          "guides/worktrees",
+          "guides/spaces",
+          "guides/exec",
+          "guides/cleanup"
+        ]
+      },
+      {
+        "group": "Reference",
+        "pages": ["reference/cli", "reference/recipe-schema", "caveats", "testing"]
+      }
+    ]
+  },
+  "footer": {
+    "socials": {
+      "website": "https://www.dabs.dev"
+    }
+  }
+}

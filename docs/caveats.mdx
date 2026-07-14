@@ -1,0 +1,109 @@
+---
+title: "Caveats"
+description: "The sharp edges, honestly listed — read this before handing dabs to an agent"
+---
+
+Everything here was hit for real while producing this manual. Each caveat says
+what happens, why, and what to do about it.
+
+## Isolation is filesystem and process — NOT network
+
+A box has open outbound network access; there is no `--no-network` switch yet.
+Do not rely on a box to contain code that must not reach the network — it can
+phone home.
+
+## Boxes accumulate
+
+Every `dabs recipe … --detach` is a **new** box, and nothing reaps it for you.
+Agents are the worst offenders: a driver that boots a box per task — or aborts
+mid-task before its own `dabs rm` — leaves live boxes (and their processes)
+piling up behind it. Hundreds of leftover boxes will eventually destabilize
+whatever they run on.
+
+**If you are wiring an agent to dabs, make cleanup structural, not polite:**
+
+- reap in a teardown path that runs even when the task fails
+  (`dabs rm <box> -y`), never only at the happy end of a script;
+- sweep periodically: `dabs ls` and reap what nothing points at,
+  `dabs rm --clean-worktrees` for reviewed worktrees,
+  `dabs rm --inactive` for empty markers;
+- one box per agent, and the spawner owns the reap.
+
+`copy:`/`scratchbox` recipes have the same shape with **workdir nodes**: every
+boot snapshots the cwd into a new node that deliberately survives the box.
+There is no `--clean-workdirs` sweep; list and reap them by name.
+
+## Pristine again means a NEW box
+
+Writes inside a box persist for that instance's lifetime. Re-running a recipe
+does not reset an old box — boot a new one and reap the old.
+
+## Boxes are copies, not mounts, of their image
+
+The image froze the program at the last `dabs build`. Edited your Dockerfile's
+inputs? A boot auto-rebuilds only when the Dockerfile or a bundled image's
+files change — a change only in `COPY .` context files is **not detected**.
+Run `dabs prune`, then build.
+
+## The box only contains what the Dockerfile installed
+
+Slim images lack tools you may assume (`ps`, `clear`, pagers). If a job needs
+one, it belongs in the Dockerfile, not worked around. Two consequences seen in
+practice:
+
+- `git log` inside a minimal box opens a pager and appears to hang a driven
+  terminal — use `git --no-pager`.
+- A detached box's PID 1 never reaps children, so processes killed inside a
+  box linger as **zombies** until the box itself is reaped.
+
+## Appending to a recipe is literal
+
+`dabs recipe <name> <cmd…>` and `dabs recipe -- <cmd…>` **append** your tokens
+to the recipe's command argv. Against `command: [sh]`, `-- echo hi` runs
+`sh echo hi` (sh tries to open a *file* named `echo`). The confirmation shows
+the exact final command — read it before you say yes. And a `default:` naming
+an agent turns a bare append into arguments *to that agent*; set no default
+unless one recipe is the obvious choice.
+
+## `--detach` is an unstable alias
+
+Today it means `--no-command` (boot, run nothing) — and the boot message says
+so in `--no-command` terms. Its intended future is a true background detach,
+so scripts that must not break should spell `--no-command`.
+
+## Instance names don't say which recipe made them
+
+The instance is named after the recipe's **image**. Recipes sharing an image
+share a name prefix (`claude`, `fresh-claude` both boot a `claude-…` box), so
+`dabs ls` cannot tell you which recipe made a box. Name your images
+distinctively if the distinction matters.
+
+## Ambiguity errors speak two vocabularies
+
+For the same ambiguous prefix, `rm` lists **node ids** while `exec` lists
+**instance names** — they refer to the same boxes. Cross-reference with
+`dabs ls`, which shows both.
+
+## Places dabs won't work
+
+- `dabs recipe`/`build` refuse to run from inside `~/.dabs` — provisioning
+  from dabs's own storage would mark the node store itself as a project.
+- Keep build contexts under your home directory; contexts under system temp
+  dirs have failed `dabs build` on macOS with cache-key errors.
+- (Nested/bwrap setups) dabs's state cannot sit on overlayfs — bwrap cannot
+  stack an overlay on one. In docker, put `$HOME` on a non-overlay volume.
+
+## Warning noise on staged images
+
+A box booting from a pre-staged image (no builder present) prints
+`image shell: no build record — rebuilding` / `no builder here to refresh it —
+serving it as-is` on **every** boot. It means "serving the image as-is" —
+everything is fine.
+
+## Before 1.0, vocabulary moves
+
+No backwards-compatibility guarantees before 1.0. Deprecations are docs-first
+(the old word keeps working while new work avoids it): *fleet* → drivers,
+*consent* → confirmation, *ephemeral* → held (with permanent `$…_EPHEMERAL`
+aliases), `gone`/`no place`/`boxes with no node` marked unstable. Agents
+migrating across versions should read the project's GLOSSARY and CHANGELOG.

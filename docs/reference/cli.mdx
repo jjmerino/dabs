@@ -1,0 +1,123 @@
+---
+title: "CLI reference"
+description: "Every dabs command, flag, and alias"
+---
+
+```text
+usage: dabs <command> [args]
+```
+
+Aliases: `ps`/`list` → `ls` · `remove`/`delete` → `rm` · `worktree` → `worktrees`.
+
+`dabs --help-full-for-agents` prints the full agent-facing guide — the entry
+point an agent should read before driving dabs.
+
+## build
+
+```text
+dabs build [recipe|path]
+```
+
+Build a recipe's box image (once per Dockerfile change). No name → the
+registry `default:`; a name → that recipe; a path → a `dabs.yaml` to load.
+A boot rebuilds automatically when the Dockerfile or a bundled image's files
+change — but **not** when only `COPY .` context files changed; run
+`dabs prune` then build to pick those up.
+
+## recipe
+
+```text
+dabs recipe [name] [cmd… | --no-command] [--worktree <wt>]
+```
+
+Boot a box from a recipe and run its command, then tear the box down (unless
+the recipe says `keep: true`). Trailing tokens are **appended** to the
+recipe's command; appending always confirms first, showing the exact final
+command.
+
+- `--no-command` — boot a NEW box, run nothing, leave it up. `--detach` is an
+  unstable alias (it may later mean a true background detach).
+- `--worktree <wt>` — bind an existing worktree to the recipe's `.` source and
+  mount its parent `.git`, so git works in-box.
+- `dabs recipe -- <cmd…>` — the default recipe with your command appended.
+
+## exec
+
+```text
+dabs exec <node> [--] <cmd…>
+```
+
+Run a command inside a box: with `--`, an exact argv (no shell); without, a
+`sh -c` line (pipes/globs/`&&` work). Accepts node ids, instance names, and
+unambiguous prefixes.
+
+## ls
+
+```text
+dabs ls [--inactive]
+```
+
+List the active subtrees as a tree; `--inactive` lists only the hidden empty
+markers instead.
+
+## rm
+
+```text
+dabs rm <node> [-y] [--keep] [--volume] [--multiple] [--dry] [--force]
+dabs rm --clean-worktrees [--force] [--dry]
+dabs rm --inactive [--dry]
+```
+
+The single reaper — see [Listing and cleaning up](/guides/cleanup) for the
+four consent flags. `--keep` stops the box but keeps its node record;
+`--clean-worktrees` sweeps every worktree with no unreviewed work;
+`--inactive` sweeps every inactive subtree.
+
+## worktrees
+
+```text
+dabs worktrees [ls | diff <name>]
+```
+
+Inspect worktree nodes: state (`no-diff` / `has work` / `unmerged`), branch,
+recipe, box-liveness; `diff` shows a review diff that surfaces untracked
+files. Reaping is `dabs rm`.
+
+## recipes
+
+```text
+dabs recipes [--print]
+```
+
+List the known recipes one line each; `--print` dumps the bundled registry
+YAML in full.
+
+## prune
+
+```text
+dabs prune [--dry] [--force]
+```
+
+Reclaim built box images. `--dry` lists sizes; `--force` removes even images a
+live box uses.
+
+## servers
+
+```text
+dabs servers [ls | add <name> [host] | rm <name>]
+```
+
+Manage registered remote servers (reached over ssh; a recipe routes to one
+with `target:`).
+
+```text
+NAME         VIA    DESTINATION
+local        bwrap  this machine
+demo-server  ssh    demo@example.com
+```
+
+## Environment
+
+- `DABS_NAME` — set inside every box to the box's instance name.
+- dabs state lives under `~/.dabs/` (nodes, images, config, shared dirs).
+  `dabs recipe`/`build` refuse to run from inside `~/.dabs`.

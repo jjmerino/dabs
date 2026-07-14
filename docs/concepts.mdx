@@ -1,0 +1,85 @@
+---
+title: "Concepts"
+description: "Six words explain all of dabs: box, node, space, recipe, image, worktree"
+---
+
+dabs keeps a strict vocabulary — one word, one meaning. Learn these six and
+every command's output reads naturally.
+
+## Box
+
+The disposable, host-isolated environment a command or agent runs in — a
+pristine machine that sees only what its recipe put in it. Booting is
+`dabs recipe <name> --detach`; a **new box every time**, never a reused one.
+
+A running box also has an **instance** name (`shell-a1b2c3d4e5f6`) minted by
+the driver. You will see it in parentheses in `dabs ls`; both the node id and
+the instance name work as handles.
+
+## Node
+
+The record dabs writes for each thing it provisions, under `~/.dabs/nodes/`.
+Nodes chain `project → (workdir | worktree)? → box`:
+
+| kind | what it marks |
+|---|---|
+| `project` | the directory you ran dabs from — a marker, never deleted content |
+| `workdir` | a host directory a recipe **copied** as its `.` |
+| `worktree` | a git worktree dabs cut |
+| `box` | one running (or finished) sandbox |
+
+A node's id (`myproj-a5e689c8`) is the canonical handle: `rm`, `exec`, and
+`--worktree` all resolve it, git-style — any unambiguous prefix works.
+
+## Space
+
+Every node offers three directories, and **which one a recipe mounts decides
+what `dabs rm` does with the bytes**:
+
+| space | the question it answers | on `rm` |
+|---|---|---|
+| `volume/` | does this outlive the box? | kept — deleting it always takes its own `--volume` |
+| `held/` | does something outside the box point at it? | asks first when it holds files |
+| `tmp/` | does anybody but the box care? | removed silently |
+
+Recipes name them with variables: `$NODE_VOLUME`, `$NODE_HELD`, `$NODE_TMP`
+(this box's node) and `$PARENT_VOLUME`, `$PARENT_HELD`, `$PARENT_TMP` (the
+place the box stands on). See [Spaces](/guides/spaces).
+
+## Recipe
+
+A fully declarative description of a box — image, sources, environment,
+workdir, command — in `dabs.yaml`. Recipes resolve
+**bundled → `~/.dabs/recipes.yaml` → `./dabs.yaml`**, later wins.
+See [Recipes](/guides/recipes).
+
+## Image
+
+The frozen template a box boots from: a bare name (`shell`) reuses
+`~/.dabs/images/<name>`; an inline `{dockerfile, context}` builds one with
+`dabs build`.
+
+<Warning>
+Boxes are **copies, not mounts** of their image. If you edit what the
+Dockerfile installs, rebuild — or the next box runs stale code.
+</Warning>
+
+## Worktree
+
+A fresh git branch cut off HEAD, checked out into a node's held space and
+mounted live — how an agent gets an isolated, reviewable, reconcilable copy of
+your repo. Worktrees carry a state (`no-diff` / `has work` / `unmerged`) and a
+guard: `rm` refuses to discard unreviewed work without `--force`.
+See [Worktrees](/guides/worktrees).
+
+## How they fit together
+
+```text
+project (your directory)
+└─ worktree or workdir        (optional isolation layer)
+   └─ box                     (the running sandbox)
+        volume/ held/ tmp/    (each node's three spaces)
+```
+
+`dabs ls` draws exactly this tree, with a dot in the VOL/HELD/TMP columns
+wherever a space holds files.

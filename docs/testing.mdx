@@ -1,0 +1,75 @@
+---
+title: "How this manual is tested"
+description: "Every screen here is pinned by a tuti golden — the docs are verifiable by a test run"
+---
+
+This manual makes a promise most docs can't: **every terminal screen it shows
+was drawn by the real program in a real terminal, and stays pinned by a
+test.** The suite ships next to the docs.
+
+## The stack
+
+- [tuti](https://github.com/jjmerino/tuiclip) drives dabs in a real tmux pane,
+  clips what it drew — colour included — and compares each clip against an
+  approved golden. A styling regression fails the diff even when the text
+  matches.
+- Each docs page maps to a test module:
+
+| page | test |
+|---|---|
+| Quickstart | `tests/test_quickstart.py` |
+| Recipes | `tests/test_recipes.py` |
+| Sources | `tests/test_sources.py` |
+| Worktrees | `tests/test_worktrees.py` |
+| Spaces | `tests/test_spaces.py` |
+| Exec | `tests/test_exec.py` |
+| Cleanup | `tests/test_rm.py` |
+
+- Goldens live in `tests/goldens/<page>/<screen>.txt`, ANSI colour and all.
+  The screens embedded in these pages are their plain-text renders.
+
+## Determinism
+
+Two things on a dabs screen change every run, and the suite handles both:
+
+- **Generated ids** (node ids, instance names, git hashes) are scrubbed to
+  `________` before comparing — the golden is about what dabs *renders*, not
+  the run that produced it.
+- **Timing**: each command is followed by a computed end marker
+  (`:done-$((N+0))` → `:done-N`), so the test waits for the *finished* screen
+  — the typed line can never satisfy the wait. That marker is the `:done` you
+  see at the bottom of the screens.
+
+Every test gets a throwaway `HOME`, so its dabs node tree starts empty, and a
+teardown that reaps whatever the test left running — a failing test must not
+leak live boxes into the next one (see
+[Caveats: boxes accumulate](/caveats#boxes-accumulate)).
+
+## Running the suite
+
+The suite drives a real dabs, so it runs **inside a disposable box** (the
+dabseption pattern: a privileged box carrying bubblewrap, tmux, dabs, and
+tuti), never on a host whose dabs state matters:
+
+```bash
+dabs recipe scribe --detach                 # the box with dabs + tuti + tmux
+dabs exec <box> 'cd /work/tests && python3 -m pytest -q'
+```
+
+```text
+14 passed
+```
+
+## Approving a changed screen
+
+A test never writes a golden — not even a missing one. When dabs's output
+legitimately changes, run with `TUTI_SAVE_RUNS=1`, review, and approve:
+
+```bash
+TUTI_SAVE_RUNS=1 python3 -m pytest -q
+tuti -g goldens review            # or: tuti web, side-by-side with colour diff
+tuti -g goldens review --approve  # bless the new screens
+```
+
+Then update the embedded screen in the matching docs page — the golden and the
+page travel together.

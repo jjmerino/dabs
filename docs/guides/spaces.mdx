@@ -1,0 +1,108 @@
+---
+title: "Spaces"
+description: "volume, held, tmp — three lifetimes for a box's data, enforced by rm"
+---
+
+Every node offers three directories, and the one a recipe mounts **declares
+the data's lifetime**. `rm` reads the space, not the recipe: convention with
+teeth.
+
+<Info>Screens verified by `tests/test_spaces.py`.</Info>
+
+## The three spaces
+
+| space | the question | on `rm` |
+|---|---|---|
+| `volume/` | does this outlive the box? | **kept** — deleting always takes its own `--volume` |
+| `held/` | does something outside the box point at it? | **asks first** when it holds files |
+| `tmp/` | does anybody but the box care? | **removed silently** |
+
+dabs never *reads* tmp to decide anything — it is the box's scratch and nobody
+else's business.
+
+## Name them in a recipe
+
+`$NODE_*` variables name the box's own spaces; `$PARENT_*` name the spaces of
+the place the box stands on (your project, a worktree). They substitute in
+source paths only — they are not environment variables inside the box.
+
+```yaml
+recipes:
+  spacey:
+    description: demo box writing into all three spaces
+    image: shell
+    command: [sh]
+    sources:
+      - mount: .
+        path: /work
+      - mkmount: $NODE_VOLUME/cache      # survives rm, until --volume
+        path: /cache
+      - mkmount: $NODE_HELD/results      # rm asks before taking it
+        path: /results
+      - mkmount: $NODE_TMP/scratch       # rm reaps silently
+        path: /scratch
+      - mkmount: $PARENT_VOLUME/keepers  # comes back on the NEXT box
+        path: /keepers
+```
+
+After the box writes into each, `dabs ls` shows a dot per space that holds
+files:
+
+```text
+local (bwrap, this machine)
+  NODE                KIND     VOL  HELD  TMP  STATE  WHERE
+  myproj-________     project  ●                      ~/myproj
+  └─ spacey-________  box      ●    ●     ●    live   ~/.dabs/nodes/spacey-________  (shell-____________)
+```
+
+## What rm does with each
+
+The preview spells out every space's fate before you consent:
+
+```text
+╭─────────────────────────────────────────────────────────────╮
+│ Removing spacey-________ reaps 1 node(s):                   │
+│   NODE             KIND  VOL  HELD  TMP  STATE              │
+│   spacey-________  box   ●    ●     ●    live               │
+│ ⚠ 1 node(s) hold a held space — deleted on proceed          │
+│ 1 node(s) hold volume data — kept (pass --volume to delete) │
+│ 1 node(s) hold tmp scratch — always cleared                 │
+│ Proceed?                                                    │
+╰─────────────────────────────────────────────────────────────╯
+```
+
+`rm -y` then stops the box, takes held (that is what `-y` consented to),
+clears tmp — and **keeps the volume**, telling you how to take it when you
+mean it:
+
+```text
+✓ shell-____________ stopped
+⚠ volume kept: …/.dabs/nodes/spacey-________/volume   (dabs rm spacey-________ -y --volume to reap it)
+```
+
+A box whose volume still holds files stays listed (STATE `gone`) so the data
+has an owner. `rm <box> -y --volume` finishes the job.
+
+## $PARENT_VOLUME: what comes back next time
+
+A box's own volume dies with its *node*; the **parent place persists**. So a
+box that wants data back on the next box writes it to `$PARENT_VOLUME`. Write
+`keep-me` there, reap the box (`--volume` and all), boot a fresh one:
+
+```bash
+dabs exec spacey-________ 'cat /keepers/f; cat /cache/f'
+```
+
+```text
+keep-me
+cat: can't open '/cache/f': No such file or directory
+```
+
+The parent's volume reloaded; the old box's own cache is gone. This is exactly
+how a Claude box keeps its session transcripts across re-ups.
+
+<Note>
+`$NODE_EPHEMERAL` / `$PARENT_EPHEMERAL` are permanent aliases of
+`$NODE_HELD` / `$PARENT_HELD` (the held space's former name) — old recipes
+keep working.
+</Note>

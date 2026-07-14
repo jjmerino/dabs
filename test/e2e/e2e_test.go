@@ -1177,10 +1177,11 @@ func resetNodes(t *testing.T) {
 // NO ~/.dabs/recipes.yaml, served by the BUNDLED registry alone.
 
 // bundledOnly strips every non-bundled registry, so the recipe under test can
-// only have come from the binary itself. It also restores the staged `shell`
-// image from the box's pristine copy: the box has no builder, so a `dabs prune`
-// run by an earlier test would otherwise leave the bundled box recipes nothing
-// to boot from.
+// only have come from the binary itself. In the suite's own box it also
+// restores the staged `shell` image from the box's pristine copy: the box has
+// no builder, so a `dabs prune` run by an earlier test would otherwise leave
+// the bundled box recipes nothing to boot from. On a CI runner there is no
+// pristine copy — and a builder, so a missing image simply builds.
 func bundledOnly(t *testing.T) {
 	t.Helper()
 	resetNodes(t)
@@ -1190,6 +1191,9 @@ func bundledOnly(t *testing.T) {
 
 	staged := filepath.Join(home, ".dabs-staged-images", "shell")
 	dest := filepath.Join(home, ".dabs", "images", "shell")
+	if _, err := os.Stat(staged); err != nil {
+		return // no pristine copy here — this environment builds instead
+	}
 	if _, err := os.Stat(dest); os.IsNotExist(err) {
 		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 			t.Fatal(err)

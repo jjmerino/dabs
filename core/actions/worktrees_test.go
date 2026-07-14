@@ -118,6 +118,64 @@ func TestWorktreeCleanSweepKeepsWork(t *testing.T) {
 	}
 }
 
+// seedChildBoxNode makes fd look as if dabs had booted a box ON another node:
+// a box record bound to instance, with parent as the node it stands on.
+func seedChildBoxNode(fd *fakeData, id, instance, parent string) {
+	fd.dirs[nodeBase] = append(fd.dirs[nodeBase], id)
+	fd.files[nodeBase+"/"+id+"/dabs-node.json"] = []byte(
+		`{"id":"` + id + `","kind":"box","instance":"` + instance + `","parent":"` + parent + `","recipe":"r","created":"t"}`)
+}
+
+// CONTRACT: the sweep reaps clean CHECKOUTS, not machines. A clean worktree
+// carrying a LIVE box is KEPT (box untouched, checkout untouched) and reported;
+// stopping the box needs the same -y a named `rm <box>` asks for, and with -y
+// the sweep takes it, box and all. This pins the bug where the sweep's internal
+// batch consent silently stopped live boxes nobody agreed to lose.
+func TestWorktreeCleanSweepKeepsLiveBoxWithoutYes(t *testing.T) {
+	fd := baseData()
+	seedWorktreeNode(fd, "wtlive", wtState{}) // clean checkout, but a box runs on it
+	seedWorktreeNode(fd, "wtidle", wtState{}) // clean, no box
+	seedChildBoxNode(fd, "box-1", "inst-live", "wtlive")
+	drv := &fakeDriver{infos: []sandbox.Info{{Name: "inst-live", Status: "running"}}}
+
+	out := captureStdout(t, func() {
+		if err := newReal("", fd, drv).Rm(params.Rm{CleanWorktrees: true}); err != nil {
+			t.Fatalf("rm --clean-worktrees: %v", err)
+		}
+	})
+	if len(drv.downs) != 0 {
+		t.Fatalf("sweep without -y stopped a live box: %v", drv.downs)
+	}
+	for _, r := range fd.removed {
+		if strings.Contains(r, "wtlive") {
+			t.Fatalf("sweep without -y reaped the live box's worktree: %v", fd.removed)
+		}
+	}
+	if len(fd.removed) != 1 || !strings.Contains(fd.removed[0], "wtidle") {
+		t.Fatalf("the boxless clean worktree should still be swept, removed %v", fd.removed)
+	}
+	if !strings.Contains(out, "live box") || !strings.Contains(out, "wtlive") {
+		t.Fatalf("kept live-box worktree must be reported by name; got:\n%s", out)
+	}
+
+	// -y is the consent: the sweep now stops the box and reaps the worktree.
+	if err := newReal("", fd, drv).Rm(params.Rm{CleanWorktrees: true, Yes: true}); err != nil {
+		t.Fatalf("rm --clean-worktrees -y: %v", err)
+	}
+	if len(drv.downs) != 1 || drv.downs[0] != "inst-live" {
+		t.Fatalf("-y sweep must stop the live box, downed %v", drv.downs)
+	}
+	swept := false
+	for _, r := range fd.removed {
+		if strings.Contains(r, "wtlive") {
+			swept = true
+		}
+	}
+	if !swept {
+		t.Fatalf("-y sweep must reap the live box's worktree: %v", fd.removed)
+	}
+}
+
 // CONTRACT: `rm --clean-worktrees --force` reaps everything, work and all.
 func TestWorktreeCleanSweepForceReapsAll(t *testing.T) {
 	fd := baseData()

@@ -189,7 +189,9 @@ know what is in it:
    previews; `--force` is ONLY for discarding a worktree's unreviewed git work —
    a different risk than the prompt `-y` skips, so it stays its own flag.
    `--clean-worktrees` takes no node name: it sweeps EVERY worktree that holds no
-   unreviewed work in one shot (add `--force` to reap the ones that do).
+   unreviewed work in one shot (add `--force` to reap the ones that do). A
+   worktree carrying a LIVE box is kept and named — stopping a machine needs the
+   same `-y` a named `rm` asks for.
 
 **Re-attaching to an existing worktree — `dabs recipe <recipe> --worktree
 <wt>`.** A recipe's `worktree:`/`mount:`/`copy:` `.` source normally means "the

@@ -69,14 +69,68 @@ func setupAndRun(m *testing.M) int {
 	}
 	// The base image the inner boxes come from is staged into the box by its
 	// Dockerfile (COPY --from), because `dabs build` needs docker and the box
-	// carries none. Fail loudly if it is missing rather than letting every test
-	// fail one by one on a cryptic "image not built".
+	// carries none. When it is absent but a staged `shell` image is there — a
+	// dabseption/dabseptionwt box, the branch-testing loop — the suite builds
+	// its fixture FROM that shell image itself, so any box that can boot nested
+	// boxes can also run this suite. Only when neither is present does setup
+	// fail loudly, rather than letting every test fail one by one on a cryptic
+	// "image not built".
 	if _, err := os.Stat(filepath.Join(home, ".dabs", "images", sandboxName)); err != nil {
-		fmt.Fprintf(os.Stderr, "setup: base image %q not staged in this box (%v)\n"+
-			"the box's Dockerfile stages it; rebuild the box: dabs build test/e2e/box\n", sandboxName, err)
-		return 1
+		if err := synthesizeBaseImage(); err != nil {
+			fmt.Fprintf(os.Stderr, "setup: base image %q not staged in this box, and it "+
+				"could not be built from a staged shell image (%v)\n"+
+				"run the suite in its own box (./run_e2e.sh) or a dabseption box\n", sandboxName, err)
+			return 1
+		}
+	}
+	// Pristine copies of the staged images, OUTSIDE the store `dabs prune`
+	// reaps: there is no builder in the box, so a pruned staged image would be
+	// gone for the rest of the run. The suite's own box stages this dir in its
+	// Dockerfile; anywhere else (a dabseption box) the suite snapshots it here,
+	// before any test can prune.
+	staged := filepath.Join(home, ".dabs-staged-images")
+	if _, err := os.Stat(staged); os.IsNotExist(err) {
+		if out, err := exec.Command("cp", "-a", filepath.Join(home, ".dabs", "images"), staged).CombinedOutput(); err != nil {
+			fmt.Fprintf(os.Stderr, "setup: snapshot staged images: %v: %s\n", err, out)
+			return 1
+		}
 	}
 	return m.Run()
+}
+
+// synthesizeBaseImage builds the suite's fixture image from the staged `shell`
+// image: the same rootfs plus the two fixtures the tests drive — a marker file
+// proving the image's content reached a box, and a fake `claude` CLI that
+// "logs in" by writing the credential Claude Code would. This is exactly what
+// test/e2e/box's Dockerfile bakes; deriving it here makes the suite runnable
+// in any box that stages `shell` (dabseption, dabseptionwt), with no docker.
+func synthesizeBaseImage() error {
+	shell := filepath.Join(home, ".dabs", "images", "shell")
+	if _, err := os.Stat(shell); err != nil {
+		return fmt.Errorf("no staged shell image at %s: %w", shell, err)
+	}
+	dest := filepath.Join(home, ".dabs", "images", sandboxName)
+	if out, err := exec.Command("cp", "-a", shell, dest).CombinedOutput(); err != nil {
+		return fmt.Errorf("copy shell image: %v: %s", err, out)
+	}
+	rootfs := filepath.Join(dest, "rootfs")
+	if err := os.MkdirAll(filepath.Join(rootfs, "work"), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(rootfs, "work", "marker.txt"), []byte("hello-from-image\n"), 0o644); err != nil {
+		return err
+	}
+	claude := `#!/bin/sh
+mkdir -p /root/.claude
+cat > /root/.claude/.credentials.json <<'JSON'
+{"claudeAiOauth":{"accessToken":"fake-token"}}
+JSON
+echo "fake-claude: login ok"
+`
+	if err := os.WriteFile(filepath.Join(rootfs, "usr", "local", "bin", "claude"), []byte(claude), 0o755); err != nil {
+		return err
+	}
+	return nil
 }
 
 // --- helpers -----------------------------------------------------------------

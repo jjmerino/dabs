@@ -3,6 +3,7 @@ package actions
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/jjmerino/dabs/core/params"
@@ -42,6 +43,13 @@ func (r Real) rmResolved(p params.Rm, nodes []Node, states func() driversAnswer)
 		return err
 	}
 	if len(targets) == 0 {
+		// An UNFINISHED CLAIM is not a node — a `--name` boot that died between
+		// reserving its dir and writing its record leaves the dir with only a
+		// claim marker — but its name is locked and `ls` cannot show it, so `rm`
+		// by its exact name is the one way out the claim's error message offers.
+		if cleared, err := r.rmUnfinishedClaim(p); cleared || err != nil {
+			return err
+		}
 		// A no-match reap is not an error: naming a node that isn't there leaves
 		// nothing to do, so a cleanup script gets a stable exit status whether or
 		// not the node still exists.
@@ -523,28 +531,9 @@ func rmMatches(name string, nodes []Node, multiple bool) ([]Node, error) {
 	if strings.TrimSpace(name) == "" {
 		return nil, fmt.Errorf("a name is required (see dabs ls)")
 	}
-	var hits []Node
-	for _, n := range nodes {
-		if n.ID == name {
-			return []Node{n}, nil
-		}
-		if strings.HasPrefix(n.ID, name) {
-			hits = append(hits, n)
-		}
-	}
-	// Fall back to the box instance name only when no node id matched, so the
-	// canonical handle always wins over the record it turned out to be.
-	if len(hits) == 0 {
-		for _, n := range nodes {
-			if n.Kind == KindBox && n.Instance == name {
-				return []Node{n}, nil
-			}
-		}
-		for _, n := range nodes {
-			if n.Kind == KindBox && n.Instance != "" && strings.HasPrefix(n.Instance, name) {
-				hits = append(hits, n)
-			}
-		}
+	hits := matchNodes(name, nodes)
+	if len(hits) == 1 {
+		return hits, nil
 	}
 	if len(hits) > 1 && !multiple {
 		var ids []string
@@ -555,6 +544,91 @@ func rmMatches(name string, nodes []Node, multiple bool) ([]Node, error) {
 		return nil, fmt.Errorf("%q matches %d nodes; pass --multiple to rm all of them", name, len(hits))
 	}
 	return hits, nil
+}
+
+// rmUnfinishedClaim reaps the dir an unfinished `--name` claim left: the exact
+// name, a dir with a claim marker and NO node record. Files beyond the marker
+// (a died boot may have provisioned into its spaces) need -y, the same consent
+// any held data needs; empty dirs and the marker itself do not.
+func (r Real) rmUnfinishedClaim(p params.Rm) (bool, error) {
+	dir, err := r.resolveNodeDir(p.Node)
+	if err != nil || !r.dataExists(dir) {
+		return false, nil
+	}
+	if _, err := r.readNode(p.Node); err == nil {
+		return false, nil // a real node: not ours to handle here
+	}
+	if !r.dataExists(filepath.Join(dir, claimMarker)) {
+		return false, nil // not a claim — an unknown dir is not dabs's to reap
+	}
+	holds, err := r.claimDirHoldsFiles(dir)
+	if err != nil {
+		return false, err
+	}
+	if holds && !p.Yes {
+		return true, fmt.Errorf("rm %s: an unfinished claim holding files — pass -y to reap it", p.Node)
+	}
+	if p.Dry {
+		fmt.Fprintln(os.Stdout, tui.Muted("would reap the unfinished claim %s", p.Node))
+		return true, nil
+	}
+	if err := r.data.RemoveAll(dir); err != nil {
+		return true, err
+	}
+	fmt.Fprintln(os.Stdout, tui.Success("%s removed (an unfinished claim)", tui.Accent(p.Node)))
+	return true, nil
+}
+
+// claimDirHoldsFiles reports whether an unfinished claim's dir holds any real
+// file besides its marker — a died boot's provisioning that -y must consent to.
+func (r Real) claimDirHoldsFiles(dir string) (bool, error) {
+	names, err := r.data.ReadDir(dir)
+	if err != nil {
+		return false, nil
+	}
+	for _, name := range names {
+		if name == claimMarker {
+			continue
+		}
+		holds, err := r.treeHoldsFile(dir, []string{name})
+		if err != nil {
+			return false, err
+		}
+		if holds {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// matchNodes resolves a name against the nodes, git-style: an exact NODE id
+// wins outright, then node-id prefixes; only when neither hits does a raw box
+// INSTANCE name resolve as a fallback (exact, then prefix). One hit is THE
+// node; several is ambiguity for the caller's policy to judge; none is none.
+// A blank name matches nothing — never everything.
+func matchNodes(name string, nodes []Node) []Node {
+	var hits []Node
+	for _, n := range nodes {
+		if n.ID == name {
+			return []Node{n}
+		}
+		if strings.HasPrefix(n.ID, name) {
+			hits = append(hits, n)
+		}
+	}
+	if len(hits) == 0 {
+		for _, n := range nodes {
+			if n.Kind == KindBox && n.Instance == name {
+				return []Node{n}
+			}
+		}
+		for _, n := range nodes {
+			if n.Kind == KindBox && n.Instance != "" && strings.HasPrefix(n.Instance, name) {
+				hits = append(hits, n)
+			}
+		}
+	}
+	return hits
 }
 
 // descendantsOf returns every node standing on n, nearest first.

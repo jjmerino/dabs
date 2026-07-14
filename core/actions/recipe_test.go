@@ -222,7 +222,29 @@ func (f *fakeData) CopyDir(src, dst string) error {
 	f.copies = append(f.copies, src+" -> "+dst)
 	return nil
 }
-func (f *fakeData) RemoveAll(p string) error          { f.rmAll = append(f.rmAll, p); return nil }
+func (f *fakeData) RemoveAll(p string) error {
+	f.rmAll = append(f.rmAll, p)
+	// Mirror the OS: a removed tree is GONE — the dir (so a later exclusive
+	// Mkdir succeeds), and everything filed beneath it.
+	kept := f.made[:0]
+	for _, have := range f.made {
+		if have != p && !strings.HasPrefix(have, p+"/") {
+			kept = append(kept, have)
+		}
+	}
+	f.made = kept
+	for k := range f.files {
+		if k == p || strings.HasPrefix(k, p+"/") {
+			delete(f.files, k)
+		}
+	}
+	for k := range f.dirs {
+		if k == p || strings.HasPrefix(k, p+"/") {
+			delete(f.dirs, k)
+		}
+	}
+	return nil
+}
 func (f *fakeData) Getenv(k string) string            { return f.env[k] }
 func (f *fakeData) LookupEnv(k string) (string, bool) { v, ok := f.env[k]; return v, ok }
 func (f *fakeData) ExpandEnv(s string) string {
@@ -2011,10 +2033,13 @@ func oneOfKind(t *testing.T, ns []nodeRec, kind string) nodeRec {
 func TestMountBoxParentsOnProjectNotAWorkdir(t *testing.T) {
 	fd := baseData()
 	fd.exists["/cwd"] = true
+	// keep: true — a non-keep boot fully reaps its box node after the command
+	// (#59), and this pin reads that record's parent.
 	y := `recipes:
   m:
     image: img
     command: [x]
+    keep: true
     sources:
       - mount: .
         path: /work

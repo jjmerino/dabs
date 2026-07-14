@@ -18,7 +18,7 @@ import (
 // `dabs exec` (and `dabs rm` to reap). worktree, when set, binds an EXISTING dabs
 // worktree to the recipe's `.` source (mounting its parent .git so git works
 // in-box) instead of the cwd — the `--detach` form of `dabs recipe --worktree`.
-func (r Real) upDetached(arg, worktree string) error {
+func (r Real) upDetached(arg, worktree, nodeName string) error {
 	reg, name, err := r.resolveRecipe(arg)
 	if err != nil {
 		return err
@@ -35,7 +35,7 @@ func (r Real) upDetached(arg, worktree string) error {
 	// provisions its nodes and stops — the same outcome as a plain `dabs recipe`,
 	// so the two paths agree instead of `--detach` erroring on a boxless recipe.
 	if boxless {
-		return r.provisionNodes(name, rec, worktree)
+		return r.provisionNodes(name, rec, worktree, nodeName)
 	}
 	// `--worktree <wt>` binds an existing worktree to the `.` source (mounting its
 	// parent .git so git works in-box) instead of cutting a fresh place.
@@ -55,24 +55,32 @@ func (r Real) upDetached(arg, worktree string) error {
 	if err != nil {
 		return err
 	}
+	// The image is resolved first — WITHOUT building the recipe's own
+	// Dockerfile: `--detach` boots an image a prior `dabs build` produced (it
+	// may run where no builder exists) — and the claim runs after it and every
+	// other name-independent refusal, so a boot refused for those reasons has
+	// not touched the name's holder (provisionNodes claims for the boxless
+	// path above).
+	image, err := r.resolveBuiltImage(drv, name, rec.Image, rec.Target)
+	if err != nil {
+		return err
+	}
+	if nodeName != "" {
+		if err := r.claimNodeName(nodeName); err != nil {
+			return err
+		}
+	}
 	// Cut the PLACE first: a box names its parent's spaces ($PARENT_VOLUME), and a
 	// parent must exist to be named.
 	_, tip, hosts, kept, cut, err := r.provisionPlaces(name, sources, worktree)
 	if err != nil {
 		return err
 	}
-	boxID, vars, err := r.mintBoxNode(name, tip)
+	boxID, vars, err := r.mintBoxNode(name, tip, nodeName)
 	if err != nil {
 		return err
 	}
-	// Validate sources before any side effect, then resolve the image WITHOUT
-	// building the recipe's own Dockerfile: `--detach` boots an image a prior
-	// `dabs build` produced (it may run where no builder exists).
 	resolved, err := r.validateSources(name, sources, vars, hosts)
-	if err != nil {
-		return err
-	}
-	image, err := r.resolveBuiltImage(drv, name, rec.Image, rec.Target)
 	if err != nil {
 		return err
 	}

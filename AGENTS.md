@@ -47,9 +47,14 @@ know what is in it:
    ```
 
    The instance is named after the recipe's **image**, not the recipe. Recipes
-   that share an image share a name prefix: `claude`, `fresh-claude`, and
-   `review` all boot a `claude-…` box, so `dabs ls` cannot tell you which recipe
-   made one.
+   that share an image share a name prefix, so `dabs ls` cannot tell you which
+   recipe made a box — unless you NAME it: `--name <n>` makes the boot's LEAF
+   node (the box, or the place a boxless recipe provisions) carry your name as
+   its id — shown everywhere ids are shown, resolvable everywhere ids resolve
+   (`exec`, `rm`, `cd`, `--worktree`). Names are unique across known nodes; a
+   name held by an INACTIVE node reaps that record on the fly, a name held by
+   active work refuses. `dabs cd <node>` prints any node's directory (the WHERE
+   `ls` shows) as a bare path: `cd "$(dabs cd myfix)"`.
 
 3. **Use it directly**, or **run an agent inside it — with a recipe.** Recipes
    do the plumbing: a recipe is a fully declarative box (image, what to
@@ -341,7 +346,12 @@ blind in-box; use `--worktree` when a test needs in-box git.
 
 This covers CLI behaviour, recipe resolution, worktree/keep/rm logic, git
 in-box, nested boots, and error paths — the fast inner loop for changing dabs.
-`./run_e2e.sh` remains the full suite.
+The FULL e2e suite also runs in there: `dabs exec <box> 'cd /work && go build
+-o /usr/local/bin/dabs . && go test -tags e2e ./test/e2e'` — the suite builds
+its fixture image from the staged `shell` when its own is not staged. One
+suite run per box: the suite assumes a pristine $HOME, and a kept box
+accumulates state — boot a fresh box (`--worktree <wt>` rebinds the same
+checkout) for each run. `./run_e2e.sh` remains the one-command form.
 
 **How a box boots its own boxes.** Three things, all declared in the recipe and
 its Dockerfile (`contrib/recipes/dabseption.Dockerfile`) — no host script, no

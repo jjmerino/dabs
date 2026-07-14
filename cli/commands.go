@@ -19,6 +19,7 @@ var Commands = map[string]Command{
 	"recipe":    {(*CLI).runRecipe},
 	"recipes":   {(*CLI).runRecipes},
 	"worktrees": {(*CLI).runWorktrees},
+	"cd":        {(*CLI).runCd},
 	"exec":      {(*CLI).runExec},
 	"ls":        {(*CLI).runLs},
 	"rm":        {(*CLI).runRm},
@@ -35,9 +36,10 @@ type cmdDoc struct{ Help, Args string }
 
 var commandDocs = map[string]cmdDoc{
 	"build":     {"build a recipe's box image: build [recipe|path] (no name → dabs.yaml default). A boot rebuilds automatically when the Dockerfile or a bundled image's files change; a change only to build-context files a `COPY .` pulls in is not detected — run `dabs prune` then build to pick it up", "build [recipe|path]"},
-	"recipe":    {"run a recipe box: recipe [name] [cmd…] (unknown/omitted name → the default recipe, else sh, with the cmd appended); --worktree <wt> binds an existing worktree (git works in-box); --no-command boots a NEW box and runs no command (--detach: unstable alias — may later mean a true background detach)", "recipe [name] [cmd… | --no-command] [--worktree <wt>]"},
+	"recipe":    {"run a recipe box: recipe [name] [cmd…] (unknown/omitted name → the default recipe, else sh, with the cmd appended); --worktree <wt> binds an existing worktree (git works in-box); --name <n> names the node the boot creates (unique; an inactive holder is reaped); --no-command boots a NEW box and runs no command (--detach: unstable alias — may later mean a true background detach)", "recipe [name] [cmd… | --no-command] [--worktree <wt>] [--name <n>]"},
 	"recipes":   {"list the known recipes, one line each: name and description (--print dumps the bundled YAML, sources and all)", "recipes [--print]"},
 	"worktrees": {"inspect worktree nodes (reap with `dabs rm <name>` or `dabs rm --clean-worktrees`): worktrees [ls | diff <name>]", "worktrees [ls | diff <name>]"},
+	"cd":        {"print a node's directory (the WHERE `ls` shows) as a bare path — shells cannot be moved by a child process, so: cd \"$(dabs cd <node>)\"", "cd <node>"},
 	"exec":      {"run a command inside a box: exec <node> -- <cmd…> for an exact argv, or exec <node> <shell…> for a `sh -c` line (pipes/globs/&&)", "exec <node> [--] <cmd…>"},
 	"ls":        {"list the active subtrees dabs owns, as a tree (--inactive: show only the inactive ones instead)", "ls [--inactive]"},
 	"rm":        {"stop a box and remove its node and what it holds (--keep keeps the record instead; --clean-worktrees sweeps every worktree with no unreviewed work; --inactive sweeps every inactive subtree): rm <node> [-y] [--keep] [--volume] [--multiple] [--dry] [--force] | rm --clean-worktrees [--force] [--dry] | rm --inactive [--dry]", "rm <node> [-y] [--keep] [--volume] [--multiple] [--dry] [--force] | rm --clean-worktrees [--force] [--dry] | rm --inactive [--dry]"},
@@ -74,6 +76,15 @@ func (c *CLI) runRecipe(args []string) error {
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if a == "--" {
+			// A `--` with no recipe named before it is the default-recipe path,
+			// however many dabs flags preceded it: `recipe --name x -- cmd` is
+			// cmd on the default recipe, not a recipe called "cmd".
+			if len(rest) == 0 {
+				if p.Worktree != "" {
+					return BadArgsError{Cmd: "recipe", Reason: "--worktree needs a recipe name before the `--`"}
+				}
+				p.Default = true
+			}
 			rest = append(rest, args[i+1:]...)
 			break
 		}
@@ -88,6 +99,14 @@ func (c *CLI) runRecipe(args []string) error {
 			p.Worktree = args[i]
 		case strings.HasPrefix(a, "--worktree="):
 			p.Worktree = strings.TrimPrefix(a, "--worktree=")
+		case a == "--name":
+			if i+1 >= len(args) {
+				return BadArgsError{Cmd: "recipe", Reason: "--name needs a name for the node the boot creates"}
+			}
+			i++
+			p.NodeName = args[i]
+		case strings.HasPrefix(a, "--name="):
+			p.NodeName = strings.TrimPrefix(a, "--name=")
 		default:
 			rest = append(rest, a)
 		}
@@ -117,6 +136,16 @@ func (c *CLI) runWorktrees(args []string) error {
 		p.Name = args[1]
 	}
 	return c.actions.Worktrees(p)
+}
+
+func (c *CLI) runCd(args []string) error {
+	if wantsHelp(args) {
+		return HelpRequestedError{helpText("cd", nil)}
+	}
+	if len(args) != 1 {
+		return BadArgsError{Cmd: "cd", Reason: "usage: cd <node>"}
+	}
+	return c.actions.Cd(params.Cd{Node: args[0]})
 }
 
 func (c *CLI) runRecipes(args []string) error {

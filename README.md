@@ -79,6 +79,8 @@ dabs ls                          # the tree: what dabs owns, and where it runs
 dabs exec myproj-a3f 'ls | wc -l'        # run a shell line inside (instance prefixes ok, git-style)
 dabs exec myproj-a3f -- ./mycli --help   # exec an exact command inside (no shell)
 dabs recipe myproj               # boot a box and run its command
+dabs recipe myproj --name api    # same, but the node is named: exec/rm/cd by "api"
+cd "$(dabs cd api)"              # jump to any node's directory
 dabs rm myproj-a3f -y            # stop it and remove its node
 ```
 

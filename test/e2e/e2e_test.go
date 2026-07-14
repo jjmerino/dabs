@@ -224,7 +224,7 @@ func wantContains(t *testing.T, out, want string) {
 
 // hasRecipeLine reports whether `dabs recipes` output lists a recipe named
 // exactly name on its own row (first whitespace field) — not a substring buried
-// in another recipe's image= or cmd= (e.g. "sh" inside "shell" or "cmd=sh -c").
+// in another recipe's name or description (e.g. "sh" inside "shell").
 func hasRecipeLine(out, name string) bool {
 	for _, line := range strings.Split(out, "\n") {
 		if f := strings.Fields(line); len(f) > 0 && f[0] == name {

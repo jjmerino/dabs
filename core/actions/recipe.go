@@ -767,8 +767,8 @@ func (r Real) resolveBuiltImage(drv sandbox.Driver, recipeName string, img recip
 	return r.ensureImage(drv, recipeName, img)
 }
 
-// Recipes lists the known recipes and, for each, its image and what it places
-// into the box — so a user (or agent) can see what a recipe does before running.
+// Recipes lists the known recipes, one line each: the recipe name and its
+// description — so a user (or agent) can see what recipes exist at a glance.
 func (r Real) Recipes(p params.Recipes) error {
 	// --print dumps the bundled recipes YAML — the authoring format, comments
 	// and all — so `~/.dabs/recipes.yaml` can be written without guessing.
@@ -785,28 +785,15 @@ func (r Real) Recipes(p params.Recipes) error {
 		fmt.Fprintln(os.Stdout, tui.Muted("no recipes"))
 		return nil
 	}
+	rows := make([][]string, 0, len(names))
 	for _, n := range names {
-		rec := reg.Recipes[n]
-		img := rec.Image.Name
-		if img == "" {
-			img = "build:" + rec.Image.Dockerfile
-		}
-		head := tui.Heading(n)
+		desc := tui.Muted(reg.Recipes[n].Description)
 		if n == reg.Default {
-			head += " " + tui.Badge("default")
+			desc += " " + tui.Badge("default")
 		}
-		if rec.Description != "" {
-			head += "  " + tui.Muted(rec.Description)
-		}
-		fmt.Fprintln(os.Stdout, head)
-		fmt.Fprintln(os.Stdout, tui.Indent(tui.Muted("image=%s", img), 2))
-		fmt.Fprintln(os.Stdout, tui.Indent(tui.Muted("cmd=%s", strings.Join(rec.Command, " ")), 2))
-		for _, s := range rec.Sources {
-			if kind, origin, err := s.Kind(); err == nil {
-				fmt.Fprintf(os.Stdout, "  %s %-8s %s %s %s\n", tui.Dot(), kind, origin, tui.Arrow(), s.Path)
-			}
-		}
+		rows = append(rows, []string{tui.Accent(n), desc})
 	}
+	fmt.Fprintln(os.Stdout, tui.Rows(nil, rows))
 	return nil
 }
 

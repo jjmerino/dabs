@@ -263,6 +263,49 @@ func TestRefusalsBeforeClaimLeaveHolderAlone(t *testing.T) {
 	}
 }
 
+// CONTRACT: `dabs rm <name>` clears an UNFINISHED claim — the marker-only dir
+// a died `--name` boot leaves — which no listing shows and no other verb can
+// reach. That is the escape hatch the claim's own refusal message offers, so
+// it must actually work. A claim dir holding real files (a died boot's
+// provisioning) needs -y like any held data.
+func TestRmClearsUnfinishedClaim(t *testing.T) {
+	fd := baseData()
+	fd.made = append(fd.made, nodeBase+"/stuck")
+	fd.dirs = map[string][]string{nodeBase + "/stuck": {"dabs-claim"}}
+	fd.files = map[string][]byte{nodeBase + "/stuck/dabs-claim": []byte(time.Now().UTC().Format(time.RFC3339) + "\n")}
+	fd.exists[nodeBase+"/stuck"] = true
+	fd.exists[nodeBase+"/stuck/dabs-claim"] = true
+	if err := newReal("", fd, &fakeDriver{}).Rm(params.Rm{Node: "stuck"}); err != nil {
+		t.Fatalf("rm of an unfinished claim: %v", err)
+	}
+	if !rmAllHas(fd, nodeBase+"/stuck") {
+		t.Fatalf("unfinished claim not reaped: %v", fd.rmAll)
+	}
+
+	// Holding a real file beyond the marker: -y is the consent.
+	fd2 := baseData()
+	fd2.made = append(fd2.made, nodeBase+"/stuck")
+	fd2.dirs = map[string][]string{
+		nodeBase + "/stuck":      {"dabs-claim", "held"},
+		nodeBase + "/stuck/held": {"work.txt"},
+	}
+	fd2.files = map[string][]byte{
+		nodeBase + "/stuck/dabs-claim":    []byte(time.Now().UTC().Format(time.RFC3339) + "\n"),
+		nodeBase + "/stuck/held/work.txt": []byte("x"),
+	}
+	fd2.exists[nodeBase+"/stuck"] = true
+	fd2.exists[nodeBase+"/stuck/dabs-claim"] = true
+	if err := newReal("", fd2, &fakeDriver{}).Rm(params.Rm{Node: "stuck"}); err == nil {
+		t.Fatal("a claim dir holding files must need -y")
+	}
+	if err := newReal("", fd2, &fakeDriver{}).Rm(params.Rm{Node: "stuck", Yes: true}); err != nil {
+		t.Fatalf("rm -y of a file-holding claim: %v", err)
+	}
+	if !rmAllHas(fd2, nodeBase+"/stuck") {
+		t.Fatalf("file-holding claim not reaped with -y: %v", fd2.rmAll)
+	}
+}
+
 // CONTRACT: `dabs cd` prints a node's directory — bare, absolute — resolving a
 // name/id (and a box instance as fallback) git-style, refusing ambiguity.
 func TestCdPrintsNodeDirectory(t *testing.T) {

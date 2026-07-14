@@ -121,9 +121,13 @@ func (r Real) reapInactiveHolder(name string, nodes []Node) error {
 const claimMarker = "dabs-claim"
 
 // claimStale is how old a claim marker must be before its dir counts as
-// litter. A claim-to-record window spans provisioning and a box boot —
-// seconds, occasionally a minute; anything this old is a boot that died.
-const claimStale = 15 * time.Minute
+// litter. The claim-to-record window spans provisioning, possibly a docker
+// image build, and the box boot — usually seconds, but a cold build can run
+// long, and a build that outlives this bound leaves its claim reclaimable by a
+// concurrent same-name boot. The bound trades that narrow self-race against
+// dead names squatting for hours; `dabs rm <name>` clears a dead claim at any
+// age.
+const claimStale = time.Hour
 
 // reserveNodeDir is the exclusive create that makes a claim exclusive — the
 // same mint lock ensureProjectNode uses. On finding the dir taken: a node
@@ -152,14 +156,42 @@ func (r Real) reserveNodeDir(name string) error {
 		if _, rerr := r.readNode(name); rerr == nil {
 			return fmt.Errorf("--name %q: another boot just claimed it", name)
 		}
-		if b, rerr := r.data.ReadFile(filepath.Join(dir, claimMarker)); rerr == nil {
-			if at, perr := time.Parse(time.RFC3339, strings.TrimSpace(string(b))); perr == nil && time.Since(at) < claimStale {
-				return fmt.Errorf("--name %q: another boot is claiming it right now (or died within %s) — retry shortly, or `dabs rm %s`", name, claimStale, name)
-			}
+		if fresh, err := r.claimIsFresh(dir); err != nil {
+			return err
+		} else if fresh {
+			return fmt.Errorf("--name %q: another boot is claiming it right now (or died within %s) — retry shortly, or `dabs rm %s -y`", name, claimStale, name)
+		}
+		// No record and no fresh marker: litter — but a concurrent boot sits in
+		// the gap between ITS Mkdir and its marker write for a moment, so look
+		// again after a beat before deleting anything from under anyone.
+		time.Sleep(150 * time.Millisecond)
+		if _, rerr := r.readNode(name); rerr == nil {
+			return fmt.Errorf("--name %q: another boot just claimed it", name)
+		}
+		if fresh, err := r.claimIsFresh(dir); err != nil {
+			return err
+		} else if fresh {
+			return fmt.Errorf("--name %q: another boot is claiming it right now (or died within %s) — retry shortly, or `dabs rm %s -y`", name, claimStale, name)
 		}
 		if err := r.data.RemoveAll(dir); err != nil {
 			return err
 		}
 	}
 	return fmt.Errorf("--name %q: could not reserve the node dir", name)
+}
+
+// claimIsFresh reads a reservation's marker: present and younger than
+// claimStale means a boot may be mid-claim. An unparseable marker reads as
+// FRESH — garbage is not proof the claim is dead, and `dabs rm <name> -y`
+// clears it either way.
+func (r Real) claimIsFresh(dir string) (bool, error) {
+	b, err := r.data.ReadFile(filepath.Join(dir, claimMarker))
+	if err != nil {
+		return false, nil // no marker: pre-marker litter
+	}
+	at, perr := time.Parse(time.RFC3339, strings.TrimSpace(string(b)))
+	if perr != nil {
+		return true, nil
+	}
+	return time.Since(at) < claimStale, nil
 }

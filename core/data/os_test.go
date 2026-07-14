@@ -117,3 +117,69 @@ func TestGitLandedSeesThroughSquashMerge(t *testing.T) {
 		t.Fatalf("branch with fresh commits read landed=%v err=%v, want false", landed, err)
 	}
 }
+
+// The adversarial content edges: a branch that DELETES a file the base kept,
+// and one that edits a line the base also edited (a conflict), both hold
+// something the base does not — neither may read landed. A branch whose
+// commits cancel out (add then revert) carries no content and reads landed:
+// the judgment is content, and reviewed-and-reverted bytes are not unreviewed
+// work.
+func TestGitLandedDeletionConflictAndNetZero(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	git := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		cmd.Env = append(cmd.Environ(),
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	write := func(dir, name, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mkRepo := func() (repo, wt string) {
+		t.Helper()
+		repo = t.TempDir()
+		git(repo, "init", "-q", "-b", "main")
+		write(repo, "base.txt", "v1\n")
+		git(repo, "add", "-A")
+		git(repo, "commit", "-qm", "c0")
+		wt = filepath.Join(t.TempDir(), "wt")
+		git(repo, "worktree", "add", "-q", "-b", "feat", wt, "HEAD")
+		return repo, wt
+	}
+
+	// Deletion: the branch removes a file the base keeps.
+	_, wt := mkRepo()
+	git(wt, "rm", "-q", "base.txt")
+	git(wt, "commit", "-qm", "delete")
+	if landed, err := (OS{}).GitLanded(wt); err != nil || landed {
+		t.Fatalf("deleting branch read landed=%v err=%v, want false", landed, err)
+	}
+
+	// Conflict: both sides edit the same line; merge-tree cannot merge.
+	repo2, wt2 := mkRepo()
+	write(wt2, "base.txt", "branch\n")
+	git(wt2, "commit", "-aqm", "edit")
+	write(repo2, "base.txt", "main\n")
+	git(repo2, "commit", "-aqm", "edit")
+	if landed, err := (OS{}).GitLanded(wt2); err != nil || landed {
+		t.Fatalf("conflicting branch read landed=%v err=%v, want false", landed, err)
+	}
+
+	// Net zero: an experiment committed and reverted — no content vs the base.
+	_, wt3 := mkRepo()
+	write(wt3, "exp.txt", "try\n")
+	git(wt3, "add", "-A")
+	git(wt3, "commit", "-qm", "experiment")
+	git(wt3, "revert", "--no-edit", "HEAD")
+	if landed, err := (OS{}).GitLanded(wt3); err != nil || !landed {
+		t.Fatalf("net-zero branch read landed=%v err=%v, want true (content, not commits)", landed, err)
+	}
+}

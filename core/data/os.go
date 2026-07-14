@@ -146,6 +146,9 @@ func (OS) GitLanded(worktree string) (bool, error) {
 	if base == "" {
 		return false, nil
 	}
+	// An error here is a conflict, or a git too old for --write-tree (<2.38).
+	// Both read as not landed: the pre-fix judgment, which never loses work —
+	// it only keeps demanding --force for work that actually landed.
 	merged, err := exec.Command("git", "-C", worktree, "merge-tree", "--write-tree", base, "HEAD").Output()
 	if err != nil {
 		return false, nil

@@ -409,7 +409,8 @@ is the heading that works today.
 A worktree's STATE — the same three values in `dabs ls` and `dabs worktrees ls`:
 **no-diff** (clean, including a squash-merged branch: commits ahead whose
 CONTENT the base already holds), **has work** (uncommitted or untracked
-changes), **unmerged** (commits ahead carrying content the base does not have).
+changes, nothing unmerged ahead), **unmerged** (commits ahead carrying content
+the base does not have — this wins over has-work when both hold).
 The judgment is content, not commit count — a squash merge leaves commits
 ahead for ever, and landed work is not unreviewed.
 *Where:* `worktreeJudgment`, `Worktrees`.

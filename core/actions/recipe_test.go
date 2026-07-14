@@ -222,7 +222,18 @@ func (f *fakeData) CopyDir(src, dst string) error {
 	f.copies = append(f.copies, src+" -> "+dst)
 	return nil
 }
-func (f *fakeData) RemoveAll(p string) error          { f.rmAll = append(f.rmAll, p); return nil }
+func (f *fakeData) RemoveAll(p string) error {
+	f.rmAll = append(f.rmAll, p)
+	// Mirror the OS: a removed dir is gone, so a later exclusive Mkdir succeeds.
+	kept := f.made[:0]
+	for _, have := range f.made {
+		if have != p {
+			kept = append(kept, have)
+		}
+	}
+	f.made = kept
+	return nil
+}
 func (f *fakeData) Getenv(k string) string            { return f.env[k] }
 func (f *fakeData) LookupEnv(k string) (string, bool) { v, ok := f.env[k]; return v, ok }
 func (f *fakeData) ExpandEnv(s string) string {

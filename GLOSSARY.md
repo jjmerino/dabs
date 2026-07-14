@@ -405,6 +405,21 @@ correctly connected to the node tree; not implemented, so `boxes with no node`
 is the heading that works today.
 *Where:* the `boxes with no node` heading in `Ls`.
 
+### name (a chosen node id)
+`--name <n>` on `dabs recipe` makes the boot's LEAF node — the box, or the
+place a boxless recipe provisions — carry the chosen name AS its id: one
+handle, shown wherever ids are shown, resolvable wherever ids resolve. Unique
+across known node ids AND box instance names; a name held by an inactive node
+is reaped on the fly; the claim reserves the node dir exclusively (the mint
+lock), and runs last among a boot's refusals.
+*Where:* `claimNodeName`, `validateNodeName`.
+
+### cd
+`dabs cd <node>` prints the directory a node marks — the WHERE `ls` shows — as
+a bare absolute path, for `cd "$(dabs cd <node>)"`; a child process cannot move
+its parent shell.
+*Where:* `Cd`.
+
 ### the worktree states
 A worktree's STATE — the same three values in `dabs ls` and `dabs worktrees ls`:
 **no-diff** (clean, including a squash-merged branch: commits ahead whose

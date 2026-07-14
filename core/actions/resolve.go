@@ -83,6 +83,17 @@ func (r Real) matches(arg string) ([]match, error) {
 			instToNode[n.Instance] = n.ID
 		}
 	}
+	// The node id is the CANONICAL handle: an arg that IS a box node's id
+	// resolves through that node's record to its instance before any raw
+	// instance name is considered. Without this, a node named like some other
+	// box's instance would resolve to whichever box the drivers enumerate
+	// first — and exec would disagree with rm/cd about one handle.
+	for _, n := range nodes {
+		if n.Kind == KindBox && n.ID == arg && n.Instance != "" {
+			arg = n.Instance
+			break
+		}
+	}
 
 	// check reports whether a driver's instance is a match, and whether it is an
 	// UNAMBIGUOUS exact hit that short-circuits the fleet (so remotes are skipped).

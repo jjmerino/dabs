@@ -76,6 +76,15 @@ func (c *CLI) runRecipe(args []string) error {
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if a == "--" {
+			// A `--` with no recipe named before it is the default-recipe path,
+			// however many dabs flags preceded it: `recipe --name x -- cmd` is
+			// cmd on the default recipe, not a recipe called "cmd".
+			if len(rest) == 0 {
+				if p.Worktree != "" {
+					return BadArgsError{Cmd: "recipe", Reason: "--worktree needs a recipe name before the `--`"}
+				}
+				p.Default = true
+			}
 			rest = append(rest, args[i+1:]...)
 			break
 		}

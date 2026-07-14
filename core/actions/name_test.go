@@ -120,13 +120,66 @@ func TestNamedBootRefusesUnverifiableHolder(t *testing.T) {
 func TestNamedBootRejectsMalformedName(t *testing.T) {
 	fd := namedBootData(t)
 	drv := &fakeDriver{}
-	for _, bad := range []string{"-leading-dash", "has space", "sl/ash", strings.Repeat("x", 70)} {
+	for _, bad := range []string{"-leading-dash", "has space", "sl/ash", strings.Repeat("x", 70),
+		"a..b", "trailing.", "wt.lock"} { // git refuses these as branch names — refused up front
 		if _, err := bootNamed(t, fd, drv, bad); err == nil {
 			t.Errorf("name %q accepted, want rejection", bad)
 		}
 	}
 	if len(drv.ups) != 0 {
 		t.Fatalf("a rejected name must boot nothing: %v", drv.ups)
+	}
+}
+
+// CONTRACT: a name equal to some box's INSTANCE name is refused — one handle
+// must never mean two boxes (exec/rm/cd must agree what it names).
+func TestNamedBootRefusesInstanceCollision(t *testing.T) {
+	fd := namedBootData(t)
+	seedBoxNode(fd, "other-box", "sh-4f2a91bc03de")
+	drv := &fakeDriver{}
+	_, err := bootNamed(t, fd, drv, "sh-4f2a91bc03de")
+	if err == nil || !strings.Contains(err.Error(), "instance") {
+		t.Fatalf("want an instance-collision refusal, got %v", err)
+	}
+}
+
+// CONTRACT: the claim runs LAST among the refusals. A boot refused for another
+// reason — here a boxless recipe with several places — must leave the name's
+// inactive holder untouched.
+func TestRefusedBootLeavesInactiveHolderAlone(t *testing.T) {
+	fd := baseData()
+	fd.exists["/d1"], fd.exists["/d2"] = true, true
+	seedNode(fd, "probe", "project", "") // inactive holder of the name
+	y := `recipes:
+  twoplace:
+    sources:
+      - copy: /d1
+        path: /a
+      - copy: /d2
+        path: /b
+`
+	drv := &fakeDriver{}
+	err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "twoplace", NodeName: "probe"})
+	if err == nil || !strings.Contains(err.Error(), "ONE node") {
+		t.Fatalf("want the multi-place refusal, got %v", err)
+	}
+	if rmAllHas(fd, nodeBase+"/probe") {
+		t.Fatalf("a refused boot reaped the name's holder: %v", fd.rmAll)
+	}
+}
+
+// CONTRACT: the claim RESERVES the name with an exclusive dir create (the mint
+// lock). A leftover dir with no record — an earlier boot that died between
+// claim and record — is reclaimed, not a permanent squat.
+func TestNamedBootReclaimsRecordlessDir(t *testing.T) {
+	fd := namedBootData(t)
+	fd.made = append(fd.made, nodeBase+"/feature-x") // dir exists, no record
+	drv := &fakeDriver{}
+	if _, err := bootNamed(t, fd, drv, "feature-x"); err != nil {
+		t.Fatalf("recordless dir must be reclaimed, got %v", err)
+	}
+	if _, ok := fd.files[nodeBase+"/feature-x/dabs-node.json"]; !ok {
+		t.Fatalf("name not claimed after reclaim; files: %v", keysOf(fd.files))
 	}
 }
 

@@ -31,13 +31,6 @@ func (r Real) upDetached(arg, worktree, nodeName string) error {
 	if err := r.checkSources(name, rec.Sources, boxless); err != nil {
 		return err
 	}
-	// A chosen name is claimed before anything is provisioned, so a refused
-	// claim costs nothing — and an inactive holder is reaped here, once.
-	if nodeName != "" {
-		if err := r.claimNodeName(nodeName); err != nil {
-			return err
-		}
-	}
 	// A recipe with no image is a recipe for a PLACE, not a box. `--detach` on one
 	// provisions its nodes and stops — the same outcome as a plain `dabs recipe`,
 	// so the two paths agree instead of `--detach` erroring on a boxless recipe.
@@ -61,6 +54,14 @@ func (r Real) upDetached(arg, worktree, nodeName string) error {
 	drv, err := r.driverFor(rec.Target)
 	if err != nil {
 		return err
+	}
+	// The claim comes last among the refusals, so a boot refused for any other
+	// reason has not touched the name's holder (provisionNodes claims for the
+	// boxless path above).
+	if nodeName != "" {
+		if err := r.claimNodeName(nodeName); err != nil {
+			return err
+		}
 	}
 	// Cut the PLACE first: a box names its parent's spaces ($PARENT_VOLUME), and a
 	// parent must exist to be named.

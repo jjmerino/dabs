@@ -95,13 +95,6 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 	if err := r.checkSources(name, rec.Sources, boxless); err != nil {
 		return err
 	}
-	// A chosen name is claimed before anything is provisioned, so a refused
-	// claim costs nothing — and an inactive holder is reaped here, once.
-	if nodeName != "" {
-		if err := r.claimNodeName(nodeName); err != nil {
-			return err
-		}
-	}
 	command := append(append([]string{}, rec.Command...), extra...)
 	// A recipe with no image is a recipe for a PLACE, not a box: it provisions its
 	// nodes (a worktree, a directory) and stops. Nodes do not need a box; a box
@@ -124,6 +117,15 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 			return werr
 		}
 		worktree = full
+	}
+	// The claim comes LAST among the refusals — after the confirm and every
+	// argument check — so a boot refused for any other reason has not touched
+	// the name's holder, and a claim that succeeds reserves the name (the
+	// exclusive dir create) right before provisioning uses it.
+	if nodeName != "" {
+		if err := r.claimNodeName(nodeName); err != nil {
+			return err
+		}
 	}
 	// Look before running: the default-recipe path ALWAYS confirms — it exists to
 	// run an arbitrary command in a box, so it must never launch unprompted, even
@@ -250,6 +252,11 @@ func (r Real) provisionNodes(name string, rec recipe.Recipe, worktree, nodeName 
 		}
 		if places > 1 {
 			return fmt.Errorf("recipe %q: --name %s names ONE node, and this recipe provisions %d places", name, nodeName, places)
+		}
+		// Claimed only once every other refusal has passed: a boot refused
+		// above has not touched the name's holder.
+		if err := r.claimNodeName(nodeName); err != nil {
+			return err
 		}
 	}
 	project, err := r.ensureProjectNode(name)
@@ -1158,6 +1165,11 @@ func (r Real) addWorktree(top, recipeName, parent, nodeName string) (path, branc
 		return "", "", "", fmt.Errorf("recipe: node dir: %w", err)
 	}
 	if err := r.data.GitAddWorktree(top, branch, path); err != nil {
+		// The node dir was made (or reserved by the claim) but holds no record
+		// yet: take it back out, so a failed cut never litters a recordless dir.
+		if nd, derr := r.resolveNodeDir(id); derr == nil {
+			_ = r.data.RemoveAll(nd)
+		}
 		return "", "", "", fmt.Errorf("recipe: %w", err)
 	}
 	if err := r.writeNode(Node{

@@ -224,7 +224,7 @@ func wantContains(t *testing.T, out, want string) {
 
 // hasRecipeLine reports whether `dabs recipes` output lists a recipe named
 // exactly name on its own row (first whitespace field) — not a substring buried
-// in another recipe's image= or cmd= (e.g. "sh" inside "shell" or "cmd=sh -c").
+// in another recipe's name or description (e.g. "sh" inside "shell").
 func hasRecipeLine(out, name string) bool {
 	for _, line := range strings.Split(out, "\n") {
 		if f := strings.Fields(line); len(f) > 0 && f[0] == name {
@@ -1359,9 +1359,19 @@ func TestRecipeLocalDabsYamlDefault(t *testing.T) {
 	out, code := runIn(dir, "dabs recipes")
 	wantExit(t, 0, code)
 	// The default marker is a lipgloss badge that degrades to a bare word when
-	// piped; assert it sits next to the recipe name so a dropped/misattached
-	// marker still fails.
-	wantContains(t, out, "probe default")
+	// piped; it sits on the default recipe's LINE, in the description cell. The
+	// probe recipe has no description, so its piped line is exactly the two
+	// fields "probe default" — a dropped badge or a stray extra cell both fail.
+	marked := false
+	for _, l := range strings.Split(out, "\n") {
+		f := strings.Fields(l)
+		if len(f) == 2 && f[0] == "probe" && f[1] == "default" {
+			marked = true
+		}
+	}
+	if !marked {
+		t.Fatalf("default recipe's line is not exactly `probe default`:\n%s", out)
+	}
 
 	// No name → the default-recipe path, which confirms before running: feed `y`.
 	out, code = runInStdin(dir, "y\n", "dabs recipe")

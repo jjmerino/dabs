@@ -22,8 +22,11 @@ know what is in it:
   `build`/`recipe --detach` with no name list the choices, and `recipe` with an
   unknown/absent name falls back to the bundled `sh` box. Name the recipe you mean:
   `dabs recipe sh -c 'echo hi'`.
-- **Which recipes exist**, and what each one mounts, copies, and runs. `dabs
-  recipes` lists them; `dabs recipes --print` dumps the bundled ones.
+- **Which recipes exist**. `dabs recipes` lists them one line each — name and
+  description. Full detail (image, command, sources) exists only in the YAML
+  itself: `dabs recipes --print` dumps the BUNDLED registry in full; for a user
+  or project recipe, read `~/.dabs/recipes.yaml` or the project's `dabs.yaml` —
+  no dabs command prints their mounts.
 
 ## The loop
 

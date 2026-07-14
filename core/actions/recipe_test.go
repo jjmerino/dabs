@@ -21,6 +21,7 @@ import (
 	"github.com/jjmerino/dabs/core/actions"
 	"github.com/jjmerino/dabs/core/data"
 	"github.com/jjmerino/dabs/core/params"
+	"github.com/jjmerino/dabs/core/recipe"
 	"github.com/jjmerino/dabs/core/sandbox"
 )
 
@@ -1163,9 +1164,9 @@ func TestRecipeKeepLeavesBoxAlive(t *testing.T) {
 	}
 }
 
-// `dabs recipes` prints each recipe's description on the SAME line as its name,
-// and puts image= and cmd= on their own separate indented lines below.
-func TestRecipesListsDescriptionOnNameLine(t *testing.T) {
+// `dabs recipes` renders one line per recipe: the name then its description,
+// and nothing else — no image=, cmd=, or source lines.
+func TestRecipesListsNameAndDescription(t *testing.T) {
 	y := `recipes:
   m:
     description: a friendly clean box
@@ -1191,20 +1192,28 @@ func TestRecipesListsDescriptionOnNameLine(t *testing.T) {
 		}
 	}
 	if nameLine == "" {
-		t.Fatalf("description not on the recipe name line; output:\n%s", out)
+		t.Fatalf("name and description not on one line; output:\n%s", out)
 	}
-	// image= and cmd= must be on their own separate lines.
-	imgLine, cmdLine := false, false
-	for _, ln := range strings.Split(out, "\n") {
-		if strings.Contains(ln, "image=img") && !strings.Contains(ln, "cmd=") {
-			imgLine = true
-		}
-		if strings.Contains(ln, "cmd=sh -c run") && !strings.Contains(ln, "image=") {
-			cmdLine = true
-		}
+	// No image=, cmd=, or source arrow lines survive.
+	if strings.Contains(out, "image=") || strings.Contains(out, "cmd=") || strings.Contains(out, "→") {
+		t.Fatalf("recipes output still carries image=/cmd=/source detail; output:\n%s", out)
 	}
-	if !imgLine || !cmdLine {
-		t.Fatalf("image= and cmd= not on their own lines (image=%v cmd=%v); output:\n%s", imgLine, cmdLine, out)
+	// One line per recipe — a count, not just no-blanks, so a reintroduced
+	// per-recipe detail line fails even without an image=/cmd= marker. The
+	// registry is the bundled recipes plus the one project recipe above.
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	reg, err := recipe.Parse(recipe.Bundled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := len(reg.Names()) + 1
+	if len(lines) != want {
+		t.Fatalf("recipes printed %d lines for %d recipes:\n%s", len(lines), want, out)
+	}
+	for _, ln := range lines {
+		if strings.TrimSpace(ln) == "" {
+			t.Fatalf("blank line in recipes output:\n%s", out)
+		}
 	}
 }
 

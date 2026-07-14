@@ -50,9 +50,12 @@ know what is in it:
 
 3. **Use it directly**, or **run an agent inside it — with a recipe.** Recipes
    do the plumbing: a recipe is a fully declarative box (image, what to
-   mount/copy in, env, command). dabs ships exactly ONE recipe — `sh`, the
-   generic clean-box example; `dabs recipes` lists what's available. Here it is,
-   the shape to copy when you write your own into `~/.dabs/recipes.yaml`:
+   mount/copy in, env, command). dabs ships FIVE generic recipes — `sh` (a
+   shell in a clean box over the cwd), `wt` (cut a git worktree, no box),
+   `wtbox` (a shell box over a fresh worktree), `scratch` (copy the cwd into a
+   directory node, no box), and `scratchbox` (a shell box over a throwaway copy
+   of the cwd); all work anywhere, `dabs recipes` lists them. Here is `sh`, the
+   shape to copy when you write your own into `~/.dabs/recipes.yaml`:
 
    ```yaml
    recipes:
@@ -90,7 +93,7 @@ know what is in it:
    dir, Claude says "not logged in", you `/login` once inside, and every later box
    that mounts that dir is logged in. There is no separate login command.
 
-   Recipes resolve **bundled (`sh`) → `~/.dabs/recipes.yaml` (global) →
+   Recipes resolve **bundled → `~/.dabs/recipes.yaml` (global) →
    `./dabs.yaml` (project)**, later winning. A project's `dabs.yaml` can add
    recipes and set a `default:`; `dabs recipe` with no name runs that default (no
    default set → the bundled `sh` box). The same registry backs `dabs
@@ -242,7 +245,12 @@ already started, without cutting a new branch.
   node's held space, so keeping a box never touches it — `dabs rm <wt>` (or
   `dabs rm --clean-worktrees`) does, and it still refuses unreviewed work. A
   kept box whose spaces are empty becomes inactive and drops out of the default
-  `dabs ls` (it is a record of history, shown by `dabs ls --all`).
+  `dabs ls` (it is a record of history, shown by `dabs ls --inactive`;
+  `dabs rm --inactive` sweeps all of them).
+- `dabs recipe` or `dabs build` must be run from a directory OUTSIDE `~/.dabs`:
+  provisioning from inside dabs's own storage is refused by design — it would
+  mark the node store itself as a project. This includes test drivers: give a
+  journey its own directory under your home, never a path under `~/.dabs`.
 - Everything dabs owns is namespaced: it only ever sees or removes its own
   boxes.
 - Keep the build context under your home directory. A context under

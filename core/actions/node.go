@@ -167,7 +167,7 @@ func (r Real) resolveNodeData(id string) (string, error) {
 
 // resolveHeldSpace returns a node's held space directory, preferring the current
 // held/ name but falling back to a legacy ephemeral/ dir an older dabs wrote —
-// so the held-space guards (the ls ⚠, the rm consent) still see a legacy node's
+// so the held-space guards (the ls ●, the rm consent) still see a legacy node's
 // files. When neither is present it returns held/, the name a new node uses.
 func (r Real) resolveHeldSpace(id string) (string, error) {
 	held, err := r.resolveNodeSpace(id, SpaceHeld)

@@ -10,6 +10,7 @@ package actions_test
 //   - --inactive sweeps the inactive subtrees (empty markers) and nothing else.
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -267,6 +268,73 @@ func TestRmInactiveSweepsOnlyInactive(t *testing.T) {
 	}
 	if rmAllHas(fd, nodeBase+"/live-box") {
 		t.Errorf("rm --inactive must not remove an active box's node: %v", fd.rmAll)
+	}
+}
+
+// CONTRACT: `rm --inactive` is a BATCH: nodes are listed and the drivers
+// queried ONCE for the whole sweep, however many inactive roots it reaps —
+// never per node. A gone box's instance is never contacted (no down attempt):
+// the one drivers' answer already says it is dead.
+func TestRmInactiveQueriesDriversOnce(t *testing.T) {
+	fd := baseData()
+	seedBoxNode(fd, "gone-aaaa", "inst-a") // empty spaces, no driver holds the instance
+	seedBoxNode(fd, "gone-bbbb", "inst-b")
+	seedNode(fd, "proj-x", "project", "")
+	drv := &fakeDriver{} // the driver reports nothing → everything is inactive
+
+	if err := newReal("", fd, drv).Rm(params.Rm{Inactive: true}); err != nil {
+		t.Fatalf("rm --inactive: %v", err)
+	}
+	if drv.lsCount != 1 {
+		t.Errorf("rm --inactive queried the drivers %d times, want 1 for the whole sweep", drv.lsCount)
+	}
+	if len(drv.downs) != 0 {
+		t.Errorf("rm --inactive must not attempt to down gone instances: %v", drv.downs)
+	}
+	for _, id := range []string{"gone-aaaa", "gone-bbbb", "proj-x"} {
+		if !rmAllHas(fd, nodeBase+"/"+id) {
+			t.Errorf("%s not reaped by the sweep: %v", id, fd.rmAll)
+		}
+	}
+}
+
+// CONTRACT: `rm` of a box no driver reports skips the down entirely — the one
+// drivers query is the whole answer, no second per-instance round-trip.
+func TestRmGoneBoxSkipsDownAndSecondDriversQuery(t *testing.T) {
+	fd := baseData()
+	seedBoxNode(fd, "gone-aaaa", "inst-a")
+	drv := &fakeDriver{} // no driver reports inst-a → already gone
+
+	if err := newReal("", fd, drv).Rm(params.Rm{Node: "gone-aaaa"}); err != nil {
+		t.Fatalf("rm: %v", err)
+	}
+	if drv.lsCount != 1 {
+		t.Errorf("rm of a gone box queried the drivers %d times, want 1", drv.lsCount)
+	}
+	if len(drv.downs) != 0 {
+		t.Errorf("rm of a gone box must not down anything: %v", drv.downs)
+	}
+	if !rmAllHas(fd, nodeBase+"/gone-aaaa") {
+		t.Errorf("gone box's node not removed: %v", fd.rmAll)
+	}
+}
+
+// CONTRACT: an INCOMPLETE drivers' answer (a driver errored or timed out) is
+// not absence. The down is attempted anyway, and its own resolve — a fresh
+// query — still stops the box once the transient failure has passed. Skipping
+// it would orphan a running box outside dabs's tracking.
+func TestRmDownsBoxWhenDriversAnswerIncomplete(t *testing.T) {
+	fd := baseData()
+	seedBoxNode(fd, "flaky-aaaa", "inst-a")
+	drv := &fakeDriver{
+		infos:     []sandbox.Info{{Name: "inst-a", Status: "running"}},
+		lsErrOnce: fmt.Errorf("driver down"), // the sweep's one query fails; the next succeeds
+	}
+	if err := newReal("", fd, drv).Rm(params.Rm{Node: "flaky-aaaa", Yes: true}); err != nil {
+		t.Fatalf("rm: %v", err)
+	}
+	if len(drv.downs) != 1 || drv.downs[0] != "inst-a" {
+		t.Fatalf("an unconfirmed box must still be downed (attempted, resolved fresh); downed %v", drv.downs)
 	}
 }
 

@@ -128,7 +128,9 @@ what you want back next time, since a box never returns):
 `dabs rm <node>` stops a box and removes its node and whatever stands on it (it
 brings boxes down first, and asks before it loses a live box or held data).
 `dabs rm --keep <box>` stops the box but KEEPS its node record instead. `dabs
-ls` shows only active subtrees; `dabs ls --all` also shows the inactive ones.
+ls` shows only active subtrees; `dabs ls --inactive` shows only the inactive
+ones (the empty markers `ls` hides), and `dabs rm --inactive` sweeps them all
+in one shot (`--dry` previews).
 
 ## Remote servers
 
@@ -150,10 +152,16 @@ column; `exec`/`rm` address any instance by name wherever it lives.
 
 ## Recipe fields (dabs.yaml)
 
-A recipe is the whole box spec. Recipes resolve bundled (`sh`) →
+A recipe is the whole box spec. Recipes resolve bundled →
 `~/.dabs/recipes.yaml` (global) → `./dabs.yaml` (project), later winning; a
 top-level `default:` names the recipe `build`/`recipe` use when given
 no name.
+
+Five generic recipes ship bundled and work in any directory (`dabs recipes`
+lists them): `sh` (a shell in a clean box over the cwd), `wt` (cut a git
+worktree, no box), `wtbox` (a shell box over a fresh worktree), `scratch`
+(copy the cwd into a directory node, no box), `scratchbox` (a shell box over
+a throwaway copy of the cwd).
 
 | field | default | meaning |
 |---|---|---|

@@ -144,20 +144,38 @@ func TestBundledRegistryIsValid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bundled recipes.yaml does not parse: %v", err)
 	}
-	for _, want := range []string{"sh"} {
-		rec, err := reg.Get(want)
+	// The box recipes carry an image and a command; the place recipes (`wt`,
+	// `scratch`) are image-less and command-less BY DESIGN — they make a place
+	// and stop, so anything runnable on them would boot something. Each source
+	// must be the kind the recipe's name promises.
+	for _, want := range []struct {
+		name       string
+		box        bool
+		sourceKind string
+	}{
+		{"sh", true, "mount"},
+		{"wt", false, "worktree"},
+		{"wtbox", true, "worktree"},
+		{"scratch", false, "copy"},
+		{"scratchbox", true, "copy"},
+	} {
+		rec, err := reg.Get(want.name)
 		if err != nil {
-			t.Fatalf("bundled registry missing %q: %v", want, err)
+			t.Fatalf("bundled registry missing %q: %v", want.name, err)
 		}
-		if len(rec.Command) == 0 {
-			t.Errorf("recipe %q has no command — it could never run", want)
+		hasImage := rec.Image.Name != "" || rec.Image.Dockerfile != ""
+		if want.box && (len(rec.Command) == 0 || !hasImage) {
+			t.Errorf("recipe %q must carry an image and a command — it could never run: %+v", want.name, rec)
 		}
-		if rec.Image.Name == "" && rec.Image.Dockerfile == "" {
-			t.Errorf("recipe %q has no image", want)
+		if !want.box && (len(rec.Command) != 0 || hasImage) {
+			t.Errorf("recipe %q must be image-less and command-less (it makes a place, no box): %+v", want.name, rec)
+		}
+		if len(rec.Sources) == 0 {
+			t.Fatalf("recipe %q has no sources", want.name)
 		}
 		for _, s := range rec.Sources {
-			if _, _, err := s.Kind(); err != nil {
-				t.Errorf("recipe %q has an invalid source: %v", want, err)
+			if k, _, err := s.Kind(); err != nil || k != want.sourceKind {
+				t.Errorf("recipe %q source must be a %s, got %q (%v)", want.name, want.sourceKind, k, err)
 			}
 		}
 	}

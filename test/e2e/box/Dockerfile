@@ -42,3 +42,9 @@ RUN go build -o /usr/local/bin/dabs .
 COPY --from=e2ebase / /tmp/h/.dabs/images/dabs-e2e/rootfs
 RUN printf '%s' '{"env":["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"],"workdir":"/work"}' \
       > /tmp/h/.dabs/images/dabs-e2e/image.json
+
+# Pristine copies of the staged images, OUTSIDE the store `dabs prune` reaps.
+# There is no builder in the box, so a pruned staged image is otherwise gone for
+# the rest of the suite; tests that need one (the bundled box recipes boot
+# `shell`) restore it from here.
+RUN cp -a /tmp/h/.dabs/images /tmp/h/.dabs-staged-images

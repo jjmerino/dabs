@@ -370,8 +370,8 @@ func TestBootFailsWhenBoxUnusableE2E(t *testing.T) {
 
 // E2-4: spaceHolds did a shallow ReadDir, so a space whose only content was an
 // EMPTY subdirectory (an `mkmount:` that created $NODE_HELD/e but never
-// wrote a file) read as ⚠ "holds files". `dabs ls` must mark that box's
-// held space EMPTY (✓), not holding (⚠) — otherwise the warning is trained noise.
+// wrote a file) read as ● "holds files". `dabs ls` must leave that box's
+// held cell BLANK, not holding (●) — otherwise the mark is trained noise.
 func TestEmptyHeldSpaceNotMarkedHeldE2E(t *testing.T) {
 	clean(t)
 	dir := filepath.Join(home, "e2e-eph")
@@ -407,7 +407,7 @@ func TestEmptyHeldSpaceNotMarkedHeldE2E(t *testing.T) {
 		t.Fatalf("ls failed (%d): %s", code, ls)
 	}
 	// Find the box's own row (its Where cell is the instance name) and assert its
-	// space cells carry no held glyph — the empty subdir must not read as ⚠.
+	// space cells carry no held glyph — the empty subdir must not read as ●.
 	var row string
 	for _, line := range strings.Split(ls, "\n") {
 		if strings.Contains(line, inst) {
@@ -417,11 +417,8 @@ func TestEmptyHeldSpaceNotMarkedHeldE2E(t *testing.T) {
 	if row == "" {
 		t.Fatalf("box row for %q not found in ls:\n%s", inst, ls)
 	}
-	if strings.Contains(row, "⚠") {
+	if strings.Contains(row, "●") {
 		t.Fatalf("empty held space marked held (E2-4): row=%q\nfull ls:\n%s", row, ls)
-	}
-	if !strings.Contains(row, "✓") {
-		t.Fatalf("box row shows no empty glyph, expected ✓: row=%q\nfull ls:\n%s", row, ls)
 	}
 }
 
@@ -566,7 +563,7 @@ func TestRecipeToUnreachableServerFailsFastE2E(t *testing.T) {
 
 // The ephemeral space is now named held/, but a node an older dabs wrote keeps
 // its ephemeral/ dir. resolveHeldSpace reads that legacy dir, so such a node
-// still shows the held ⚠ in ls and its files are still guarded by rm's consent.
+// still shows the held ● in ls and its files are still guarded by rm's consent.
 // Hand-write a gone box node whose held space is literally ephemeral/ with a
 // file in it, then prove both guards see it.
 func TestLegacyEphemeralDirStillReadableE2E(t *testing.T) {
@@ -587,7 +584,7 @@ func TestLegacyEphemeralDirStillReadableE2E(t *testing.T) {
 	t.Cleanup(func() { os.RemoveAll(node) })
 
 	// The held (ephemeral) space holds a file, so the subtree is ACTIVE and shows
-	// in the default `ls`, box gone or not — and the row marks the space ⚠.
+	// in the default `ls`, box gone or not — and the row marks the space ●.
 	ls, code := run("dabs ls")
 	if code != 0 {
 		t.Fatalf("ls failed (%d): %s", code, ls)
@@ -601,8 +598,8 @@ func TestLegacyEphemeralDirStillReadableE2E(t *testing.T) {
 	if row == "" {
 		t.Fatalf("legacy node %q not shown in ls:\n%s", id, ls)
 	}
-	if !strings.Contains(row, "⚠") {
-		t.Fatalf("legacy ephemeral/ dir not marked held (⚠) in ls: row=%q\n%s", row, ls)
+	if !strings.Contains(row, "●") {
+		t.Fatalf("legacy ephemeral/ dir not marked held (●) in ls: row=%q\n%s", row, ls)
 	}
 
 	// rm without consent (non-interactive) must be REFUSED and keep the file —

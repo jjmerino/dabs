@@ -176,6 +176,107 @@ func TestLiveBoxIsAlwaysActive(t *testing.T) {
 	wantContains(t, ls, proj)
 }
 
+// TestFinishedBoxesAreFullyReaped: a sandbox finishing its work IS a down, and a
+// down with nothing left in held/ or volume/ is a full reap — node and all. The
+// non-keep recipe path must not leave a `gone` row per run: boot a few recipes to
+// completion and no box node may remain, on disk or in `ls`.
+func TestFinishedBoxesAreFullyReaped(t *testing.T) {
+	clean(t)
+	resetNodes(t)
+	dir := filepath.Join(home, "e2e-finished")
+	bugRecipe(t, dir, "finished", "")
+
+	// Run the recipe to completion a few times. Its command is `sh`; with no
+	// terminal it reads EOF and exits at once — the box came up, worked, finished.
+	for i := 0; i < 3; i++ {
+		if out, code := runIn(dir, "dabs recipe finished"); code != 0 {
+			t.Fatalf("recipe run %d failed (%d): %s", i, code, out)
+		}
+	}
+
+	// Nothing was left in any space, so no box node survives its box.
+	if boxes := nodesOfKind(t, "box"); len(boxes) != 0 {
+		t.Fatalf("finished boxes leaked their nodes: %v", boxes)
+	}
+	ls, code := run("dabs ls")
+	if code != 0 {
+		t.Fatalf("ls failed (%d): %s", code, ls)
+	}
+	wantNotContains(t, ls, "gone")
+}
+
+// TestGoneEmptyBoxIsInactiveEvenUnderActiveParent: activity is judged per NODE,
+// not inherited from the subtree. A box that is gone and holds nothing is dead
+// weight even when its parent project is alive with files — default `ls` must not
+// show it as an eternal `gone` row, `ls --inactive` must own it, and
+// `rm --inactive` must sweep it while leaving the active parent standing.
+func TestGoneEmptyBoxIsInactiveEvenUnderActiveParent(t *testing.T) {
+	clean(t)
+	resetNodes(t)
+	dir := filepath.Join(home, "e2e-goneunder")
+	bugRecipe(t, dir, "goneunder", "")
+	out, code := runIn(dir, "dabs recipe goneunder --detach")
+	if code != 0 {
+		t.Fatalf("up failed (%d): %s", code, out)
+	}
+	liveBox := nodeIDFrom(t, out)
+	t.Cleanup(func() { run("dabs rm " + liveBox + " -y") })
+	proj := theProjectNode(t)
+
+	// The parent holds files, so its subtree is active.
+	vol := filepath.Join(nodesDir(), proj, "volume")
+	if err := os.MkdirAll(vol, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(vol, "data.txt"), []byte("alive\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// A gone, all-empty box under that parent — what a crashed or killed box
+	// leaves behind: a record whose instance the driver no longer knows.
+	goneID := "goneunder-deadbox"
+	node := filepath.Join(nodesDir(), goneID)
+	for _, sp := range []string{"volume", "held", "tmp"} {
+		if err := os.MkdirAll(filepath.Join(node, sp), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rec := `{"id":"` + goneID + `","kind":"box","parent":"` + proj + `","recipe":"goneunder","created":"2020-01-01T00:00:00Z","instance":"goneunder-nosuchbox"}`
+	if err := os.WriteFile(filepath.Join(node, "dabs-node.json"), []byte(rec), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(node) })
+
+	// Default ls shows the living (parent, live box) and not the dead row.
+	ls, code := run("dabs ls")
+	if code != 0 {
+		t.Fatalf("ls failed (%d): %s", code, ls)
+	}
+	wantContains(t, ls, proj)
+	wantNotContains(t, ls, goneID)
+
+	// The dead box is the --inactive view's to show…
+	inactive, code := run("dabs ls --inactive")
+	if code != 0 {
+		t.Fatalf("ls --inactive failed (%d): %s", code, inactive)
+	}
+	wantContains(t, inactive, goneID)
+
+	// …and the --inactive sweep's to reap: its node goes, the active parent stays.
+	if out, code := run("dabs rm --inactive"); code != 0 {
+		t.Fatalf("rm --inactive failed (%d): %s", code, out)
+	}
+	if _, err := os.Stat(node); !os.IsNotExist(err) {
+		t.Fatalf("gone empty box node survived rm --inactive (stat err=%v)", err)
+	}
+	ls, code = run("dabs ls")
+	if code != 0 {
+		t.Fatalf("ls failed (%d): %s", code, ls)
+	}
+	wantContains(t, ls, proj)
+	wantContains(t, ls, liveBox)
+}
+
 // TestRmInactiveSweepsOnlyInactive: `dabs rm --inactive` reaps every inactive
 // subtree (the empty markers `ls` hides) and leaves active ones standing.
 func TestRmInactiveSweepsOnlyInactive(t *testing.T) {

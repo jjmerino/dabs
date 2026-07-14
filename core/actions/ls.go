@@ -269,53 +269,52 @@ func anyLiveInChain(n Node, nodes []Node, byID map[string]Node, state map[string
 	return false
 }
 
-// activeSubtrees marks every node that belongs to an ACTIVE subtree, and names
-// the roots of the inactive ones. Visibility follows LIFE, not history: a subtree
-// — a root and everything under it — is active iff ANY node in it is self-active.
-// A subtree of only empty markers is inactive; `ls` hides it by default, `ls
-// --inactive` shows it, and `rm --inactive` sweeps it. The returned set names the
-// ids in active subtrees; inactiveRoots names the root id of each inactive one.
+// activeSubtrees marks every ACTIVE node and names the tops of the inactive ones.
+// Life is judged per NODE, and activity propagates UP, never DOWN: a node is
+// active iff it is self-active or holds a self-active descendant, so a live box
+// keeps its whole line of ancestors visible while a gone, empty box stays dead
+// weight even under a living parent. `ls` hides an inactive node by default, `ls
+// --inactive` shows it, and `rm --inactive` sweeps it.
+//
+// active names every active node's id. inactiveRoots names the TOP of each
+// inactive subtree — an inactive node whose parent is active or absent — the id
+// `rm --inactive` reaps to take just that dead branch without disturbing the
+// living tree above it (an inactive node with an inactive parent is reaped as part
+// of that parent's branch, not on its own).
 func (r Real) activeSubtrees(nodes []Node, state map[string]boxState) (active map[string]bool, inactiveRoots []string) {
 	byID := make(map[string]Node, len(nodes))
 	for _, n := range nodes {
 		byID[n.ID] = n
 	}
-	// rootOf walks a node to the top of its chain, guarding a corrupt cycle, so
-	// every node is judged as part of exactly ONE subtree.
-	rootOf := func(n Node) string {
-		seen := map[string]bool{}
-		for {
-			seen[n.ID] = true
-			p, ok := byID[n.Parent]
-			if !ok || seen[p.ID] {
-				return n.ID
-			}
-			n = p
-		}
-	}
-	liveRoot := map[string]bool{}
-	seenRoot := map[string]bool{}
-	var roots []string // distinct root ids, in first-seen order
-	for _, n := range nodes {
-		rid := rootOf(n)
-		if !seenRoot[rid] {
-			seenRoot[rid] = true
-			roots = append(roots, rid)
-		}
-		if r.nodeSelfActive(n, state) {
-			liveRoot[rid] = true
-		}
-	}
 	active = make(map[string]bool, len(nodes))
+	// A self-active node lights its whole line of ancestors: walk up from each one,
+	// guarding a corrupt cycle, and mark every node on the way to the root.
 	for _, n := range nodes {
-		if liveRoot[rootOf(n)] {
-			active[n.ID] = true
+		if !r.nodeSelfActive(n, state) {
+			continue
+		}
+		cur := n
+		seen := map[string]bool{}
+		for !seen[cur.ID] {
+			seen[cur.ID] = true
+			active[cur.ID] = true
+			p, ok := byID[cur.Parent]
+			if !ok {
+				break
+			}
+			cur = p
 		}
 	}
-	for _, rid := range roots {
-		if !liveRoot[rid] {
-			inactiveRoots = append(inactiveRoots, rid)
+	// An inactive node whose parent is active (or gone) is the top of a dead branch;
+	// one whose parent is also inactive is reaped with that parent, not on its own.
+	for _, n := range nodes {
+		if active[n.ID] {
+			continue
 		}
+		if p, ok := byID[n.Parent]; ok && !active[p.ID] {
+			continue
+		}
+		inactiveRoots = append(inactiveRoots, n.ID)
 	}
 	return active, inactiveRoots
 }

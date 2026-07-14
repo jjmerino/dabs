@@ -190,12 +190,33 @@ func (r Real) liveByWorktree() map[string]string {
 	return byWt
 }
 
-// teardown brings a box down and, when it was a journaled worktree-backed box,
-// records the matching `down` — keeping the journal balanced on EVERY teardown
-// that follows a journaled `up`: the non-keep recipe teardown and buildBox's
-// post-`up` failure cleanup. A plain (non-worktree) box logs nothing, because
-// logWorktreeDown no-ops when the instance isn't a live journal entry.
+// teardown brings a box down, records the matching `down` for a journaled
+// worktree-backed box, and reaps the box's own node — a sandbox finishing its
+// work IS a down, and a down is a full reap. A plain (non-worktree) box logs
+// nothing, because logWorktreeDown no-ops when the instance isn't a live journal
+// entry.
 func (r Real) teardown(drv sandbox.Driver, instance string) {
 	drv.Down(instance)
 	r.logWorktreeDown(instance)
+	r.reapBoxNode(instance)
+}
+
+// reapBoxNode reaps the node of a box that has just come down. It applies the one
+// space rule `rm` uses (reapSpaces with removeNode): tmp always cleared, held/ and
+// volume/ kept only when they actually hold files (spaceHolds), and the node dir
+// removed when nothing is left. Being an implicit teardown rather than an `rm`, it
+// never prompts — a held space with files is simply kept and the node retained.
+// Best-effort: a box the node store does not know (an older dabs, a hand-booted
+// box) leaves nothing to reap, and a reap failure must not break the recipe path.
+func (r Real) reapBoxNode(instance string) {
+	nodes, err := r.listNodes()
+	if err != nil {
+		return
+	}
+	for _, n := range nodes {
+		if n.Kind == KindBox && n.Instance == instance {
+			_ = r.reapSpaces(n, spacePolicy{removeNode: true, implicit: true, quiet: true})
+			return
+		}
+	}
 }

@@ -327,7 +327,12 @@ func (r Real) guardWorktreeWork(n Node, force bool) error {
 // ran, and from where, after the box is gone — the whole reason a node exists.
 // quiet suppresses the per-space "kept" line: a cascade reap already reported
 // the aggregate (see reapDataSummary), so repeating it per node is noise.
-type spacePolicy struct{ yes, volume, removeNode, quiet bool }
+//
+// implicit marks a teardown that is not an `rm`: it never seeks interactive
+// consent for a held space. A finished box being reaped keeps a held space that
+// holds files (and its node with it) without stopping to ask, because nobody
+// asked for the reap in the first place.
+type spacePolicy struct{ yes, volume, removeNode, quiet, implicit bool }
 
 // reapSpaces applies the ONE rule about node spaces, so `rm`, `rm --keep` and
 // the `--clean-worktrees` sweep cannot disagree about what a space means:
@@ -369,7 +374,7 @@ func (r Real) reapSpaces(n Node, pol spacePolicy) error {
 		consent func(dir string) bool // asked ONLY when the space actually holds files
 		how     string
 	}{
-		{SpaceHeld, heldDir, func(dir string) bool { return pol.yes || r.consentToHeld(n, dir) }, "-y"},
+		{SpaceHeld, heldDir, func(dir string) bool { return pol.yes || (!pol.implicit && r.consentToHeld(n, dir)) }, "-y"},
 		{SpaceVolume, volDir, func(string) bool { return pol.yes && pol.volume }, "-y --volume"},
 	} {
 		dir := sp.dir

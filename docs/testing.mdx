@@ -1,6 +1,6 @@
 ---
 title: "How this manual is tested"
-description: "Every screen here is pinned by a tuti golden — the docs are verifiable by a test run"
+description: "Every screen here is pinned by a golden — the docs are verifiable by a test run"
 ---
 
 This manual makes a promise most docs can't: **every terminal screen it shows
@@ -9,7 +9,7 @@ test.** The suite ships next to the docs.
 
 ## The stack
 
-- **tuti** — a tmux clip-testing harness — drives dabs in a real tmux pane,
+- A test harness drives dabs in a real tmux pane,
   clips what it drew — colour included — and compares each clip against an
   approved golden. A styling regression fails the diff even when the text
   matches.
@@ -49,10 +49,10 @@ leak live boxes into the next one (see
 
 The suite drives a real dabs, so it runs **inside a disposable box** (the
 dabseption pattern: a privileged box carrying bubblewrap, tmux, dabs, and
-tuti), never on a host whose dabs state matters:
+the harness), never on a host whose dabs state matters:
 
 ```bash
-dabs recipe scribe --detach                 # the box with dabs + tuti + tmux
+dabs recipe scribe --detach                 # the box with dabs + the harness + tmux
 dabs exec <box> 'cd /work/tests && python3 -m pytest -q'
 ```
 
@@ -67,8 +67,7 @@ legitimately changes, run with `TUTI_SAVE_RUNS=1`, review, and approve:
 
 ```bash
 TUTI_SAVE_RUNS=1 python3 -m pytest -q
-tuti -g goldens review            # or: tuti web, side-by-side with colour diff
-tuti -g goldens review --approve  # bless the new screens
+# review the changed screens side by side, then approve the new goldens
 ```
 
 Then update the embedded screen in the matching docs page — the golden and the

@@ -1,0 +1,92 @@
+---
+title: "Listing and cleaning up"
+description: "dabs ls shows what lives; dabs rm is the single reaper — with four consents for four risks"
+---
+
+<Info>Screens verified by `tests/test_rm.py` (and the walkthroughs above).</Info>
+
+## Reading `dabs ls`
+
+`ls` draws what dabs owns as a tree, grouped by driver: NODE · KIND ·
+VOL/HELD/TMP (a dot per space that holds files) · STATE · WHERE.
+
+```text
+local (bwrap, this machine)
+  NODE             KIND     VOL  HELD  TMP  STATE  WHERE
+  myproj-________  project                         ~/myproj
+  └─ sh-________   box                      live   ~/.dabs/nodes/sh-________  (shell-____________)
+```
+
+Visibility follows **life**: `ls` shows only subtrees holding a running box or
+real files. Empty markers (a project record with nothing under it) hide behind
+a hint —
+
+```text
+1 inactive (dabs ls --inactive)
+```
+
+— and `dabs ls --inactive` lists only those instead.
+
+## rm: preview first, consent always
+
+`dabs rm <node>` stops the box and removes its node and spaces, **cascading to
+everything nested under it**. Losing anything requires consent; without it, rm
+previews and exits nonzero. `--dry` previews and removes nothing.
+
+Four flags authorize four different losses — never collapsed into one:
+
+| flag | consents to |
+|---|---|
+| `-y` / `--yes` | stop a live box; reap a held space that holds files |
+| `--volume` | additionally delete the volume — what a place keeps on purpose |
+| `--force` | discard a worktree's unreviewed git work |
+| `--multiple` | act on all nodes one ambiguous name matched |
+
+`--keep` stops the box but keeps its node record (when its spaces still hold
+something worth pointing at).
+
+## Ambiguity reaps nothing
+
+A prefix matching several nodes is refused — with the count shown — until you
+opt in with `--multiple`:
+
+```text
+⚠ sh matches 2 nodes: sh-________, sh-________
+dabs: "sh" matches 2 nodes; pass --multiple to rm all of them
+```
+
+```bash
+dabs rm sh --dry --multiple     # preview both
+dabs rm sh -y --multiple        # reap both
+```
+
+```text
+✓ shell-____________ stopped
+✓ sh-________ removed
+✓ shell-____________ stopped
+✓ sh-________ removed
+```
+
+<Warning>
+`--multiple` is not `--all`: it scopes to what *one name* matched. The only
+all-of-a-kind sweeps are `rm --clean-worktrees` (reviewed worktrees) and
+`rm --inactive` (empty markers).
+</Warning>
+
+## Sweeping the empty markers
+
+```bash
+dabs ls --inactive        # what's hidden
+dabs rm --inactive        # sweep it
+```
+
+```text
+✓ myproj-________ removed
+no inactive subtrees
+```
+
+## Images
+
+`dabs prune` reclaims built box images (they rebuild on the next `dabs build`);
+`--dry` lists them with sizes; `--force` removes even an image a live box still
+uses.

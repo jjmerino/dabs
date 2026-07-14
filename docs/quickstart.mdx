@@ -1,0 +1,119 @@
+---
+title: "Quickstart"
+description: "Boot a box over your project, reach in, and reap it — in five minutes"
+---
+
+This walkthrough uses `sh`, a recipe dabs ships with: a shell in a clean box
+with your current directory live-mounted at `/work`. Run everything from your
+project directory.
+
+<Info>
+Screens below are verified by `tests/test_quickstart.py`. Generated names
+(like `sh-a3f9c21d`) are blanked to `________` — yours will differ. The
+`:done` line is the test harness's end marker, kept for fidelity.
+</Info>
+
+## 1. Boot a box
+
+`--detach` boots a fresh box and leaves it up without running the recipe's
+command. Note the id it prints — that is your handle for everything else.
+
+```bash
+dabs recipe sh --detach
+```
+
+```text
+✓ recipe booted: sh
+id: sh-________
+instance: shell-____________
+(no command was run — the recipe's command is not started by `--no-command`)
+reap: dabs rm sh-________
+run recipe command: dabs exec sh-________ -- sh
+```
+
+Every boot is a **new, pristine box**. Booting again gives you a second box; it
+never reuses the first.
+
+## 2. Reach in with exec
+
+`dabs exec <box> '<shell line>'` runs a shell command inside the box. Your
+project is at `/work`, mounted **live**:
+
+```bash
+dabs exec sh-________ 'cat /work/note.txt && echo boxed >> /work/note.txt'
+```
+
+```text
+hello from my project
+```
+
+Because `sh` uses a live mount, the box's write is now on your disk:
+
+```bash
+cat note.txt
+```
+
+```text
+hello from my project
+boxed
+```
+
+<Tip>
+If you don't want the box writing to your files, use a recipe with a `copy:`
+source instead — see [Sources](/guides/sources).
+</Tip>
+
+## 3. See what dabs owns
+
+```bash
+dabs ls
+```
+
+```text
+local (bwrap, this machine)
+  NODE             KIND     VOL  HELD  TMP  STATE  WHERE
+  myproj-________  project                         ~/myproj
+  └─ sh-________   box                      live   ~/.dabs/nodes/sh-________  (shell-____________)
+```
+
+The tree reads: a **project** node marks the directory you ran from, and the
+**box** stands on it. `live` means the box is running right now.
+
+## 4. Reap it
+
+`dabs rm` never tears a box down silently. Without `-y` it previews what it
+would take and asks — on a terminal, as an interactive dialog:
+
+```bash
+dabs rm sh-________
+```
+
+```text
+╭────────────────────────────────────────────╮
+│ Removing sh-________ reaps 1 node(s):      │
+│   NODE         KIND  VOL  HELD  TMP  STATE │
+│   sh-________  box                   live  │
+│ Proceed?                                   │
+╰────────────────────────────────────────────╯
+┃ Proceed?
+┃
+┃   Yes     No
+```
+
+Answering **No** keeps everything (`dabs: rm sh-________: kept`). Pass `-y` to
+consent up front — the form agents and scripts use:
+
+```bash
+dabs rm sh-________ -y
+```
+
+```text
+✓ shell-____________ stopped
+✓ sh-________ removed
+```
+
+## Where to next
+
+- [Concepts](/concepts) — what nodes, places, and spaces actually are.
+- [Recipes](/guides/recipes) — write your own box in ten lines of YAML.
+- [Worktrees](/guides/worktrees) — hand an agent a branch instead of your tree.

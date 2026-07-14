@@ -1,0 +1,55 @@
+---
+title: "What is dabs?"
+description: "Disposable sandboxes, worktrees, and workspaces you can hand to an AI agent"
+---
+
+**dabs** ("dumb agent boxes") gives a command — or a whole AI agent — a
+disposable place to work that is not your machine. Its best-known trick is the
+**box**: a pristine environment built from an image, which sees only what you
+explicitly put in it. But dabs has grown past sandboxes: it also cuts **git
+worktrees**, snapshots **working directories**, and keeps a tidy record of
+every place it provisioned, so nothing an agent produced is ever lost — or left
+lying around — silently.
+
+## What you can hand an agent
+
+<CardGroup cols={2}>
+  <Card title="A box" icon="box" href="/quickstart">
+    A clean machine over your project. Live-mounted, so the agent's edits land
+    on your disk — or a throwaway copy, so they don't.
+  </Card>
+  <Card title="A worktree" icon="code-branch" href="/guides/worktrees">
+    A fresh git branch cut off HEAD, isolated from your working tree, with a
+    built-in review-before-delete workflow.
+  </Card>
+  <Card title="A snapshot" icon="copy" href="/guides/sources">
+    A copy of your project the agent can trash freely — your files are never
+    touched.
+  </Card>
+  <Card title="A recipe" icon="scroll" href="/guides/recipes">
+    All of the above, declared once in YAML: image, mounts, environment,
+    command. `dabs recipe <name>` does the rest.
+  </Card>
+</CardGroup>
+
+## The safety story
+
+Everything destructive in dabs is opt-in, previewed, and confirmed:
+
+- `dabs rm` **previews** what a removal would take, and refuses to proceed
+  without explicit confirmation.
+- A worktree holding **unreviewed work** cannot be deleted without `--force` —
+  and dabs shows you the diff first.
+- Data an agent should keep lives in **spaces** with different lifetimes
+  (`volume` / `held` / `tmp`), each with its own deletion rule.
+
+## Where to start
+
+1. [Quickstart](/quickstart) — boot your first box in three commands.
+2. [Concepts](/concepts) — the six words that explain everything else.
+3. [Caveats](/caveats) — the sharp edges, honestly listed.
+
+<Note>
+Every terminal screen in this manual was produced by driving dabs in a real
+terminal.
+</Note>

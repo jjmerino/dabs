@@ -1,0 +1,110 @@
+---
+title: "Sources: mount, copy, mkmount, worktree"
+description: "What lands in the box, and what happens to your files when it writes"
+---
+
+A recipe's `sources:` list places things into the box at a `path`. Exactly one
+of four kinds names each source's origin — and the kind decides whether the
+box's writes ever reach your disk.
+
+<Info>Screens verified by `tests/test_sources.py`.</Info>
+
+| kind | what lands in the box | your files |
+|---|---|---|
+| `mount:` | a live bind — writes hit the host | shared with the box |
+| `mkmount:` | a live bind; the host dir is **created** (0700) if absent | shared; provisioned on first use |
+| `copy:` | a snapshot taken at box start | untouched |
+| `worktree:` | a fresh git branch off HEAD, mounted live | untouched — the branch is elsewhere |
+
+Add `ro: true` to any mount to make it read-only inside the box.
+
+## Copy vs mount, demonstrated
+
+This recipe hands the box a **snapshot** of the project and a **read-only**
+reference directory:
+
+```yaml
+recipes:
+  snapshot:
+    description: a copied /work plus a read-only reference mount
+    image: shell
+    command: [sh]
+    sources:
+      - copy: .
+        path: /work
+      - mount: ./data
+        path: /ref
+        ro: true
+```
+
+The box writes a file into its copy:
+
+```bash
+dabs exec snapshot-________ 'echo boxed > /work/new.txt; ls /work'
+```
+
+```text
+dabs.yaml  data       new.txt
+```
+
+Your directory never sees it:
+
+```bash
+ls
+```
+
+```text
+dabs.yaml  data
+```
+
+And the read-only mount refuses writes outright:
+
+```text
+reference data
+sh: can't create /ref/nope: Read-only file system
+```
+
+## What a copy leaves behind
+
+A `copy: .` source snapshots your cwd into a **workdir node** (its bytes live
+in that node's held space), and the boot says so:
+
+```text
+✓ kept: workdir …/.dabs/nodes/myproj-________/held/work
+```
+
+The snapshot survives the box on purpose — it may hold work the agent
+produced. Review it at the printed path, then reap it like anything else:
+`dabs rm <workdir-id> -y`.
+
+<Warning>
+Repeated `copy:`/`scratchbox` boots mint a **new workdir node each time**.
+They accumulate; sweep them periodically or `dabs ls` fills with stale
+snapshots. See [Caveats](/caveats#leftovers-accumulate).
+</Warning>
+
+## mkmount: provisioning on first boot
+
+`mkmount:` is `mount:` that creates its host origin if missing — say it where
+you mean "provision this". The canonical use: a login/config dir a harness
+fills on first run, shared by every later box that names it:
+
+```yaml
+- mkmount: ~/.dabs/shared/claude
+  path: /root/.claude
+```
+
+The first box boots with an empty dir, you log in once inside, and every later
+box mounting that path is already logged in.
+
+A plain `mount:` whose origin is missing is treated as a typo and **refused**:
+
+```text
+dabs: recipe "broken": mount source /…/does-not-exist does not exist (use mkmount: to create it)
+```
+
+## Where a snapshot lands: `at:`
+
+For `worktree:` and `copy:` sources, `at:` says where the bytes land in the
+new node's own spaces — e.g. `at: $NODE_HELD/worktree` (the default), so `rm`
+asks before reaping the checkout. See [Spaces](/guides/spaces).

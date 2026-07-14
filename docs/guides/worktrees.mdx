@@ -1,0 +1,126 @@
+---
+title: "Worktrees"
+description: "Hand an agent a branch, judge its state at a glance, review before you delete"
+---
+
+A worktree source cuts a fresh git branch off HEAD (`dabs/<id>`), checks it
+out into its own node, and mounts it live — the agent works on an isolated,
+reviewable copy while your working tree stays untouched.
+
+<Info>Screens verified by `tests/test_worktrees.py`.</Info>
+
+## Cut one
+
+From inside a git repo:
+
+```bash
+dabs recipe wt        # a worktree, no box
+```
+
+```text
+✓ worktree repo-________ branch dabs/________ · …/.dabs/nodes/repo-________/held/worktree
+```
+
+(`wtbox` does the same and boots a shell box over it in one step.)
+
+## Judge it at a glance
+
+`dabs worktrees ls` shows every worktree with a three-value STATE:
+
+```text
+NAME           WORKTREE                                              STATE    DETAIL
+repo-________  …/.dabs/nodes/repo-________/held/worktree             no-diff  branch dabs/________ · recipe wt · uncommitted=false ahead=0 · no box
+```
+
+| state | meaning |
+|---|---|
+| `no-diff` | clean — or squash-merged: commits ahead whose *content* the base already has |
+| `has work` | uncommitted or untracked changes, nothing unmerged ahead |
+| `unmerged` | commits ahead carrying content the base lacks (wins over has-work) |
+
+The judgment is **content, not commit count** — landed work never reads as
+unreviewed.
+
+## Point a box at it
+
+`--worktree <wt>` binds an existing worktree to a recipe's `.` source — and
+also mounts the parent repo's `.git`, so **git works inside the box** and
+commits reconcile straight into your shared object store (no push):
+
+```bash
+dabs recipe sh --worktree repo-________ --detach
+dabs exec sh-________ 'cd /work && git add -A && git commit -qm improve && git --no-pager log --oneline'
+```
+
+```text
+_______ (HEAD -> dabs/________) improve
+_______ (main) first
+```
+
+<Warning>
+A **static** `worktree: .` source (plain `wt`/`wtbox`) does *not* mount the
+parent `.git` — git is blind inside such a box. The agent edits; you commit on
+the host. Use `--worktree` when a job needs in-box git.
+</Warning>
+
+After an edit the state flips to `has work`; after an in-box commit, to
+`unmerged`:
+
+```text
+repo-________  …  has work  branch dabs/________ · recipe wt · uncommitted=true ahead=0 · box shell-____________ live
+repo-________  …  unmerged  branch dabs/________ · recipe wt · uncommitted=false ahead=1 · box shell-____________ live
+```
+
+## Review, then reap
+
+See exactly what the agent changed — the diff surfaces untracked files too:
+
+```bash
+dabs worktrees diff repo-________
+```
+
+```text
+diff --git a/app.txt b/app.txt
+--- a/app.txt
++++ b/app.txt
+@@ -1 +1,2 @@
+ line one
++edit
+```
+
+`rm` refuses to discard work nobody reviewed:
+
+```text
+dabs: repo-________ has unreviewed work (uncommitted=false, 1 commit(s) ahead) — review with `dabs worktrees diff repo-________`, then rm --force to discard
+```
+
+Once reviewed (or truly unwanted), `--force` is the explicit "discard git
+work" consent — a different risk than the `-y` prompt, so it is a different
+flag. Reaping a worktree also takes any box standing on it:
+
+```bash
+dabs rm repo-________ -y --force
+```
+
+```text
+✓ shell-____________ stopped
+✓ sh-________ removed
+✓ repo-________ removed
+```
+
+## Sweep the clean ones
+
+`--clean-worktrees` reaps **every** worktree with no unreviewed work, in one
+shot — the tidy-up after a day of agent runs:
+
+```bash
+dabs rm --clean-worktrees
+```
+
+```text
+✓ repo-________ removed
+✓ repo-________ removed
+no worktrees
+```
+
+Add `--dry` to preview, or `--force` to include the ones that do hold work.

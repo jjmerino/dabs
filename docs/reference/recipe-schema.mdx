@@ -1,0 +1,52 @@
+---
+title: "dabs.yaml reference"
+description: "The recipe registry schema, field by field"
+---
+
+A registry file is a `recipes:` map plus an optional `default:`. Registries
+resolve **bundled → `~/.dabs/recipes.yaml` (global) → `./dabs.yaml`
+(project)**, later winning by name.
+
+```yaml
+default: myproj                    # what build/recipe run with no name (optional)
+recipes:
+  myproj:
+    description: one-line summary shown by `dabs recipes`
+    image: { dockerfile: Dockerfile, context: . }   # or a bare image name
+    workdir: /work                 # cwd inside the box (default /work)
+    command: [sh]                  # argv to run; appended-to by `dabs recipe myproj <cmd…>`
+    keep: true                     # keep the box after the command exits (default: delete)
+    env: { KEY: value }            # environment inside the box
+    target: my-server              # route to a registered server; omit for local
+    sources:
+      - mount: .                   # live bind; origin must exist
+        path: /work
+        ro: true                   # optional: read-only in the box
+      - mkmount: ~/.dabs/shared/x  # live bind; origin created (0700) if absent
+        path: /root/.x
+      - copy: .                    # snapshot at box start; host untouched
+        path: /work
+      - worktree: .                # fresh git branch off HEAD, mounted live
+        path: /work
+        at: $NODE_HELD/worktree    # where the checkout lands (default: held)
+```
+
+## Field notes
+
+- **image** — a bare name reuses `~/.dabs/images/<name>` (built from a bundled
+  image recipe on first use). An inline `{dockerfile, context}` builds with
+  `dabs build`; the image is named after the **recipe**, so two recipes
+  sharing one Dockerfile still build two tags.
+- **command** — must not bake in agent instructions; recipes provision,
+  callers prompt.
+- **sources** — exactly one origin kind per entry (`mount` / `mkmount` /
+  `copy` / `worktree`). Space variables `$NODE_VOLUME|HELD|TMP` and
+  `$PARENT_VOLUME|HELD|TMP` substitute in source paths only.
+  (`$NODE_EPHEMERAL`/`$PARENT_EPHEMERAL` are permanent aliases for the held
+  variants.) Mounts land parent-before-child regardless of declaration order.
+- **target** — `""` (local) or a server from `dabs servers`. The reserved
+  `INTERNAL-docker-privileged-for-nested-sandboxing` target exists for boxes
+  that must boot nested sandboxes.
+- **boxless recipes** — a recipe with no `image:` provisions its places (a
+  worktree, a copied dir) and stops; `wt` and `scratch` are the bundled
+  examples.

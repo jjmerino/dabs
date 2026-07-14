@@ -40,7 +40,7 @@ glossary records where the vocabulary is going so new work simply avoids the old
 | **confirmation** | the explicit go-ahead a losing action needs — four flags for four risks | `-y` / `--multiple` / `--force` / `--volume` |
 | **active / inactive** | whether a subtree holds LIFE — a running box or real files in a space; `ls` shows active, `ls --inactive` the rest | `activeSubtrees`, `dabs ls` |
 | **live / gone** | a box's STATE: its driver holds it, or it does not (**gone**: unstable) | `CellLive`/`CellGone` |
-| **no-diff / has work / unmerged** | a worktree's STATE: clean · uncommitted-or-untracked · commits ahead | `worktreeState` |
+| **no-diff / has work / unmerged** | a worktree's STATE: clean-or-landed · uncommitted-or-untracked · commits ahead with content the base lacks | `worktreeJudgment` |
 | **target** | the named driver configuration a recipe uses to bring up a box | `recipe.Recipe.Target`, `driverFor` |
 | **server** | a registered remote machine with dabs installed, reached over ssh | `dabs servers`, `config` |
 | **driver** | one sandboxing mechanism behind the `sandbox.Driver` contract | `core/sandbox/<kind>` |
@@ -407,10 +407,13 @@ is the heading that works today.
 
 ### the worktree states
 A worktree's STATE — the same three values in `dabs ls` and `dabs worktrees ls`:
-**no-diff** (clean), **has work** (uncommitted or untracked changes, nothing
-ahead), **unmerged** (commits ahead of the base branch). Only commits ahead read
-as unmerged; local-only work reads as work.
-*Where:* `worktreeState`, `Worktrees`.
+**no-diff** (clean, including a squash-merged branch: commits ahead whose
+CONTENT the base already holds), **has work** (uncommitted or untracked
+changes, nothing unmerged ahead), **unmerged** (commits ahead carrying content
+the base does not have — this wins over has-work when both hold).
+The judgment is content, not commit count — a squash merge leaves commits
+ahead for ever, and landed work is not unreviewed.
+*Where:* `worktreeJudgment`, `Worktrees`.
 
 ### unreviewed work
 The uncommitted changes or unpushed commits a worktree holds that no space rule

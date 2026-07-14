@@ -42,16 +42,10 @@ func (r Real) Worktrees(p params.Worktrees) error {
 				rows = append(rows, []string{tui.Accent(n.ID), path, "", tui.Warn("unreadable: %v", err)})
 				continue
 			}
-			// Same three-value vocabulary the ls STATE column prints (see
-			// worktreeState): commits ahead are UNMERGED; uncommitted/untracked work
-			// with nothing ahead is HAS WORK; otherwise NO-DIFF. So `dabs ls` and
-			// `dabs worktrees ls` say the same thing about one worktree.
-			state := CellNoDiff
-			if ahead > 0 {
-				state = CellUnmerged
-			} else if dirty {
-				state = CellHasWork
-			}
+			// The one judgment every verb shares (see worktreeJudgment), so
+			// `dabs ls` and `dabs worktrees ls` say the same thing about one
+			// worktree — and a squash-merged branch reads no-diff in both.
+			state := r.worktreeJudgment(path, dirty, ahead)
 			box := "no box"
 			if inst, ok := live[n.ID]; ok {
 				box = fmt.Sprintf("box %s live", inst)

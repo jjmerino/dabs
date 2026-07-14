@@ -272,3 +272,60 @@ func TestLsWorktreeStateNotUnmergedWhenZeroAheadE2E(t *testing.T) {
 		t.Fatalf("worktree with commits ahead does not read `unmerged` (E2-21); row:\n%q\nls:\n%s", row2, all2)
 	}
 }
+
+// A SQUASH merge lands a worktree's content in the base while leaving its
+// commits ahead for ever — git's commit graph never learns. The judgment is
+// content, not commit count: the worktree reads no-diff in `ls` and
+// `worktrees ls`, and `dabs rm` takes it WITHOUT --force — the flag is for
+// discarding work, and landed work is not discarded.
+func TestSquashMergedWorktreeReadsNoDiffAndReapsWithoutForce(t *testing.T) {
+	clean(t)
+	resetNodes(t)
+	repo := filepath.Join(home, "e2e-squash-wt")
+	gitRepo(t, repo)
+	if out, code := runIn(repo, "dabs recipe wt"); code != 0 {
+		t.Fatalf("recipe wt failed (%d): %s", code, out)
+	}
+	wts := worktreeDirs(t)
+	if len(wts) != 1 {
+		t.Fatalf("want one worktree, got %v", wts)
+	}
+	name := wts[0]
+	wt := worktreeData(name)
+
+	// The agent commits work on the worktree's branch...
+	if err := os.WriteFile(filepath.Join(wt, "feature.txt"), []byte("done\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitOut(t, wt, "add", "-A")
+	gitOut(t, wt, "-c", "user.email=e2e@dabs.test", "-c", "user.name=e2e", "commit", "-qm", "feature")
+	branch := strings.TrimSpace(gitOut(t, wt, "rev-parse", "--abbrev-ref", "HEAD"))
+
+	// ...and the human lands it as a SQUASH: content in the base, commits not.
+	gitOut(t, repo, "merge", "--squash", branch)
+	gitOut(t, repo, "-c", "user.email=e2e@dabs.test", "-c", "user.name=e2e", "commit", "-qm", "feature (squashed)")
+
+	// Both listings read the truth: landed, nothing unreviewed.
+	all, code := run("dabs ls")
+	if code != 0 {
+		t.Fatalf("ls failed (%d): %s", code, all)
+	}
+	if row := rowWith(t, all, name); strings.Contains(row, "unmerged") {
+		t.Fatalf("squash-merged worktree reads unmerged in ls; row:\n%q\nls:\n%s", row, all)
+	}
+	wl, code := run("dabs worktrees")
+	if code != 0 {
+		t.Fatalf("worktrees failed (%d): %s", code, wl)
+	}
+	if row := rowWith(t, wl, name); !strings.Contains(row, "no-diff") {
+		t.Fatalf("squash-merged worktree not no-diff in worktrees ls; row:\n%q\n%s", row, wl)
+	}
+
+	// And the reap needs -y (the checkout holds files) but NOT --force.
+	if out, code := run("dabs rm " + name + " -y"); code != 0 {
+		t.Fatalf("rm of a squash-merged worktree demanded more than -y (%d): %s", code, out)
+	}
+	if left := worktreeDirs(t); len(left) != 0 {
+		t.Fatalf("squash-merged worktree not reaped: %v", left)
+	}
+}

@@ -204,10 +204,8 @@ func (r Real) heldCell(id string) Cell {
 }
 
 // worktreeState reads a worktree's git state into the SAME three-value
-// vocabulary `worktrees ls` prints: commits ahead of the base are UNMERGED;
-// uncommitted or untracked changes with nothing ahead are HAS WORK; a clean
-// worktree even with the base is NO-DIFF. A git error leaves the state unknown
-// rather than guessing.
+// vocabulary `worktrees ls` prints (see worktreeJudgment). A git error leaves
+// the state unknown rather than guessing.
 func (r Real) worktreeState(n Node) Cell {
 	path, err := r.resolveNodeData(n.ID)
 	if err != nil {
@@ -217,13 +215,35 @@ func (r Real) worktreeState(n Node) Cell {
 	if err != nil {
 		return CellNA
 	}
-	if ahead > 0 {
+	return r.worktreeJudgment(path, dirty, ahead)
+}
+
+// worktreeJudgment classifies a worktree the ONE way every verb reports it —
+// `ls`, `worktrees ls`, and the rm guard all call this, so they cannot
+// disagree. UNMERGED means commits ahead whose CONTENT the base does not have:
+// a squash merge lands the bytes while leaving the commits ahead, and landed
+// work is reviewed work, not something a reap would lose. HAS WORK is
+// uncommitted/untracked changes; NO-DIFF is everything else, including a
+// squash-merged branch.
+func (r Real) worktreeJudgment(path string, dirty bool, ahead int) Cell {
+	if ahead > 0 && r.aheadCarriesContent(path) {
 		return CellUnmerged
 	}
 	if dirty {
 		return CellHasWork
 	}
 	return CellNoDiff
+}
+
+// aheadCarriesContent reports whether the worktree's commits hold content the
+// base does not — GitLanded's question, inverted. An error reads as carrying
+// content: never report reviewed what cannot be shown.
+func (r Real) aheadCarriesContent(path string) bool {
+	landed, err := r.data.GitLanded(path)
+	if err != nil {
+		return true
+	}
+	return !landed
 }
 
 // Column names a drawable field. A renderer is told which to draw and in what

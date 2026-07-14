@@ -62,6 +62,12 @@ type Data interface {
 	// GitDiff returns the worktree's changes (uncommitted + commits ahead of
 	// base) as a unified diff.
 	GitDiff(worktree string) (string, error)
+	// GitLanded reports whether the worktree's commits add NOTHING to the base:
+	// merging its HEAD into the base yields the base's own tree. True for a
+	// squash-merged branch (its commits stay ahead for ever; its bytes are in
+	// the base), false for real unmerged work — and false when it cannot be
+	// proven (merge conflicts, no base).
+	GitLanded(worktree string) (bool, error)
 	// GitRemoveWorktree removes the worktree and deletes its branch.
 	GitRemoveWorktree(worktree string) error
 	// GitCommonDir returns the absolute path of the shared object store (the

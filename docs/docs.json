@@ -14,7 +14,8 @@
   },
   "logo": {
     "light": "/logo/dabs.svg",
-    "dark": "/logo/dabs.svg"
+    "dark": "/logo/dabs.svg",
+    "href": "http://dabs.dev"
   },
   "favicon": "/logo/dabs.svg",
   "navigation": {
@@ -44,5 +45,8 @@
     "socials": {
       "website": "https://www.dabs.dev"
     }
+  },
+  "fonts": {
+    "family": "M PLUS Rounded 1c"
   }
 }

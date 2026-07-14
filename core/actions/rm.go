@@ -202,14 +202,17 @@ func (r Real) rmCleanWorktrees(p params.Rm) error {
 }
 
 // liveBoxOn reports whether a live box stands anywhere on n's subtree. states
-// is called only when a box is actually there, so a boxless sweep never pays a
-// fleet query.
-func (r Real) liveBoxOn(n Node, nodes []Node, states func() map[string]boxState) bool {
+// is called only when a box is actually there, so a boxless sweep never
+// queries a driver. An INCOMPLETE answer (a driver errored or timed out)
+// cannot confirm any box gone, so every box counts as live — the sweep keeps
+// the worktree rather than stopping a machine on a guess.
+func (r Real) liveBoxOn(n Node, nodes []Node, states func() driversAnswer) bool {
 	for _, d := range descendantsOf(n, nodes) {
 		if d.Kind != KindBox || d.Instance == "" {
 			continue
 		}
-		if _, up := states()[d.Instance]; up {
+		ans := states()
+		if _, up := ans.state[d.Instance]; up || !ans.complete {
 			return true
 		}
 	}

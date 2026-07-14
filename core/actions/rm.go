@@ -154,16 +154,26 @@ func (r Real) rmResolved(p params.Rm, nodes []Node, states func() map[string]box
 // over worktrees: each node reaps through the ordinary Rm path, so the same
 // space rules and the same unreviewed-work guard apply. A worktree that holds
 // work is refused (its reap returns an error) and reported at the end, unless
-// --force approves discarding it. --dry previews each without removing anything.
+// --force approves discarding it; one carrying a LIVE box is kept and reported
+// unless -y consents to stopping it. --dry previews each without removing
+// anything.
 func (r Real) rmCleanWorktrees(p params.Rm) error {
 	nodes, err := r.listNodes()
 	if err != nil {
 		return err
 	}
 	states := r.memoBoxStates()
-	var kept []string
+	var kept, keptLive []string
 	for _, n := range nodes {
 		if n.Worktree == nil {
+			continue
+		}
+		// The sweep reaps clean CHECKOUTS; a live box standing on one is a machine
+		// someone is using, and stopping it is the same loss a named `rm <box>`
+		// asks about — so it needs the same consent. Without -y the worktree is
+		// kept and named; -y sweeps it, box and all.
+		if !p.Yes && r.liveBoxOn(n, nodes, states) {
+			keptLive = append(keptLive, n.ID)
 			continue
 		}
 		one := params.Rm{Node: n.ID, Yes: true, Dry: p.Dry, Volume: false, Force: p.Force}
@@ -179,7 +189,26 @@ func (r Real) rmCleanWorktrees(p params.Rm) error {
 		fmt.Fprintln(os.Stdout, tui.Warn("kept %d worktree(s) with unreviewed work: %s", len(kept), strings.Join(kept, ", ")))
 		fmt.Fprintln(os.Stdout, tui.Muted("review with `dabs worktrees diff <name>`, then `dabs rm <name> --force` to discard"))
 	}
+	if len(keptLive) > 0 {
+		fmt.Fprintln(os.Stdout, tui.Warn("kept %d worktree(s) with a live box: %s", len(keptLive), strings.Join(keptLive, ", ")))
+		fmt.Fprintln(os.Stdout, tui.Muted("stopping a live box needs consent — `dabs rm <name> -y`, or rerun the sweep with -y"))
+	}
 	return nil
+}
+
+// liveBoxOn reports whether a live box stands anywhere on n's subtree. states
+// is called only when a box is actually there, so a boxless sweep never pays a
+// fleet query.
+func (r Real) liveBoxOn(n Node, nodes []Node, states func() map[string]boxState) bool {
+	for _, d := range descendantsOf(n, nodes) {
+		if d.Kind != KindBox || d.Instance == "" {
+			continue
+		}
+		if _, up := states()[d.Instance]; up {
+			return true
+		}
+	}
+	return false
 }
 
 // countHoldingSpaces tallies, across a whole view forest, how many nodes hold data

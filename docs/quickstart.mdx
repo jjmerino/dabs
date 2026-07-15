@@ -13,6 +13,16 @@ Screens below are verified by `tests/test_quickstart.py`. Generated names
 `:done` line is the test harness's end marker, kept for fidelity.
 </Info>
 
+## 0. Install dabs
+
+```bash
+curl -fsSL https://dabs.dev/install.sh | sh
+```
+
+dabs drives platform tools you install yourself — Apple's `container` on
+macOS, `bubblewrap` + `docker` on Linux. It detects what is missing and
+prints the install command; it never installs anything for you.
+
 ## 1. Boot a box
 
 `--detach` boots a fresh box and leaves it up without running the recipe's

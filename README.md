@@ -12,10 +12,11 @@
 
 # dabs — dumb agent boxes
 
-Disposable sandboxes you can hand to an AI agent. Each box is a pristine
-"fresh machine" built from a Dockerfile; run a command — or a whole agent via
-a recipe — inside it, and it can't touch your host. Every `recipe --detach` is a
-new instance; boxes run locally or on a remote server.
+Disposable spaces you can hand to an AI agent: a sandbox, a git
+worktree, a throwaway copy of your project. Declare a space once as a
+**recipe**, then summon it by name — `dabs recipe <name>` — locally or on a
+remote server. dabs keeps a record of every space it provisions, so nothing an
+agent produced is ever lost, or left lying around, silently.
 
 ## Requirements
 

@@ -342,11 +342,13 @@ checkout lives here.
 confirmation ever branches on what is in tmp — it is the box's scratch and nobody
 else's business.
 
-**Future direction (decided 2026-07-13).** *space* is likely to become the umbrella
-word for a materialized workspace where work can exist — the box itself, a worktree,
-the node's `volume`/`held`/`tmp` directories, or the project's original cwd. Indexed
-by nodes, created from a recipe. Open tension: a node is the pointer to a space, so
-the two words must not blur.
+**Future direction (decided 2026-07-14).** A **space** is where an agent works:
+the project itself, a worktree, a scratch copy, or a box standing on one of those.
+A **node** records a space; a **recipe** declares one; a **box** is a space with a
+wall, whose recipe declares what crosses it. Every space carries three directories:
+`tmp/` (reaped silently), `held/` (the space's own work — why `rm` asks), `volume/`
+(kept for the next space here). A box's parent is its parent space. Migration is
+its own change; until it lands, the definitions above remain in force.
 *Where:* `SpaceVolume`/`SpaceHeld`/`SpaceTmp`, `reapSpaces`, `heldCell`.
 
 ### $NODE_VOLUME / $NODE_HELD / $NODE_TMP

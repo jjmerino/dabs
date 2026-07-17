@@ -8,9 +8,11 @@ import (
 	"github.com/jjmerino/dabs/core/params"
 )
 
-// Cd prints the directory a node marks — the same WHERE `dabs ls` shows — as a
-// bare absolute path. A child process cannot move its parent shell, so the verb
-// is the printable half of the journey: cd "$(dabs cd <node>)". The node
+// Cd prints a node's directory — its own dir under ~/.dabs/nodes/<id>, the
+// same WHERE `dabs ls` shows, ONE uniform rule for every kind — as a bare
+// absolute path. A child process cannot move its parent shell, so the verb is
+// the printable half of the journey: cd "$(dabs cd <node>)". The three spaces
+// are literal subdirectories of that path (volume/, held/, tmp/). The node
 // resolves like every other handle (exact id, id prefix, then a box instance
 // name), and ambiguity is refused: a cd that guesses lands somewhere wrong.
 func (r Real) Cd(p params.Cd) error {
@@ -32,22 +34,9 @@ func (r Real) Cd(p params.Cd) error {
 		}
 		return fmt.Errorf("cd: %q matches %d nodes (%s) — name one", p.Node, len(hits), strings.Join(ids, ", "))
 	}
-	n := hits[0]
-	dir := ""
-	switch n.Kind {
-	case KindBox:
-		// A box marks a sandbox; its bytes live in its node dir (the spaces).
-		dir, err = r.resolveNodeDir(n.ID)
-		if err != nil {
-			return err
-		}
-	case KindWorktree, KindWorkdir:
-		dir = r.nodeFolder(n)
-	default: // project: the directory the command ran from — the user's own
-		dir = n.Dir
-	}
-	if dir == "" {
-		return fmt.Errorf("cd: node %s marks no directory", n.ID)
+	dir, err := r.resolveNodeDir(hits[0].ID)
+	if err != nil {
+		return err
 	}
 	fmt.Fprintln(os.Stdout, dir)
 	return nil

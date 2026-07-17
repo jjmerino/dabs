@@ -242,19 +242,20 @@ func TestLsSanitizesNodeFieldsE2E(t *testing.T) {
 	if strings.ContainsRune(out, 0x1b) {
 		t.Fatalf("raw ESC (0x1b) reached the terminal from a node field (E2-36):\n%q", out)
 	}
-	// The newline in the dir must not split the row: the id and the text that
-	// followed the newline stay on the SAME line.
-	var idLine string
+	// The row renders (WHERE is the node's own dir, so the poisoned recorded
+	// dir never reaches the table), and the newline in the record must not
+	// mint a phantom row of its own.
+	found := false
 	for _, line := range strings.Split(out, "\n") {
 		if strings.Contains(line, "ff-e2ebug-sanitize") {
-			idLine = line
+			found = true
+		}
+		if strings.HasPrefix(strings.TrimSpace(line), "BOOMROW") {
+			t.Fatalf("embedded newline minted a phantom row (E2-36):\n%s", out)
 		}
 	}
-	if idLine == "" {
+	if !found {
 		t.Fatalf("node row not found in ls:\n%s", out)
-	}
-	if !strings.Contains(idLine, "BOOMROW") {
-		t.Fatalf("embedded newline split the row into phantom lines (E2-36); id row:\n%q\nfull:\n%s", idLine, out)
 	}
 }
 
@@ -765,4 +766,48 @@ func TestNoCommandFlagBootsDetachedE2E(t *testing.T) {
 	wantExit(t, 0, code)
 	wantContains(t, out, "instance:")
 	wantContains(t, out, "no command was run")
+}
+
+// TestRmVolumeKeptSuggestedRerun drives the exact sequence a user hits: a
+// worktree node whose volume holds files is reaped with -y; the volume is kept
+// and rm suggests `dabs rm <node> -y --volume`; that command, run verbatim,
+// reaps the volume and the node — exit 0, no raw git error over the already
+// removed checkout.
+func TestRmVolumeKeptSuggestedRerun(t *testing.T) {
+	bundledOnly(t)
+	repo := filepath.Join(home, "e2e-volrerun")
+	gitRepo(t, repo)
+
+	if out, code := runIn(repo, "dabs recipe wt --name vol-fix"); code != 0 {
+		t.Fatalf("wt --name vol-fix failed (%d): %s", code, out)
+	}
+	// A box mounting $NODE_VOLUME is what fills a volume in real use; the file
+	// is planted directly so the journey needs no box.
+	vol := filepath.Join(home, ".dabs", "nodes", "vol-fix", "volume")
+	if err := os.MkdirAll(vol, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(vol, "cache.bin"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, code := run("dabs rm vol-fix -y")
+	if code != 0 {
+		t.Fatalf("rm vol-fix -y failed (%d): %s", code, out)
+	}
+	if !strings.Contains(out, "volume kept") || !strings.Contains(out, "-y --volume") {
+		t.Fatalf("rm -y should keep the volume and suggest the reap command:\n%s", out)
+	}
+
+	// The suggested command, verbatim.
+	out, code = run("dabs rm vol-fix -y --volume")
+	if code != 0 {
+		t.Fatalf("the suggested `rm vol-fix -y --volume` failed (%d): %s", code, out)
+	}
+	if strings.Contains(out, "exit status 128") {
+		t.Fatalf("the rerun leaked a raw git error:\n%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".dabs", "nodes", "vol-fix")); !os.IsNotExist(err) {
+		t.Fatalf("the node dir should be gone after the rerun (stat: %v)", err)
+	}
 }

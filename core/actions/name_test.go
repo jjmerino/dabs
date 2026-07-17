@@ -306,8 +306,9 @@ func TestRmClearsUnfinishedClaim(t *testing.T) {
 	}
 }
 
-// CONTRACT: `dabs cd` prints a node's directory — bare, absolute — resolving a
-// name/id (and a box instance as fallback) git-style, refusing ambiguity.
+// CONTRACT: `dabs cd` prints a node's OWN directory (~/.dabs/nodes/<id>) —
+// bare, absolute, one uniform rule for every kind — resolving a name/id (and
+// a box instance as fallback) git-style, refusing ambiguity.
 func TestCdPrintsNodeDirectory(t *testing.T) {
 	fd := baseData()
 	// A project node with a Dir.
@@ -324,8 +325,8 @@ func TestCdPrintsNodeDirectory(t *testing.T) {
 			t.Fatalf("cd project: %v", err)
 		}
 	})
-	if strings.TrimSpace(out) != "/repo/x" {
-		t.Fatalf("cd project printed %q, want /repo/x", out)
+	if strings.TrimSpace(out) != nodeBase+"/proj-x" {
+		t.Fatalf("cd project printed %q, want %s", out, nodeBase+"/proj-x")
 	}
 
 	out = captureStdout(t, func() {

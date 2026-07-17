@@ -128,6 +128,8 @@ type fakeData struct {
 	rmAll     []string            // recorded RemoveAll
 	copies    []string            // recorded CopyDir
 	commondir map[string]string   // GitCommonDir: worktree path -> parent .git (present => a worktree)
+	foreign   map[string][]string // GitListWorktrees: repo top -> linked worktree paths; an absent top errors (no git / not a repo)
+	symlinks  map[string]string   // EvalSymlinks: path -> canonical form; an absent path errors, like an unresolvable one
 }
 
 type wtState struct {
@@ -243,6 +245,17 @@ func (f *fakeData) RemoveAll(p string) error {
 			delete(f.dirs, k)
 		}
 	}
+	for k := range f.exists {
+		if k == p || strings.HasPrefix(k, p+"/") {
+			delete(f.exists, k)
+			delete(f.isDir, k)
+		}
+	}
+	for k := range f.states {
+		if k == p || strings.HasPrefix(k, p+"/") {
+			delete(f.states, k)
+		}
+	}
 	return nil
 }
 func (f *fakeData) Getenv(k string) string            { return f.env[k] }
@@ -272,7 +285,12 @@ func (f *fakeData) ReadDir(dir string) ([]string, error) {
 	return f.dirs[dir], nil
 }
 func (f *fakeData) GitState(wt string) (string, bool, int, error) {
-	s := f.states[wt]
+	// Mirror git: asking about a checkout with no state errors (exit 128 on a
+	// missing path), it does not answer clean.
+	s, ok := f.states[wt]
+	if !ok {
+		return "", false, 0, errors.New("git: exit status 128")
+	}
 	return s.branch, s.dirty, s.ahead, nil
 }
 func (f *fakeData) GitDiff(wt string) (string, error) { return "diff of " + wt, nil }
@@ -283,6 +301,18 @@ func (f *fakeData) GitLanded(wt string) (bool, error) {
 func (f *fakeData) GitRemoveWorktree(wt string) error {
 	f.removed = append(f.removed, wt)
 	return nil
+}
+func (f *fakeData) EvalSymlinks(p string) (string, error) {
+	if c, ok := f.symlinks[p]; ok {
+		return c, nil
+	}
+	return "", errors.New("lstat: no such file or directory")
+}
+func (f *fakeData) GitListWorktrees(top string) ([]string, error) {
+	if wts, ok := f.foreign[top]; ok {
+		return wts, nil
+	}
+	return nil, errors.New("git worktree list: exec: \"git\": executable file not found in $PATH")
 }
 func (f *fakeData) GitCommonDir(wt string) (string, error) {
 	if g, ok := f.commondir[wt]; ok {
@@ -2056,5 +2086,229 @@ func TestMountBoxParentsOnProjectNotAWorkdir(t *testing.T) {
 	proj := oneOfKind(t, nodes, "project")
 	if box.Parent != proj.ID {
 		t.Fatalf("box parent = %q, want the project %q directly (no workdir between)", box.Parent, proj.ID)
+	}
+}
+
+// CONTRACT: `recipes --print` covers the FULL merged registry — a recipe from
+// ~/.dabs/recipes.yaml or ./dabs.yaml appears, sources and all, marked with
+// its origin — and `--print <name>` prints just that recipe.
+func TestRecipesPrintCoversMergedRegistry(t *testing.T) {
+	global := `recipes:
+  mybox:
+    image: img
+    command: [run]
+    sources:
+      - mount: /data
+        path: /work
+`
+	fd := baseData()
+	fd.files = map[string][]byte{"dabs.yaml": []byte(`recipes:
+  projbox:
+    image: img
+    command: [go]
+    sources:
+      - mount: .
+        path: /work
+`)}
+	r := newReal(global, fd, &fakeDriver{})
+
+	out := captureStdout(t, func() {
+		if err := r.Recipes(params.Recipes{Print: true}); err != nil {
+			t.Fatalf("recipes --print: %v", err)
+		}
+	})
+	for _, want := range []string{"mybox", "~/.dabs/recipes.yaml", "projbox", "./dabs.yaml", "sh:", "bundled", "mount: /data"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("recipes --print missing %q in:\n%s", want, out)
+		}
+	}
+
+	out = captureStdout(t, func() {
+		if err := r.Recipes(params.Recipes{Print: true, Name: "projbox"}); err != nil {
+			t.Fatalf("recipes --print projbox: %v", err)
+		}
+	})
+	if !strings.Contains(out, "projbox") || strings.Contains(out, "mybox") || strings.Contains(out, "sh:") {
+		t.Fatalf("recipes --print <name> should print only that recipe, got:\n%s", out)
+	}
+
+	err := r.Recipes(params.Recipes{Print: true, Name: "ghost"})
+	if err == nil || !strings.Contains(err.Error(), `no recipe "ghost"`) {
+		t.Fatalf("unknown name: want a no-recipe error listing the known ones, got %v", err)
+	}
+}
+
+// CONTRACT: the plain `recipes` listing marks each recipe's origin layer.
+func TestRecipesListMarksOrigin(t *testing.T) {
+	fd := baseData()
+	fd.files = map[string][]byte{"dabs.yaml": []byte(`recipes:
+  projbox:
+    image: img
+    command: [go]
+    sources: [{mount: ., path: /work}]
+`)}
+	out := captureStdout(t, func() {
+		if err := newReal("", fd, &fakeDriver{}).Recipes(params.Recipes{}); err != nil {
+			t.Fatalf("recipes: %v", err)
+		}
+	})
+	if !strings.Contains(out, "project") || !strings.Contains(out, "bundled") {
+		t.Fatalf("listing should mark origins (project/bundled), got:\n%s", out)
+	}
+}
+
+// CONTRACT: the look-before-run preview preserves argv boundaries — an
+// argument holding spaces is quoted, so `sh -c 'echo hi'` never reads as four
+// words.
+func TestRecipeConfirmQuotesArgv(t *testing.T) {
+	y := `recipes:
+  m:
+    image: img
+    command: [sh, -c]
+    sources:
+      - mount: /data
+        path: /work
+`
+	fd := baseData()
+	fd.exists["/data"] = true
+	var prompt string
+	r := newReal(y, fd, &fakeDriver{built: map[string]bool{"img": true}}).WithConfirm(func(s string) bool {
+		prompt = s
+		return false // looking, not running
+	})
+	err := r.Recipe(params.Recipe{Args: []string{"m", "echo hi"}})
+	if err == nil || !strings.Contains(err.Error(), "aborted") {
+		t.Fatalf("declined confirm should abort, got %v", err)
+	}
+	if !strings.Contains(prompt, "command: sh -c 'echo hi'") {
+		t.Fatalf("preview must quote the spaced argument, got:\n%s", prompt)
+	}
+}
+
+// newRealNoDriver builds actions over a NIL local driver: any driver call at
+// all is a nil-interface panic, so a passing test PROVES the command ran fully
+// driverless.
+func newRealNoDriver(recipesYAML string, fd *fakeData) actions.Real {
+	if fd.files == nil {
+		fd.files = map[string][]byte{}
+	}
+	if recipesYAML != "" {
+		fd.files[fd.home+"/.dabs/recipes.yaml"] = []byte(recipesYAML)
+	}
+	return actions.New(map[string]sandbox.Driver{"local": nil}, []string{"local"}, fstest.MapFS{}, fd)
+}
+
+// CONTRACT: commands that only read the recipe registry or the node store —
+// recipes (list and --print), cd (dir and spaces), worktrees (ls and diff) —
+// run with NO driver at all.
+func TestRegistryAndStoreCommandsRunDriverless(t *testing.T) {
+	fd := baseData()
+	seedWorktreeNode(fd, "wt-abcd", wtState{branch: "b"})
+	r := newRealNoDriver("", fd)
+	captureStdout(t, func() {
+		if err := r.Recipes(params.Recipes{}); err != nil {
+			t.Fatalf("recipes: %v", err)
+		}
+		if err := r.Recipes(params.Recipes{Print: true}); err != nil {
+			t.Fatalf("recipes --print: %v", err)
+		}
+		if err := r.Cd(params.Cd{Node: "wt-abcd"}); err != nil {
+			t.Fatalf("cd: %v", err)
+		}
+		if err := r.Worktrees(params.Worktrees{}); err != nil {
+			t.Fatalf("worktrees ls: %v", err)
+		}
+		if err := r.Worktrees(params.Worktrees{Sub: "diff", Name: "wt-abcd"}); err != nil {
+			t.Fatalf("worktrees diff: %v", err)
+		}
+	})
+}
+
+// CONTRACT: a BOXLESS recipe — one with no image, provisioning only places (a
+// worktree cut, a directory copy) — runs with NO driver: whether a recipe
+// needs one is decided by what it boots, not by the verb.
+func TestBoxlessRecipesRunDriverless(t *testing.T) {
+	y := `recipes:
+  snap:
+    description: copy the cwd into a place
+    sources:
+      - copy: .
+  cut:
+    description: cut a worktree, no box
+    sources:
+      - worktree: .
+`
+	fd := baseData()
+	fd.toplevel["/cwd"] = nil // the cwd is a git repo with commits
+	r := newRealNoDriver(y, fd)
+	captureStdout(t, func() {
+		if err := r.Recipe(params.Recipe{Name: "snap"}); err != nil {
+			t.Fatalf("boxless copy recipe: %v", err)
+		}
+		if err := r.Recipe(params.Recipe{Name: "cut"}); err != nil {
+			t.Fatalf("boxless worktree recipe: %v", err)
+		}
+	})
+	if len(fd.worktrees) == 0 {
+		t.Fatal("the worktree recipe cut nothing")
+	}
+}
+
+// CONTRACT: running a provisioning command from a LINKED git worktree does not
+// mint a project — that place is a worktree. The chain root is an
+// externally-managed worktree marker (kind worktree, Dir the checkout, no
+// worktree nest), parented under the repo's project node when dabs tracks one.
+func TestProvisionFromLinkedWorktreeMintsWorktreeMarker(t *testing.T) {
+	y := `recipes:
+  snap:
+    description: copy the cwd into a place
+    sources:
+      - copy: .
+`
+	fd := baseData()
+	fd.cwd = "/mainrepo/.claude/worktrees/agent-x"
+	fd.files = map[string][]byte{
+		nodeBase + "/mainrepo-aaaa/dabs-node.json": []byte(
+			`{"id":"mainrepo-aaaa","kind":"project","dir":"/mainrepo","recipe":"r","created":"t"}`),
+	}
+	fd.dirs = map[string][]string{nodeBase: {"mainrepo-aaaa"}}
+	// The cwd is a git checkout whose common dir lives elsewhere: a LINKED worktree.
+	fd.toplevel[fd.cwd] = nil
+	fd.commondir = map[string]string{fd.cwd: "/mainrepo/.git"}
+
+	r := newRealNoDriver(y, fd)
+	captureStdout(t, func() {
+		if err := r.Recipe(params.Recipe{Name: "snap"}); err != nil {
+			t.Fatalf("boxless recipe from a linked worktree: %v", err)
+		}
+	})
+
+	var marker map[string]any
+	for p, b := range fd.files {
+		if !strings.HasSuffix(p, "/dabs-node.json") {
+			continue
+		}
+		var n map[string]any
+		if err := json.Unmarshal(b, &n); err != nil {
+			continue
+		}
+		if n["dir"] == fd.cwd {
+			if marker != nil {
+				t.Fatalf("two nodes minted for the worktree dir")
+			}
+			marker = n
+		}
+	}
+	if marker == nil {
+		t.Fatalf("no chain-root marker minted for the worktree dir; records: %v", fd.files)
+	}
+	if marker["kind"] != "worktree" {
+		t.Errorf("marker kind = %v, want worktree (a linked worktree is not a project)", marker["kind"])
+	}
+	if marker["worktree"] != nil {
+		t.Errorf("marker must carry no worktree nest (the checkout is externally managed): %v", marker)
+	}
+	if marker["parent"] != "mainrepo-aaaa" {
+		t.Errorf("marker parent = %v, want the repo's tracked project mainrepo-aaaa", marker["parent"])
 	}
 }

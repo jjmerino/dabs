@@ -122,7 +122,11 @@ func (r Real) matches(arg string) ([]match, error) {
 		}
 		infos, err := lsTimeout(drv, remoteTimeout)
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", key, err)
+			// A driver that cannot answer (docker daemon down) holds no match to
+			// offer; failing the whole resolution here would hide the real answer
+			// ("no box matches X") behind the driver's noise. Warn and move on.
+			fmt.Fprintln(warnf, tui.Warn("dabs: %s unavailable, skipping: %v", key, err))
+			continue
 		}
 		for _, in := range infos {
 			matched, exact := check(in.Name)

@@ -1,7 +1,7 @@
 package actions_test
 
 // Tests for `dabs rm`, the single reaper (it absorbed `down`):
-//   - a no-match reap is idempotent (exit 0);
+//   - a no-match reap is an ERROR naming the miss, like cd/exec;
 //   - --multiple reaps every prefix match, and is REQUIRED when a name matches
 //     more than one node;
 //   - a reap that would stop a LIVE box or lose held data needs consent (-y),
@@ -32,14 +32,17 @@ func seedBoxNode(fd *fakeData, id, instance string) {
 		`{"id":"` + id + `","kind":"box","instance":"` + instance + `","recipe":"r","created":"t"}`)
 }
 
-// CONTRACT (B15): naming a node that isn't there is NOT an error — `rm` matches
-// `down`'s idempotent behaviour, so a cleanup script gets the same exit status
-// from both whether or not the node still exists.
-func TestRmMissingIsNotError(t *testing.T) {
+// CONTRACT (B15): naming a node that isn't there is an ERROR that names the
+// miss and points at `dabs ls` — the same answer cd and exec give for the same
+// situation, so a typo cannot read as a clean reap — and it reaps nothing.
+func TestRmMissingIsError(t *testing.T) {
 	drv := &fakeDriver{}
 	err := newReal("", baseData(), drv).Rm(params.Rm{Node: "ghost"})
-	if err != nil {
-		t.Fatalf("rm of a missing node = %v, want nil (idempotent, like down)", err)
+	if err == nil {
+		t.Fatal("rm of a missing node = nil, want an error naming the miss")
+	}
+	if !strings.Contains(err.Error(), `"ghost"`) || !strings.Contains(err.Error(), "dabs ls") {
+		t.Fatalf("error should name the node and point at dabs ls, got %v", err)
 	}
 	if len(drv.downs) != 0 {
 		t.Fatalf("rm of a missing node downed something: %v", drv.downs)
@@ -461,5 +464,119 @@ func TestRmInstanceNamePrefixMultiMatchRefuses(t *testing.T) {
 	}
 	if len(drv.downs) != 0 {
 		t.Fatalf("must reap NOTHING on refusal, downed %v", drv.downs)
+	}
+}
+
+// CONTRACT: when `rm -y` keeps a worktree node's volume, the command the "volume
+// kept" line suggests — `rm <node> -y --volume` — works: the record is still
+// there, the missing checkout is not asked about, the volume reaps, exit 0.
+func TestRmVolumeKeptThenSuggestedRerunReaps(t *testing.T) {
+	fd := baseData()
+	const id = "wt-vol1"
+	held := nodeBase + "/" + id + "/held"
+	co := held + "/worktree"
+	fd.dirs = map[string][]string{nodeBase: {id}, held: {"worktree"}}
+	fd.files = map[string][]byte{
+		nodeBase + "/" + id + "/dabs-node.json": []byte(
+			`{"id":"` + id + `","recipe":"r","created":"t","worktree":{"branch":"dabs/` + id + `","repo":"/repo"}}`),
+	}
+	fd.exists[held], fd.isDir[held] = true, true
+	fd.exists[co], fd.isDir[co] = true, true
+	fd.states[co] = wtState{branch: "dabs/" + id}
+	spaceHeld(fd, id, "volume")
+	r := newReal("", fd, &fakeDriver{})
+
+	out := captureStdout(t, func() {
+		if err := r.Rm(params.Rm{Node: id, Yes: true}); err != nil {
+			t.Fatalf("rm -y: %v", err)
+		}
+	})
+	if !strings.Contains(out, "volume kept") || !strings.Contains(out, "-y --volume") {
+		t.Fatalf("rm -y should keep the volume and suggest the reap command, got:\n%s", out)
+	}
+	if _, ok := fd.files[nodeBase+"/"+id+"/dabs-node.json"]; !ok {
+		t.Fatalf("the node record must survive while its volume is kept")
+	}
+
+	// The exact suggested command: the checkout is gone, the record is not.
+	out = captureStdout(t, func() {
+		if err := r.Rm(params.Rm{Node: id, Yes: true, Volume: true}); err != nil {
+			t.Fatalf("rm -y --volume rerun: %v", err)
+		}
+	})
+	if !strings.Contains(out, "removed") {
+		t.Fatalf("the rerun should reap the volume and remove the node, got:\n%s", out)
+	}
+	if !rmAllHas(fd, nodeBase+"/"+id+"/volume") {
+		t.Fatalf("the volume dir was not reaped: %v", fd.rmAll)
+	}
+	if _, ok := fd.files[nodeBase+"/"+id+"/dabs-node.json"]; ok {
+		t.Fatalf("the node record should be gone after the rerun")
+	}
+}
+
+// CONTRACT: an rm plan that cascades past the name says WHY each node is in
+// the set — a descendant whose name shares nothing with the prefix is labeled
+// as reaped-with-its-parent, never left looking like a name match.
+func TestRmDryLabelsDescendantsOfMatch(t *testing.T) {
+	fd := baseData()
+	fd.dirs = map[string][]string{nodeBase: {"work-aaaa"}}
+	fd.files = map[string][]byte{
+		nodeBase + "/work-aaaa/dabs-node.json": []byte(`{"id":"work-aaaa","kind":"project","dir":"/cwd","recipe":"r","created":"t"}`),
+	}
+	seedChildBoxNode(fd, "myscratch", "inst-s", "work-aaaa")
+	out := captureStdout(t, func() {
+		if err := newReal("", fd, &fakeDriver{}).Rm(params.Rm{Node: "work", Dry: true, Multiple: true}); err != nil {
+			t.Fatalf("rm --dry: %v", err)
+		}
+	})
+	if !strings.Contains(out, "reaped as descendants") || !strings.Contains(out, "myscratch") {
+		t.Fatalf("plan must label myscratch as a descendant, got:\n%s", out)
+	}
+	if !strings.Contains(out, "work-aaaa") {
+		t.Fatalf("plan must name the matched node, got:\n%s", out)
+	}
+}
+
+// CONTRACT: `rm --dry` on a worktree holding unreviewed work points at the
+// work — `dabs worktrees diff <name>` — not just at its existence.
+func TestRmDryPointsAtWorktreesDiff(t *testing.T) {
+	fd := baseData()
+	seedWorktreeNode(fd, "wt-dirty", wtState{branch: "b", dirty: true})
+	out := captureStdout(t, func() {
+		if err := newReal("", fd, &fakeDriver{}).Rm(params.Rm{Node: "wt-dirty", Dry: true}); err != nil {
+			t.Fatalf("rm --dry: %v", err)
+		}
+	})
+	if !strings.Contains(out, "worktrees diff wt-dirty") {
+		t.Fatalf("dry preview must point at `dabs worktrees diff`, got:\n%s", out)
+	}
+}
+
+// CONTRACT: --force on a reap that touches no worktree is called out as having
+// no effect — it only ever approves discarding unreviewed worktree work.
+func TestRmForceOnNonWorktreeSaysNoEffect(t *testing.T) {
+	fd := baseData()
+	seedBoxNode(fd, "boxy", "inst-b")
+	out := captureStdout(t, func() {
+		if err := newReal("", fd, &fakeDriver{}).Rm(params.Rm{Node: "boxy", Yes: true, Force: true}); err != nil {
+			t.Fatalf("rm --force: %v", err)
+		}
+	})
+	if !strings.Contains(out, "--force had no effect") {
+		t.Fatalf("want a no-effect note for --force, got:\n%s", out)
+	}
+}
+
+// CONTRACT: a `--clean-worktrees` sweep over zero worktrees says so instead of
+// printing nothing.
+func TestRmCleanWorktreesNothingToCleanSaysSo(t *testing.T) {
+	out := captureStdout(t, func() {
+		if err := newReal("", baseData(), &fakeDriver{}).Rm(params.Rm{CleanWorktrees: true, Dry: true}); err != nil {
+			t.Fatalf("rm --clean-worktrees --dry: %v", err)
+		}
+	})
+	if !strings.Contains(out, "no worktrees to clean") {
+		t.Fatalf("want an explicit nothing-to-clean line, got %q", out)
 	}
 }

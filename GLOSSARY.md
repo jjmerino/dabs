@@ -38,7 +38,7 @@ glossary records where the vocabulary is going so new work simply avoids the old
 | **image** | the frozen template a driver builds and boots a box from | `recipe.ImageRef`, `Driver.Build` |
 | **reap** | to remove a node and the spaces it holds (what `dabs rm` does) | `Rm`, `reapSpaces` |
 | **confirmation** | the explicit go-ahead a losing action needs — four flags for four risks | `-y` / `--multiple` / `--force` / `--volume` |
-| **active / inactive** | whether a subtree holds LIFE — a running box or real files in a space; `ls` shows active, `ls --inactive` the rest | `activeSubtrees`, `dabs ls` |
+| **active / inactive** | whether a subtree holds LIFE — a running box, real files in a space, or an unmerged externally-managed worktree of a project's repo; `ls` shows active, `ls --inactive` the rest | `activeSubtrees`, `dabs ls` |
 | **live / gone** | a box's STATE: its driver holds it, or it does not (**gone**: unstable) | `CellLive`/`CellGone` |
 | **no-diff / has work / unmerged** | a worktree's STATE: clean-or-landed · uncommitted-or-untracked · commits ahead with content the base lacks | `worktreeJudgment` |
 | **target** | the named driver configuration a recipe uses to bring up a box | `recipe.Recipe.Target`, `driverFor` |
@@ -99,18 +99,24 @@ it and never reaps its `Dir`), **workdir** (a host directory a recipe copied as
 *Where:* `NodeKind` (`KindProject`/`KindWorkdir`/`KindWorktree`/`KindBox`).
 
 ### project
-A project node is a marker for a folder dabs ran from — like the per-project
-folders Claude and other CLIs keep for sessions and state. It is a record, not a
-thing dabs built, and dabs never reaps its `Dir` (that directory is the user's).
-Every chain starts with one; a standalone project with no child box, worktree, or
+A project node is a marker for a plain folder (or a repo's main checkout) dabs
+ran from — like the per-project folders Claude and other CLIs keep for sessions
+and state. It is a record, not a thing dabs built, and dabs never reaps its
+`Dir` (that directory is the user's). Running dabs from a LINKED git worktree
+mints a worktree-kind marker instead — that place is a worktree, not a project —
+parented under the repo's project node when dabs tracks one.
+A standalone project with no child box, worktree, or
 workdir holds nothing and so counts INACTIVE — hidden by `dabs ls` until its
 subtree comes alive, and swept by `dabs rm --inactive`.
 *Where:* `KindProject`, `ensureProjectNode`.
 
 ### active / inactive
 Whether a **subtree** — a root node and everything under it — holds LIFE. A
-subtree is ACTIVE when any node in it has a running box, or holds real files in
-any of its spaces (volume/held/tmp). It is INACTIVE when none do: its boxes are
+subtree is ACTIVE when any node in it has a running box, holds real files in
+any of its spaces (volume/held/tmp), or is a project whose repo has an unmerged
+externally-managed worktree (a checkout git's registry knows that dabs does not
+own, dirty or carrying unlanded commits — `ls` renders it `(unmanaged)` under
+the project). It is INACTIVE when none do: its boxes are
 gone and its spaces empty — a standalone project marker with no child box,
 worktree, or workdir, or a subtree whose files were all reaped. Visibility follows
 life, not history: `dabs ls` shows only the active subtrees, `dabs ls --inactive`

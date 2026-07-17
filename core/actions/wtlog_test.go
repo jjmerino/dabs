@@ -121,9 +121,10 @@ func TestRmKeepLogsWorktreeDownFromLog(t *testing.T) {
 	if len(log) != 2 || log[1].Event != "down" || log[1].Worktree != "proj-aa" || log[1].Instance != "img-inst" {
 		t.Fatalf("want a down entry resolved to proj-aa, got %+v", log)
 	}
-	// A second stop: the journal's up already has its down → no new entry.
-	if err := r.Rm(params.Rm{Node: "wtbox-aaaa", Keep: true}); err != nil {
-		t.Fatalf("rm --keep again: %v", err)
+	// A second stop: the node is gone (its spaces were empty, so --keep took the
+	// record), which rm reports as a miss — and the journal gains nothing.
+	if err := r.Rm(params.Rm{Node: "wtbox-aaaa", Keep: true}); err == nil || !strings.Contains(err.Error(), "no node") {
+		t.Fatalf("rm --keep again: want a no-node error, got %v", err)
 	}
 	if got := readLog(t, fd); len(got) != 2 {
 		t.Fatalf("repeated stop should add nothing, got %+v", got)

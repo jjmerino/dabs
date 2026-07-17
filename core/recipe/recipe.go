@@ -82,6 +82,27 @@ func (e Egress) resolvedMode() string {
 // EgressMode is the recipe's resolved egress mode.
 func (r Recipe) EgressMode() string { return r.Egress.resolvedMode() }
 
+// MarshalYAML renders egress the way a recipes file writes it: the scalar mode
+// (`open`/`none`, an unset mode rendering as the `open` it resolves to), or
+// the proxy mapping with its allow/deny patterns and http_proxy chain. The
+// mapping shape rides the json tags (the yaml tags are unmarshal-only), so a
+// registry dump round-trips the full egress spec.
+func (e Egress) MarshalYAML() (interface{}, error) {
+	if len(e.Allow) == 0 && len(e.Deny) == 0 && len(e.HTTPProxy) == 0 {
+		return e.resolvedMode(), nil
+	}
+	b, err := json.Marshal(e)
+	if err != nil {
+		return nil, err
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(b, &m); err != nil {
+		return nil, err
+	}
+	delete(m, "mode")
+	return m, nil
+}
+
 // The mapping egress vocabulary.
 const (
 	egressAllow     = "allow"

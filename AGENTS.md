@@ -22,11 +22,11 @@ know what is in it:
   `build`/`recipe --detach` with no name list the choices, and `recipe` with an
   unknown/absent name falls back to the bundled `sh` box. Name the recipe you mean:
   `dabs recipe sh -c 'echo hi'`.
-- **Which recipes exist**. `dabs recipes` lists them one line each — name and
-  description. Full detail (image, command, sources) exists only in the YAML
-  itself: `dabs recipes --print` dumps the BUNDLED registry in full; for a user
-  or project recipe, read `~/.dabs/recipes.yaml` or the project's `dabs.yaml` —
-  no dabs command prints their mounts.
+- **Which recipes exist**. `dabs recipes` lists them one line each — name,
+  description, and origin (bundled | global `~/.dabs/recipes.yaml` | project
+  `./dabs.yaml`). Full detail (image, command, sources): `dabs recipes --print`
+  dumps the whole MERGED registry as YAML, each recipe marked with its origin,
+  and `dabs recipes --print <name>` dumps one recipe — mounts and all.
 
 ## The loop
 
@@ -53,8 +53,12 @@ know what is in it:
    its id — shown everywhere ids are shown, resolvable everywhere ids resolve
    (`exec`, `rm`, `cd`, `--worktree`). Names are unique across known nodes; a
    name held by an INACTIVE node reaps that record on the fly, a name held by
-   active work refuses. `dabs cd <node>` prints any node's directory (the WHERE
-   `ls` shows) as a bare path: `cd "$(dabs cd myfix)"`.
+   active work refuses. `dabs cd <node>` prints any node's own directory —
+   `~/.dabs/nodes/<id>`, the WHERE `ls` shows, one uniform path for every
+   kind — as a bare path: `cd "$(dabs cd myfix)"`. The three spaces are its
+   subdirectories — `volume/` (survives `rm --keep`), `held/` (work you would
+   miss: a worktree's checkout, a workdir's copy; `rm` asks first), `tmp/`
+   (scratch, reaped quietly).
 
 3. **Use it directly**, or **run an agent inside it — with a recipe.** Recipes
    do the plumbing: a recipe is a fully declarative box (image, what to

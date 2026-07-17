@@ -31,6 +31,7 @@ func (OS) Mkdir(path string, m fs.FileMode) error        { return os.Mkdir(path,
 func (OS) MkdirTemp(dir, pattern string) (string, error) { return os.MkdirTemp(dir, pattern) }
 func (OS) Getwd() (string, error)                        { return os.Getwd() }
 func (OS) RemoveAll(path string) error                   { return os.RemoveAll(path) }
+func (OS) EvalSymlinks(path string) (string, error)      { return filepath.EvalSymlinks(path) }
 func (OS) Getenv(key string) string                      { return os.Getenv(key) }
 func (OS) LookupEnv(key string) (string, bool)           { return os.LookupEnv(key) }
 func (OS) ExpandEnv(s string) string                     { return os.ExpandEnv(s) }
@@ -175,6 +176,26 @@ func (OS) GitDiff(worktree string) (string, error) {
 	}
 	b.Write(out)
 	return b.String(), nil
+}
+
+// GitListWorktrees reads `git worktree list --porcelain` at top. The porcelain
+// listing puts the main checkout first; it is dropped, so the result is the
+// linked worktrees only.
+func (OS) GitListWorktrees(top string) ([]string, error) {
+	out, err := exec.Command("git", "-C", top, "worktree", "list", "--porcelain").Output()
+	if err != nil {
+		return nil, fmt.Errorf("git worktree list: %v", err)
+	}
+	var paths []string
+	for _, line := range strings.Split(string(out), "\n") {
+		if p, ok := strings.CutPrefix(line, "worktree "); ok {
+			paths = append(paths, strings.TrimSpace(p))
+		}
+	}
+	if len(paths) > 0 {
+		paths = paths[1:]
+	}
+	return paths, nil
 }
 
 func (OS) GitRemoveWorktree(worktree string) error {

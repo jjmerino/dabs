@@ -29,6 +29,7 @@ func (r Real) Ls(p params.Ls) error {
 	// elsewhere, and a box the tree cannot find is a box the tree calls gone.
 	state := map[string]boxState{}
 	kinds := map[string]string{}
+	complete := true
 	for _, key := range r.order {
 		drv := r.drivers[key]
 		kinds[key] = drv.Kind()
@@ -41,6 +42,17 @@ func (r Real) Ls(p params.Ls) error {
 			stop()
 		}
 		if err != nil {
+			// A driver that cannot answer (missing bwrap, a stopped docker
+			// daemon) does not kill the listing: warn ONCE on stderr — one
+			// concise line carrying the driver's own message (the install
+			// hint) — and render the tree anyway, with each unconfirmed box's
+			// state degraded (see markStateUnknown). A server keeps its
+			// heading: that it is registered and unreachable is the finding.
+			complete = false
+			if !isServer(drv.Kind()) {
+				fmt.Fprintln(os.Stderr, tui.Warn("dabs: %s unavailable: %v", key, err))
+				continue
+			}
 			fmt.Fprintln(os.Stdout, tui.Heading(header(key, drv.Kind())))
 			fmt.Fprintln(os.Stdout, tui.Indent(tui.Failure("%v", err), 2))
 			continue
@@ -57,10 +69,18 @@ func (r Real) Ls(p params.Ls) error {
 	// Visibility follows LIFE, not history. Every boot mints a project marker for
 	// the directory dabs ran from, so a plain listing fills with empty markers for
 	// every dir dabs was ever run in. `ls` answers what is ALIVE: it shows only the
-	// ACTIVE subtrees — a root and everything under it, holding a running box or
-	// real files in some space. `ls --inactive` flips that, showing ONLY the
+	// ACTIVE subtrees — a root and everything under it, holding a running box,
+	// real files in some space, or an unmerged externally-managed worktree of a
+	// project's repo. `ls --inactive` flips that, showing ONLY the
 	// inactive ones (the empty records that remain), which `rm --inactive` sweeps.
-	active, inactive := r.activeSubtrees(all, state)
+	// Foreign worktrees — checkouts git's registry knows that dabs does not
+	// own — computed once for the whole listing, keyed by project id. Only the
+	// UNMERGED ones (dirty, or carrying commits the base does not have) are
+	// kept: a clean, fully-merged foreign worktree is finished work. The map
+	// both renders (attached under each project's view) and counts as LIFE in
+	// activeSubtrees: a project with one is active.
+	foreign := r.foreignWorktrees(all)
+	active, inactive := r.activeSubtrees(all, state, complete, foreign)
 	nodes := make([]Node, 0, len(all))
 	for _, n := range all {
 		if p.Inactive == active[n.ID] {
@@ -162,14 +182,23 @@ func (r Real) Ls(p params.Ls) error {
 			fmt.Fprintln(os.Stdout, tui.Indent(tui.Muted("(nothing running)"), 2))
 			continue
 		}
-		fmt.Fprint(os.Stdout, renderForest(r.viewNodes(sections[key], state), lsColumns, 2))
+		views := r.viewNodes(sections[key], state)
+		if !complete {
+			markStateUnknown(views)
+		}
+		attachForeignWorktrees(views, foreign)
+		fmt.Fprint(os.Stdout, renderForest(views, lsColumns, 2))
 	}
 
 	// Gone boxes with no living parent context — their place record is gone —
 	// have nowhere to nest, so they list flat under `no place`.
 	if len(orphans) > 0 {
 		fmt.Fprintln(os.Stdout, tui.Heading("no place"))
-		fmt.Fprint(os.Stdout, renderForest(r.viewNodes(orphans, state), lsColumns, 2))
+		views := r.viewNodes(orphans, state)
+		if !complete {
+			markStateUnknown(views)
+		}
+		fmt.Fprint(os.Stdout, renderForest(views, lsColumns, 2))
 	}
 
 	// A box a driver holds that no node claims — booted by an older dabs, or by
@@ -266,7 +295,8 @@ func anyLiveInChain(n Node, nodes []Node, byID map[string]Node, state map[string
 
 // activeSubtrees marks every ACTIVE node and names the tops of the inactive ones.
 // Life is judged per NODE, and activity propagates UP, never DOWN: a node is
-// active iff it is self-active or holds a self-active descendant, so a live box
+// active iff it holds life itself — self-active, or a project whose repo has an
+// unmerged externally-managed worktree — or has a descendant that does, so a live box
 // keeps its whole line of ancestors visible while a gone, empty box stays dead
 // weight even under a living parent. `ls` hides an inactive node by default, `ls
 // --inactive` shows it, and `rm --inactive` sweeps it.
@@ -276,7 +306,15 @@ func anyLiveInChain(n Node, nodes []Node, byID map[string]Node, state map[string
 // `rm --inactive` reaps to take just that dead branch without disturbing the
 // living tree above it (an inactive node with an inactive parent is reaped as part
 // of that parent's branch, not on its own).
-func (r Real) activeSubtrees(nodes []Node, state map[string]boxState) (active map[string]bool, inactiveRoots []string) {
+// complete is the drivers' answer quality: with an INCOMPLETE answer (a driver
+// missing or unreachable), a box absent from state is unconfirmed, not proven
+// dead — it counts as potentially active, so it stays in the default listing
+// (marked `(error: no driver)`) instead of vanishing into --inactive, which is
+// for confirmed-dead history.
+// foreign is the listing's one enumeration of unmerged externally-managed
+// worktrees (foreignWorktrees), keyed by project id: a project whose repo has
+// one is ACTIVE — the unmerged checkout is life the listing must not hide.
+func (r Real) activeSubtrees(nodes []Node, state map[string]boxState, complete bool, foreign map[string][]*NodeView) (active map[string]bool, inactiveRoots []string) {
 	byID := make(map[string]Node, len(nodes))
 	for _, n := range nodes {
 		byID[n.ID] = n
@@ -285,7 +323,7 @@ func (r Real) activeSubtrees(nodes []Node, state map[string]boxState) (active ma
 	// A self-active node lights its whole line of ancestors: walk up from each one,
 	// guarding a corrupt cycle, and mark every node on the way to the root.
 	for _, n := range nodes {
-		if !r.nodeSelfActive(n, state) {
+		if !r.nodeSelfActive(n, state, complete) && len(foreign[n.ID]) == 0 {
 			continue
 		}
 		cur := n
@@ -320,14 +358,27 @@ func (r Real) activeSubtrees(nodes []Node, state map[string]boxState) (active ma
 // space cells and the rm consent consult — so "holds files" means exactly the
 // same thing here as everywhere, and a tree of only empty directories holds
 // nothing.
-func (r Real) nodeSelfActive(n Node, state map[string]boxState) bool {
+func (r Real) nodeSelfActive(n Node, state map[string]boxState, complete bool) bool {
 	if n.Kind == KindBox {
-		if _, live := state[n.Instance]; live {
+		if _, live := state[n.Instance]; live || !complete {
+			// An incomplete drivers' answer cannot prove any box dead, so an
+			// unconfirmed box counts as potentially active.
 			return true
 		}
 	}
 	for _, dir := range r.nodeSpaceDirs(n) {
 		if holds, err := r.spaceHolds(dir); err == nil && holds {
+			return true
+		}
+	}
+	// An externally-managed worktree marker (kind worktree, Dir the checkout,
+	// no held checkout of its own) holds life when the checkout it stands on
+	// has unmerged work — the same judgment every worktree row gets. A checkout
+	// git cannot answer for holds nothing dabs can show, so it reads inactive
+	// and stays sweepable.
+	if n.Kind == KindWorktree && n.Worktree == nil && n.Dir != "" {
+		if _, dirty, ahead, err := r.data.GitState(n.Dir); err == nil &&
+			r.worktreeJudgment(n.Dir, dirty, ahead) != CellNoDiff {
 			return true
 		}
 	}
@@ -396,4 +447,133 @@ func tilde(p string) string {
 		return p
 	}
 	return filepath.Join("~", strings.TrimPrefix(p, home))
+}
+
+// unmanagedID marks a foreign worktree row. It is a display marker, not a node
+// id: rm/cd/exec resolve node records only, so nothing resolves it.
+const unmanagedID = "(unmanaged)"
+
+// foreignWorktrees computes, for EVERY project node, the display rows of its
+// repo's worktrees that dabs does not own — cut by git directly or by another
+// tool — keyed by project id. Only UNMERGED ones earn a row: dirty, carrying
+// commits whose content the base does not have, or a state git cannot answer
+// for (never report finished what cannot be shown). A clean, fully-merged
+// checkout is finished work — no row. The rows are display-only: NODE reads
+// `(unmanaged)`, the spaces are empty (they have none), and STATE is the same
+// git judgment dabs's own worktree rows get. A repo git cannot enumerate (no
+// git binary, not a repo) contributes no rows.
+func (r Real) foreignWorktrees(all []Node) map[string][]*NodeView {
+	// Two project nodes can stand over the SAME repository — one on the main
+	// checkout, one minted by running dabs from inside a linked worktree —
+	// and git answers `worktree list` with the one shared registry from any
+	// checkout. Projects are grouped by the repo's common .git dir, and each
+	// repo enumerates ONCE, its rows attached to a single project: the one
+	// whose dir IS the main checkout when one is tracked, else the oldest
+	// node. Only the representative's OWN dir is excluded from its rows (a
+	// project must not list itself); a linked worktree that some OTHER
+	// project stands on still renders — an unmerged checkout is exactly what
+	// the listing must never hide.
+	type repoGroup struct {
+		rep     Node // the project the repo's rows attach to
+		repMain bool // rep's dir is the main checkout
+	}
+	// Grouping and the main-checkout comparison run on CANONICAL paths: two
+	// projects reaching one repo through differing symlinked paths must land
+	// in the same group, or the registry enumerates twice.
+	groups := map[string]*repoGroup{}
+	for _, n := range all {
+		if n.Kind != KindProject || n.Dir == "" {
+			continue
+		}
+		dir := r.canonPath(n.Dir)
+		key := dir
+		main := false
+		if cd, err := r.data.GitCommonDir(n.Dir); err == nil {
+			key = r.canonPath(cd)
+			main = filepath.Dir(key) == dir // the common dir is <main checkout>/.git
+		}
+		g := groups[key]
+		if g == nil {
+			groups[key] = &repoGroup{rep: n, repMain: main}
+			continue
+		}
+		if (main && !g.repMain) || (main == g.repMain && n.Created < g.rep.Created) {
+			g.rep, g.repMain = n, main
+		}
+	}
+
+	out := map[string][]*NodeView{}
+	var owned map[string]bool // built on the first repo that needs it
+	for _, g := range groups {
+		paths, err := r.data.GitListWorktrees(g.rep.Dir)
+		if err != nil {
+			continue
+		}
+		if owned == nil {
+			owned = r.ownedWorktreePaths(all)
+		}
+		for _, p := range paths {
+			cp := filepath.Clean(p)
+			if owned[cp] || cp == filepath.Clean(g.rep.Dir) {
+				continue
+			}
+			st := CellNA
+			if _, dirty, ahead, gerr := r.data.GitState(p); gerr == nil {
+				st = r.worktreeJudgment(p, dirty, ahead)
+			}
+			if st == CellNoDiff {
+				continue
+			}
+			out[g.rep.ID] = append(out[g.rep.ID], &NodeView{
+				ID:    unmanagedID,
+				Kind:  KindWorktree,
+				Where: tilde(p),
+				State: st,
+			})
+		}
+	}
+	return out
+}
+
+// attachForeignWorktrees hangs each project's precomputed foreign rows under
+// its view, wherever in the forest that project renders.
+func attachForeignWorktrees(views []*NodeView, foreign map[string][]*NodeView) {
+	var walk func(v *NodeView)
+	walk = func(v *NodeView) {
+		for _, c := range v.Children {
+			walk(c)
+		}
+		v.Children = append(v.Children, foreign[v.ID]...)
+	}
+	for _, v := range views {
+		walk(v)
+	}
+}
+
+// canonPath resolves a path's symlinks for identity comparison, falling back
+// to the lexical Clean when it cannot be resolved (absent, permission).
+func (r Real) canonPath(p string) string {
+	if resolved, err := r.data.EvalSymlinks(p); err == nil {
+		return filepath.Clean(resolved)
+	}
+	return filepath.Clean(p)
+}
+
+// ownedWorktreePaths maps the checkout path of every worktree node dabs
+// tracks, so a foreign listing can skip them: the checkouts dabs cut (they
+// live in the node's held space) and the externally-managed checkouts dabs
+// ran from and marked (their Dir) — each already has a node row of its own.
+func (r Real) ownedWorktreePaths(nodes []Node) map[string]bool {
+	owned := map[string]bool{}
+	for _, n := range nodes {
+		switch {
+		case n.Worktree != nil:
+			if p, err := r.resolveNodeData(n.ID); err == nil {
+				owned[filepath.Clean(p)] = true
+			}
+		case n.Kind == KindWorktree && n.Dir != "":
+			owned[filepath.Clean(n.Dir)] = true
+		}
+	}
+	return owned
 }

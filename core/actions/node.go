@@ -31,8 +31,10 @@ type Node struct {
 	Created string   `json:"created"`          // RFC3339
 	// Dir is the place this node marks. For a project it is the cwd the command
 	// ran from; for a workdir the host directory `.` resolved to. Empty for a box
-	// (a box marks a sandbox, not a directory) and for a worktree (dabs made its
-	// checkout, which lives in the node's own held space).
+	// (a box marks a sandbox, not a directory) and for a worktree dabs cut (its
+	// checkout lives in the node's own held space). A worktree node WITHOUT a
+	// Worktree nest is an externally-managed checkout dabs ran from — Dir is
+	// that checkout's path, and dabs never reaps its bytes.
 	Dir string `json:"dir,omitempty"`
 	// Instance is the driver's name for a box node's sandbox. A node id is minted
 	// before the box is up (its spaces must exist to be mounted), so the two names
@@ -52,18 +54,24 @@ type Node struct {
 //	project → (workdir | worktree)? → box
 //
 // and nothing else: a box never parents a directory, a worktree is never cut
-// inside a box, boxes do not nest. The topology is fixed so that reading a chain
-// never requires asking what an arbitrary nesting would mean.
+// inside a box, boxes do not nest. A chain rooted in a LINKED git worktree
+// starts at its externally-managed worktree marker — the project slot is
+// simply absent when dabs does not track the repo's main checkout. The
+// topology is fixed so that reading a chain never requires asking what an
+// arbitrary nesting would mean.
 type NodeKind string
 
 const (
-	// KindProject marks the directory a dabs command ran from. Every chain starts
-	// with one, and dabs never reaps its Dir — that directory is the user's.
+	// KindProject marks a plain directory (or a repo's main checkout) a dabs
+	// command ran from. dabs never reaps its Dir — that directory is the user's.
 	KindProject NodeKind = "project"
 	// KindWorkdir marks a host directory a recipe mounted or copied as `.`.
 	KindWorkdir NodeKind = "workdir"
-	// KindWorktree marks a git worktree dabs cut. Its checkout lives in the
-	// node's held space, so dabs owns it and may reap it.
+	// KindWorktree marks a git worktree: one dabs cut (its Worktree nest is
+	// set; the checkout lives in the node's held space, so dabs owns it and
+	// may reap it), or an externally-managed checkout dabs ran from (no
+	// Worktree nest; Dir is the checkout, never reaped — see
+	// ensureProjectNode).
 	KindWorktree NodeKind = "worktree"
 	// KindBox marks a running sandbox, one per driver instance.
 	KindBox NodeKind = "box"

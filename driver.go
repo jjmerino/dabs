@@ -12,10 +12,13 @@ import (
 	"github.com/jjmerino/dabs/core/tui"
 )
 
-// buildDrivers assembles the sandbox fleet: the platform's local driver
-// plus one server driver per registered server (~/.dabs/config.json, see
-// `dabs servers`). A missing local driver is tolerated when servers exist —
-// commands that need it will say so.
+// buildDrivers assembles the drivers dabs dispatches across: the platform's
+// local driver plus one server driver per registered server
+// (~/.dabs/config.json, see `dabs servers`). The local driver is LAZY: its
+// probe (a LookPath for the vendor CLI) runs on first use, so a command that
+// never touches a driver — listing recipes, printing a node's directory,
+// cutting a boxless place — runs on a machine with no sandboxing tool at all,
+// and one that does gets the driver's own install-hint error.
 func buildDrivers() (map[string]sandbox.Driver, []string, error) {
 	cfg, err := config.Load()
 	if err != nil {
@@ -24,15 +27,8 @@ func buildDrivers() (map[string]sandbox.Driver, []string, error) {
 	drivers := map[string]sandbox.Driver{}
 	order := []string{}
 
-	local, err := localDriver()
-	if err == nil {
-		drivers["local"] = local
-		order = append(order, "local")
-	} else if len(cfg.Servers) == 0 {
-		return nil, nil, err
-	} else {
-		fmt.Fprintln(os.Stderr, tui.Warn("dabs: local driver unavailable: %v", err))
-	}
+	drivers["local"] = sandbox.Lazy(localKind, localDriver)
+	order = append(order, "local")
 
 	// docker driver: selectable via a recipe's `target: docker`. Registered
 	// whenever docker is present, regardless of platform.

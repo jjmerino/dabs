@@ -29,10 +29,23 @@ SH
 
 FROM dabs-dabseption
 
-# dabs is baked in, not built at start: this box mounts no source.
+# The proxy engine runs under bun on the box the suite runs in (openssl mints its
+# CA); the proxy e2e boots an inner box whose only egress is that engine.
+# BUN_INSTALL puts bun straight on PATH (arch-correct, no symlink); the final
+# `bun --version` fails the build if the install silently no-op'd.
+RUN apt-get update && apt-get install -y --no-install-recommends curl unzip openssl \
+ && rm -rf /var/lib/apt/lists/* \
+ && BUN_INSTALL=/usr/local curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash \
+ && bun --version
+
+# dabs is baked in, not built at start: this box mounts no source. The forwarder
+# is built first (a static linux binary) and dabs is built with `-tags
+# withforwarder` so it embeds that binary — under proxy egress dabs materializes
+# it and mounts the single-purpose forwarder (never the dabs CLI) into inner boxes.
 WORKDIR /work
 COPY . /work
-RUN go build -o /usr/local/bin/dabs .
+RUN CGO_ENABLED=0 go build -o egressforwarder/forwarder/forward.bin ./egressforwarder/cmd/forward \
+ && CGO_ENABLED=0 go build -tags withforwarder -o /usr/local/bin/dabs .
 
 # The e2ebase stage as a dabs bwrap image, where dabs looks for one: a flattened
 # rootfs plus the env/workdir recorded beside it. `COPY --from` is the export —

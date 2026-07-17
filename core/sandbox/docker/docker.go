@@ -8,11 +8,13 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 
 	"github.com/jjmerino/dabs/core/sandbox"
 	"github.com/jjmerino/dabs/core/sandbox/clidriver"
 	"github.com/jjmerino/dabs/core/sandbox/execx"
+	"github.com/jjmerino/dabs/egressforwarder/forwarder"
 	"github.com/mattn/go-isatty"
 )
 
@@ -66,6 +68,11 @@ func (d Driver) Up(spec sandbox.Spec) (string, error) {
 	if d.nested {
 		args = append(args, "--privileged", "-v", "/tmp")
 	}
+	// None and proxy both start from a container with no network: proxy's only
+	// way out is the host socket mounted below, which is filesystem, not network.
+	if spec.Egress == sandbox.EgressNone || spec.Egress == sandbox.EgressProxy {
+		args = append(args, "--network", "none")
+	}
 	args = append(args, "-e", "DABS_NAME="+instance)
 	for k, v := range spec.Env {
 		args = append(args, "-e", fmt.Sprintf("%s=%s", k, v))
@@ -76,7 +83,22 @@ func (d Driver) Up(spec sandbox.Spec) (string, error) {
 	}
 	// sleep infinity keeps the box alive; docker exec inherits the container's
 	// env and image WORKDIR, so Run/Exec need not re-pass them.
-	args = append(args, imageName(spec.Name), "sleep", "infinity")
+	keepAlive := []string{"sleep", "infinity"}
+	if spec.Egress == sandbox.EgressProxy {
+		// The host proxy's socket and the single-purpose forwarder binary land
+		// read-only at the forwarder's fixed paths, and the forwarder brackets
+		// the keep-alive so it serves 127.0.0.1 for the container's whole life.
+		// The forwarder is a static linux binary dabs materialized from its
+		// embedded copy. The socket is a FILE mount, capturing its inode at run
+		// time: a proxy that recreates its socket orphans this container's mount,
+		// and the box needs a re-up.
+		args = append(args,
+			"--mount", clidriver.MountArg(sandbox.Mount{Host: spec.ProxySock, Path: forwarder.SockPath, RO: true}),
+			"--mount", clidriver.MountArg(sandbox.Mount{Host: spec.ForwarderBin, Path: forwarder.ForwardPath, RO: true}))
+		keepAlive = forwarder.WrapCommand(keepAlive)
+	}
+	args = append(args, imageName(spec.Name))
+	args = append(args, keepAlive...)
 	if out, err := command("docker", args...).CombinedOutput(); err != nil {
 		return "", execx.WrapOut(fmt.Sprintf("docker: docker run %s", containerName(instance)), out, err)
 	}
@@ -160,6 +182,22 @@ func (Driver) HasImage(name string) (bool, error) {
 }
 
 func (Driver) Kind() string { return "docker" }
+
+// CheckEgress reports whether this driver can enforce the mode. None is a stock
+// docker flag; proxy mounts a forwarder binary and a host unix socket into the
+// container. Proxy needs a linux host — Docker
+// Desktop's VM makes the cross-boundary socket FILE mount the proxy depends on
+// unreliable. The forwarder itself is a linux binary dabs materialized from its
+// embedded copy, so the binary is never the limiting factor.
+func (Driver) CheckEgress(mode string) error {
+	if mode != sandbox.EgressProxy {
+		return nil
+	}
+	if runtime.GOOS != "linux" {
+		return fmt.Errorf("docker: proxy egress needs a linux host — Docker Desktop's VM makes the proxy's cross-boundary socket mount unreliable (got %s)", runtime.GOOS)
+	}
+	return nil
+}
 
 // Images lists the images dabs built under docker — the tags carrying dabs's
 // prefix, reported under their recipe image name. Size is left 0 (docker's

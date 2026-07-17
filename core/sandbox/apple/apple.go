@@ -8,6 +8,7 @@ package apple
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -18,6 +19,7 @@ import (
 	"github.com/jjmerino/dabs/core/sandbox"
 	"github.com/jjmerino/dabs/core/sandbox/clidriver"
 	"github.com/jjmerino/dabs/core/sandbox/execx"
+	"github.com/jjmerino/dabs/egressforwarder/forwarder"
 )
 
 // prefix namespaces every container dabs manages.
@@ -61,6 +63,12 @@ func (d Driver) Up(spec sandbox.Spec) (string, error) {
 		return "", fmt.Errorf("apple: %w", err)
 	}
 	args := []string{"run", "-d", "--name", containerName(instance), "-w", spec.Workdir}
+	// None and proxy both start from a micro-VM with no network — no routes,
+	// no non-loopback interface. Proxy's only way out is the socket volume
+	// below, which `container` relays across the VM boundary itself.
+	if spec.Egress == sandbox.EgressNone || spec.Egress == sandbox.EgressProxy {
+		args = append(args, "--network", "none")
+	}
 	// DABS_NAME marks the box: anything running inside can detect it is
 	// sandboxed.
 	args = append(args, "-e", "DABS_NAME="+instance)
@@ -71,11 +79,51 @@ func (d Driver) Up(spec sandbox.Spec) (string, error) {
 	for _, m := range spec.Mounts {
 		args = append(args, "--mount", clidriver.MountArg(m))
 	}
-	args = append(args, imageName(spec.Name), "sleep", "infinity")
+	keepAlive := []string{"sleep", "infinity"}
+	if spec.Egress == sandbox.EgressProxy {
+		// A host binary cannot run in the linux micro-VM, so unlike the linux
+		// drivers dabs does not mount the forwarder in — the IMAGE must carry a
+		// linux forwarder at forwarder.ForwardPath, and the recipe's Dockerfile
+		// is where it comes from. Probed before the real boot so a missing
+		// forwarder is an instruction, not a dead box. The socket rides its own
+		// --volume: `container` relays a socket FILE volume across the VM (the
+		// --ssh mechanism); a socket inside a directory bind is dead virtiofs.
+		if err := checkImageCarriesForwarder(spec.Name); err != nil {
+			return "", err
+		}
+		args = append(args, "--volume", spec.ProxySock+":"+forwarder.SockPath)
+		keepAlive = forwarder.WrapCommand(keepAlive)
+	}
+	args = append(args, imageName(spec.Name))
+	args = append(args, keepAlive...)
 	if out, err := exec.Command("container", args...).CombinedOutput(); err != nil {
 		return "", execx.WrapOut(fmt.Sprintf("apple: container run %s", containerName(instance)), out, err)
 	}
 	return instance, nil
+}
+
+// checkImageCarriesForwarder boots a throwaway container to run the image's
+// own forwarder binary with no arguments: present, it prints its usage;
+// absent, the run fails — and the error hands the user the Dockerfile lines
+// that fix it.
+func checkImageCarriesForwarder(name string) error {
+	out, err := exec.Command("container", "run", "--rm", imageName(name), forwarder.ForwardPath).CombinedOutput()
+	if strings.Contains(string(out), "usage: forward ") {
+		return nil
+	}
+	// The probe output is mostly the CLI's progress bars; the tail line names
+	// the actual failure (a missing executable).
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	detail := lines[len(lines)-1]
+	if err == nil {
+		err = errors.New("unexpected probe output")
+	}
+	return fmt.Errorf("apple: proxy egress needs the image to carry a linux forwarder at %s (it bridges HTTP_PROXY to the proxy socket; a host binary cannot run in the micro-VM) — add to the image's Dockerfile:\n\n"+
+		"  FROM golang:alpine AS fwd\n"+
+		"  RUN CGO_ENABLED=0 go install github.com/jjmerino/dabs/egressforwarder/cmd/forward@latest\n\n"+
+		"and in the final stage:\n\n"+
+		"  COPY --from=fwd /go/bin/forward %s\n\n(probe: %v: %s)",
+		forwarder.ForwardPath, forwarder.ForwardPath, err, detail)
 }
 
 // HasImage reports whether name's image is already built.
@@ -248,6 +296,15 @@ func remove(ctn string) {
 
 // Kind identifies this driver.
 func (Driver) Kind() string { return "apple" }
+
+// CheckEgress reports nil for every mode: none and proxy both map to
+// `container run --network none`, and proxy's extra requirement — the IMAGE must
+// carry a linux forwarder — is an image question that Up
+// probes for (an image question, not a mode question — the answer comes with
+// Dockerfile instructions).
+func (Driver) CheckEgress(mode string) error {
+	return nil
+}
 
 // Images lists the images dabs built under this driver — the `container` image
 // tags carrying dabs's prefix, reported under their recipe image name. Size is

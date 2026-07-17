@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/jjmerino/dabs/core/proxy"
 	"github.com/jjmerino/dabs/core/recipe"
 	"github.com/jjmerino/dabs/core/tui"
 )
@@ -94,6 +95,7 @@ func (r Real) upDetached(arg, worktree, nodeName string) error {
 	// Enter once with a no-op; if that fails the boot did not really succeed —
 	// reap the box so no unusable instance lingers and surface the driver's message.
 	if _, serr := drv.Exec(instance, []string{"true"}); serr != nil {
+		proxy.Reap(r.boxProxy(instance)) // the box is abandoned; reap its engine too, not just the box
 		_ = drv.Down(instance)
 		return fmt.Errorf("boot failed: box is not usable: %w", serr)
 	}

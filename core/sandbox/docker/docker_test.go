@@ -95,3 +95,71 @@ func assertWrapped(t *testing.T, err error, want string) {
 		t.Fatalf("error %q does not carry subprocess output %q", err.Error(), want)
 	}
 }
+
+// captureDocker swaps the command seam for one that records every docker argv
+// and succeeds, so Up's argument construction can be asserted directly.
+func captureDocker(t *testing.T) *[][]string {
+	t.Helper()
+	var calls [][]string
+	orig := command
+	command = func(_ string, args ...string) *exec.Cmd {
+		calls = append(calls, args)
+		return exec.Command("sh", "-c", "exit 0")
+	}
+	t.Cleanup(func() { command = orig })
+	return &calls
+}
+
+// CONTRACT: egress none runs the container with no network; open egress puts
+// no --network flag on the argv at all.
+func TestUpEgressNone(t *testing.T) {
+	t.Run("none sets --network none", func(t *testing.T) {
+		calls := captureDocker(t)
+		if _, err := (Driver{}).Up(sandbox.Spec{Name: "img", Workdir: "/work", Egress: sandbox.EgressNone}); err != nil {
+			t.Fatal(err)
+		}
+		run := strings.Join((*calls)[0], " ")
+		if !strings.Contains(run, "--network none") {
+			t.Fatalf("egress none argv missing --network none: %s", run)
+		}
+	})
+
+	t.Run("open sets no --network", func(t *testing.T) {
+		calls := captureDocker(t)
+		if _, err := (Driver{}).Up(sandbox.Spec{Name: "img", Workdir: "/work"}); err != nil {
+			t.Fatal(err)
+		}
+		for _, a := range (*calls)[0] {
+			if a == "--network" {
+				t.Fatalf("open egress must not set --network: %v", (*calls)[0])
+			}
+		}
+	})
+}
+
+// CONTRACT: egress proxy = no network + the socket and dabs binary mounted
+// read-only at the forwarder's fixed in-box paths + the keep-alive bracketed
+// by the forwarder. Proxy env is the actions layer's job, so the driver just
+// passes Spec.Env through.
+func TestUpEgressProxy(t *testing.T) {
+	calls := captureDocker(t)
+	_, err := (Driver{}).Up(sandbox.Spec{
+		Name: "img", Workdir: "/work",
+		Egress: sandbox.EgressProxy, ProxySock: "/host/.dabs/egress.sock",
+		ForwarderBin: "/host/.dabs/forward",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := strings.Join((*calls)[0], " ")
+	for _, want := range []string{
+		"--network none",
+		"source=/host/.dabs/egress.sock,target=/run/dabs/egress.sock,readonly",
+		"source=/host/.dabs/forward,target=/run/dabs/forward,readonly",
+		"/run/dabs/forward /run/dabs/egress.sock 18080 -- sleep infinity",
+	} {
+		if !strings.Contains(run, want) {
+			t.Errorf("proxy argv missing %q: %s", want, run)
+		}
+	}
+}

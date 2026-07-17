@@ -11,6 +11,7 @@ package recipe
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"reflect"
@@ -37,6 +38,355 @@ type Recipe struct {
 	Sources     []Source          `json:"sources,omitempty" yaml:"sources,omitempty"`         // what lands in the box, and how
 	Target      string            `json:"target,omitempty" yaml:"target,omitempty"`           // which fleet driver runs it (e.g. "docker", a server); default local
 	Keep        bool              `json:"keep,omitempty" yaml:"keep,omitempty"`               // keep the box alive after the command (default: delete it)
+	Egress      Egress            `json:"egress,omitempty" yaml:"egress,omitempty"`           // the box's outbound network: open | none | {proxy: [chain]}
+}
+
+// Egress is the box's outbound network — a union. As a scalar it is `open`
+// (full outbound, the DEFAULT when unset) or `none` (no network). As a mapping
+// `{proxy: [chain]}` it routes ALL egress through an ordered interception chain.
+// The default is open: dabs is a dev tool, and a box that silently reaches
+// nowhere confuses far more than it protects — locking egress down is an opt-in.
+type Egress struct {
+	Mode  string     `json:"mode,omitempty" yaml:"-"`  // open | none | proxy (empty → open)
+	Proxy []ProxyHop `json:"proxy,omitempty" yaml:"-"` // the chain, box→internet, when Mode == proxy
+}
+
+// Egress modes.
+const (
+	EgressOpen  = "open"
+	EgressNone  = "none"
+	EgressProxy = "proxy"
+)
+
+// resolvedMode resolves an unset mode to Open (full outbound).
+func (e Egress) resolvedMode() string {
+	if e.Mode == "" {
+		return EgressOpen
+	}
+	return e.Mode
+}
+
+// EgressMode is the recipe's resolved egress mode.
+func (r Recipe) EgressMode() string { return r.Egress.resolvedMode() }
+
+// UnmarshalYAML accepts the scalar forms (`egress: open`) or the proxy mapping
+// (`egress: {proxy: [ ... ]}`).
+func (e *Egress) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	var s string
+	if err := unmarshal(&s); err == nil {
+		e.Mode = s
+		return nil
+	}
+	// Validate the mapping's KEYS on a permissive decode first, so a mis-keyed
+	// mapping gets the friendly "unknown key" diagnostic — decoding straight into
+	// the hop list would fail with a raw decoder error whenever the value is not
+	// itself a list (e.g. `egress: {foo: bar}`).
+	var keys map[string]interface{}
+	if err := unmarshal(&keys); err != nil {
+		return fmt.Errorf("egress: want a mode string (open|none) or `{proxy: [ ... ]}`: %w", err)
+	}
+	if err := checkEgressMapKeys(keys); err != nil {
+		return err
+	}
+	var m map[string][]ProxyHop
+	if err := unmarshal(&m); err != nil {
+		return fmt.Errorf("egress: `proxy` must be a list of hops: %w", err)
+	}
+	e.Mode, e.Proxy = EgressProxy, m[EgressProxy]
+	return nil
+}
+
+// UnmarshalJSON mirrors UnmarshalYAML for the server's JSON decode path.
+func (e *Egress) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err == nil {
+		e.Mode = s
+		return nil
+	}
+	var keys map[string]interface{}
+	if err := json.Unmarshal(b, &keys); err != nil {
+		return fmt.Errorf("egress: want a mode string or `{proxy: [ ... ]}`: %w", err)
+	}
+	if err := checkEgressMapKeys(keys); err != nil {
+		return err
+	}
+	var m map[string][]ProxyHop
+	if err := json.Unmarshal(b, &m); err != nil {
+		return fmt.Errorf("egress: `proxy` must be a list of hops: %w", err)
+	}
+	e.Mode, e.Proxy = EgressProxy, m[EgressProxy]
+	return nil
+}
+
+// checkEgressMapKeys validates that a mapping egress carries exactly the `proxy`
+// key. It runs on a type-agnostic key set so the diagnostic is the same friendly
+// message whatever the value's shape.
+func checkEgressMapKeys(keys map[string]interface{}) error {
+	if len(keys) != 1 {
+		return errors.New("egress: a mapping must hold exactly the `proxy` key")
+	}
+	// Exactly one key here (len checked above); if it is not `proxy`, name it.
+	for k := range keys {
+		if k != EgressProxy {
+			return fmt.Errorf("egress: unknown key %q — a mapping egress is `{proxy: [ ... ]}`", k)
+		}
+	}
+	return nil
+}
+
+// ProxyHop is one entry in an egress proxy chain, ordered box→internet (the
+// trust order — a credential-injecting hop sits nearest the internet). It is
+// EITHER a TLS boundary directive (`tls: terminate` decrypts the agent's TLS to
+// open the plaintext window; `tls: originate` re-encrypts to the real upstream)
+// OR a hook MODULE (`module: <path>` plus optional config). A module hop inside
+// a terminate…originate window inspects decrypted content; outside one it acts
+// on the connection (host/port) for allow/deny/route.
+type ProxyHop struct {
+	TLS     string                 `json:"tls,omitempty" yaml:"-"`     // "terminate" | "originate"; empty if a module hop
+	Domains []string               `json:"domains,omitempty" yaml:"-"` // on `tls: terminate`: only these hosts are decrypted; others pass through
+	Module  string                 `json:"module,omitempty" yaml:"-"`  // module path; empty if a tls hop
+	Config  map[string]interface{} `json:"config,omitempty" yaml:"-"`  // a module hop's extra config (excludes `module`)
+}
+
+// TLS boundary directives.
+const (
+	tlsTerminate = "terminate"
+	tlsOriginate = "originate"
+)
+
+// IsTLS / IsModule classify a hop; IsTerminate / IsOriginate name the boundary.
+func (h ProxyHop) IsTLS() bool       { return h.TLS != "" }
+func (h ProxyHop) IsModule() bool    { return h.Module != "" }
+func (h ProxyHop) IsTerminate() bool { return h.TLS == tlsTerminate }
+func (h ProxyHop) IsOriginate() bool { return h.TLS == tlsOriginate }
+
+// Label is a module hop's identity in engine logs: its `name:` config if given,
+// else the module file's basename without extension.
+func (h ProxyHop) Label() string {
+	if n, ok := h.Config["name"].(string); ok && n != "" {
+		return n
+	}
+	base := h.Module
+	if i := strings.LastIndexByte(base, '/'); i >= 0 {
+		base = base[i+1:]
+	}
+	base = strings.TrimSuffix(base, ".ts")
+	base = strings.TrimSuffix(base, ".js")
+	return base
+}
+
+// UnmarshalYAML decodes one chain entry: a mapping keyed by `tls` (a directive)
+// or `module` (a hook + its config).
+func (h *ProxyHop) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	var m map[string]interface{}
+	if err := unmarshal(&m); err != nil {
+		return fmt.Errorf("proxy hop: want a mapping like `tls: terminate` or `module: path`: %w", err)
+	}
+	return h.set(m)
+}
+
+// UnmarshalJSON mirrors UnmarshalYAML for the JSON decode path.
+func (h *ProxyHop) UnmarshalJSON(b []byte) error {
+	var m map[string]interface{}
+	if err := json.Unmarshal(b, &m); err != nil {
+		return fmt.Errorf("proxy hop: want an object like {\"tls\":\"terminate\"} or {\"module\":\"path\"}: %w", err)
+	}
+	return h.set(m)
+}
+
+// set classifies a hop mapping as a tls directive or a module hook, normalizing
+// nested maps so Config round-trips to JSON for the engine.
+func (h *ProxyHop) set(m map[string]interface{}) error {
+	nv, err := normalizeYAML(m)
+	if err != nil {
+		return err
+	}
+	m = nv.(map[string]interface{})
+	if tv, ok := m[proxyTLS]; ok {
+		s, ok := tv.(string)
+		if !ok {
+			return fmt.Errorf("proxy hop: `tls` must be %q or %q", tlsTerminate, tlsOriginate)
+		}
+		h.TLS = s
+		// A `tls: terminate` may scope interception to a `domains` list — only
+		// those hosts are decrypted; everything else passes through untouched.
+		for k, v := range m {
+			switch k {
+			case proxyTLS:
+			case proxyDomains:
+				ds, err := toStringList(v)
+				if err != nil {
+					return fmt.Errorf("proxy hop: `domains` must be a list of hostnames: %w", err)
+				}
+				h.Domains = ds
+			default:
+				return fmt.Errorf("proxy hop: a `tls` directive takes only an optional `domains` list, not %q", k)
+			}
+		}
+		if len(h.Domains) > 0 && s != tlsTerminate {
+			return errors.New("proxy hop: `domains` only applies to `tls: terminate`")
+		}
+		return nil
+	}
+	if mv, ok := m[proxyModule]; ok {
+		s, ok := mv.(string)
+		if !ok {
+			return fmt.Errorf("proxy hop: `module` must be a path string")
+		}
+		h.Module = s
+		cfg := map[string]interface{}{}
+		for k, v := range m {
+			if k != proxyModule {
+				cfg[k] = v
+			}
+		}
+		if len(cfg) > 0 {
+			h.Config = cfg
+		}
+		return nil
+	}
+	// Neither `tls` nor `module`: report one of the unrecognized keys as the typo.
+	for k := range m {
+		return fmt.Errorf("proxy hop: unknown key %q — a chain entry is `tls: terminate|originate` or `module: <path>`", k)
+	}
+	return errors.New("proxy hop: empty entry — use `tls` or `module`")
+}
+
+// The chain vocabulary: a hop is keyed by `tls` (a boundary directive) or
+// `module` (a hook to load). Anything else is a typo, not a hop.
+const (
+	proxyTLS     = "tls"
+	proxyModule  = "module"
+	proxyDomains = "domains"
+)
+
+// toStringList coerces a normalized YAML/JSON value into a []string, rejecting a
+// non-list or a non-string element — used for a `tls: terminate` domains list.
+func toStringList(v interface{}) ([]string, error) {
+	items, ok := v.([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("want a list, got %T", v)
+	}
+	out := make([]string, 0, len(items))
+	for _, it := range items {
+		s, ok := it.(string)
+		if !ok {
+			return nil, fmt.Errorf("want string hostnames, got %T", it)
+		}
+		out = append(out, s)
+	}
+	return out, nil
+}
+
+// normalizeYAML rewrites yaml.v2's map[interface{}]interface{} into
+// map[string]interface{} recursively, so a hop's Config is JSON-serializable
+// when handed to the proxy engine. A non-string config key is an error.
+func normalizeYAML(v interface{}) (interface{}, error) {
+	switch x := v.(type) {
+	case map[interface{}]interface{}:
+		m := make(map[string]interface{}, len(x))
+		for k, val := range x {
+			ks, ok := k.(string)
+			if !ok {
+				return nil, fmt.Errorf("config key %v is not plain text", k)
+			}
+			nv, err := normalizeYAML(val)
+			if err != nil {
+				return nil, err
+			}
+			m[ks] = nv
+		}
+		return m, nil
+	case map[string]interface{}:
+		m := make(map[string]interface{}, len(x))
+		for k, val := range x {
+			nv, err := normalizeYAML(val)
+			if err != nil {
+				return nil, err
+			}
+			m[k] = nv
+		}
+		return m, nil
+	case []interface{}:
+		for i := range x {
+			nv, err := normalizeYAML(x[i])
+			if err != nil {
+				return nil, err
+			}
+			x[i] = nv
+		}
+		return x, nil
+	default:
+		return v, nil
+	}
+}
+
+// validateEgress checks a recipe's egress mode: open, none, or proxy. The union
+// makes mode↔chain consistency structural (a scalar mode carries no chain), so
+// this only rejects an unknown scalar mode and an empty proxy chain, then
+// validates the chain itself.
+func validateEgress(name string, e Egress) error {
+	switch e.Mode {
+	case "", EgressOpen, EgressNone:
+		return nil
+	case EgressProxy:
+		if len(e.Proxy) == 0 {
+			return fmt.Errorf("recipe %q: egress proxy needs a non-empty chain", name)
+		}
+		return validateProxies(name, e.Proxy)
+	default:
+		return fmt.Errorf("recipe %q: egress %q is not one of open, none, or {proxy: [ ... ]}", name, e.Mode)
+	}
+}
+
+// validateProxies checks an egress proxy chain: a hop is a tls directive or a
+// module hook. tls boundaries must nest — no terminate-inside-terminate, no
+// originate without a terminate, only terminate/originate directives. A
+// `tls: terminate` MUST be closed by a `tls: originate`: an unclosed window is a
+// decrypt-with-no-re-encrypt, and allowing it lets a recipe express a TLS→
+// plaintext downgrade. A hook that answers locally (`respond`) breaks the chain
+// before the close is reached, so the close is a no-op for a pure responder — but
+// it keeps the boundary explicit and forwarding always re-encrypts. A module hop
+// needs NO tls window: inside one it inspects decrypted content, outside one it
+// acts on the connection (host/port) for allow/deny.
+func validateProxies(name string, hops []ProxyHop) error {
+	terminated := false
+	terminateAt := 0
+	tlsWindows := 0
+	for i, h := range hops {
+		switch {
+		case h.IsTLS():
+			switch h.TLS {
+			case tlsTerminate:
+				if terminated {
+					return fmt.Errorf("recipe %q proxy #%d: `tls: terminate` while the plaintext window is already open", name, i+1)
+				}
+				tlsWindows++
+				if tlsWindows > 1 {
+					return fmt.Errorf("recipe %q proxy #%d: only one `tls: terminate` window per chain", name, i+1)
+				}
+				terminated = true
+				terminateAt = i + 1
+			case tlsOriginate:
+				if !terminated {
+					return fmt.Errorf("recipe %q proxy #%d: `tls: originate` without a preceding `tls: terminate`", name, i+1)
+				}
+				terminated = false
+			default:
+				return fmt.Errorf("recipe %q proxy #%d: `tls` takes %q or %q, not %q", name, i+1, tlsTerminate, tlsOriginate, h.TLS)
+			}
+		case h.IsModule():
+			if err := rejectControl(fmt.Sprintf("module path in recipe %q", name), h.Module); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("recipe %q proxy #%d: a chain entry is `tls: terminate|originate` or `module: <path>`", name, i+1)
+		}
+	}
+	if terminated {
+		return fmt.Errorf("recipe %q proxy #%d: `tls: terminate` must be closed by a `tls: originate` — an unclosed window decrypts without re-encrypting", name, terminateAt)
+	}
+	return nil
 }
 
 // ImageRef is a union: either a bare image NAME (reuse ~/.dabs/images/<name>,
@@ -258,6 +608,9 @@ func validate(reg Registry) error {
 			if err := rejectControl(fmt.Sprintf("value of env %q in recipe %q", k, name), v); err != nil {
 				return err
 			}
+		}
+		if err := validateEgress(name, rec.Egress); err != nil {
+			return err
 		}
 	}
 	return nil

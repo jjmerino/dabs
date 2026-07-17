@@ -49,8 +49,21 @@ jobs:
           # which is exactly what bwrap needs. The runner is disposable.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
-      - name: Build dabs onto PATH
-        run: go build -o /usr/local/bin/dabs .
+      - name: Install bun (the proxy egress engine's host-side runtime)
+        # Proxy egress starts a bun-run engine on the host; the e2e suite runs on
+        # the runner itself, so bun must be on the runner's PATH. openssl (leaf
+        # cert minting) ships with the ubuntu image.
+        run: |
+          curl -fsSL https://bun.sh/install | bash
+          echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
+
+      - name: Build dabs onto PATH (with the embedded forwarder)
+        # -tags withforwarder embeds the linux forwarder so proxy egress can
+        # materialize and mount it; without it proxy egress refuses at boot.
+        run: |
+          GOOS=linux GOARCH="$(go env GOARCH)" CGO_ENABLED=0 \
+            go build -o egressforwarder/forwarder/forward.bin ./egressforwarder/cmd/forward
+          go build -tags withforwarder -o /usr/local/bin/dabs .
         env:
           CGO_ENABLED: "0"
 

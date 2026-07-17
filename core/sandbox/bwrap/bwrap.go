@@ -8,8 +8,10 @@
 //
 // docker is used as the BUILDER only (Dockerfile → exported rootfs); it
 // never runs instances. Isolation is user-namespace level (config
-// isolation, not a security boundary): shared kernel, shared network, and
-// processes do not outlive their Run call.
+// isolation, not a security boundary): shared kernel, and processes do not
+// outlive their Run call. The network is shared under egress open, and
+// unshared (loopback only) under egress none/proxy — proxy reaches the host
+// proxy through a mounted unix socket, which is filesystem, not network.
 package bwrap
 
 import (
@@ -24,6 +26,7 @@ import (
 	"github.com/jjmerino/dabs/core/sandbox"
 	"github.com/jjmerino/dabs/core/sandbox/clidriver"
 	"github.com/jjmerino/dabs/core/sandbox/execx"
+	"github.com/jjmerino/dabs/egressforwarder/forwarder"
 )
 
 // Driver stores images and instances under root (~/.dabs).
@@ -63,6 +66,12 @@ type instanceMeta struct {
 	Workdir string          `json:"workdir"`
 	Env     []string        `json:"env"`    // K=V, image env merged with spec env
 	Mounts  []sandbox.Mount `json:"mounts"` // live host paths bound into the box
+	// Egress and ProxySock replay the Spec's egress on every enter — the box
+	// has no long-lived process, so the network decision is re-applied per
+	// Run/Exec. A meta.json without these fields decodes to open.
+	Egress       string `json:"egress,omitempty"`
+	ProxySock    string `json:"proxySock,omitempty"`
+	ForwarderBin string `json:"forwarderBin,omitempty"` // host path of the forwarder binary to mount
 }
 
 // Build runs `docker build` on the manifest's Dockerfile, then exports the
@@ -157,7 +166,7 @@ func (d Driver) Up(spec sandbox.Spec) (string, error) {
 	// DABS_NAME marks the box: anything running inside can detect it is
 	// sandboxed.
 	env = append(env, "DABS_NAME="+instance)
-	meta := instanceMeta{Workdir: spec.Workdir, Env: env, Mounts: spec.Mounts}
+	meta := instanceMeta{Workdir: spec.Workdir, Env: env, Mounts: spec.Mounts, Egress: spec.Egress, ProxySock: spec.ProxySock, ForwarderBin: spec.ForwarderBin}
 	if err := writeJSON(filepath.Join(dir, "meta.json"), meta); err != nil {
 		return "", err
 	}
@@ -184,10 +193,18 @@ func (d Driver) enter(instance string, cmd []string) (*exec.Cmd, error) {
 		"--chdir", meta.Workdir,
 		"--clearenv",
 	}
-	// docker export does not carry the runtime-injected resolv.conf, so the
-	// box's copy is empty and DNS (package installs, downloads) would fail.
-	// The network is shared with the host anyway; share its DNS config too.
-	if _, err := os.Stat("/etc/resolv.conf"); err == nil {
+	restricted := meta.Egress == sandbox.EgressNone || meta.Egress == sandbox.EgressProxy
+	if restricted {
+		// None and proxy both start from a box with no network — loopback only.
+		// Proxy's way out is the host socket bound below: a unix socket crosses
+		// the netns because it is filesystem, not network.
+		args = append(args, "--unshare-net")
+	} else if _, err := os.Stat("/etc/resolv.conf"); err == nil {
+		// docker export does not carry the runtime-injected resolv.conf, so the
+		// box's copy is empty and DNS (package installs, downloads) would fail.
+		// The network is shared with the host under egress open; share its DNS
+		// config too. A restricted box has no resolver to reach — names resolve
+		// at the proxy (HTTP CONNECT), or not at all.
 		args = append(args, "--ro-bind", "/etc/resolv.conf", "/etc/resolv.conf")
 	}
 	// Live host mounts: writes pass through to the host and outlive the box.
@@ -197,6 +214,16 @@ func (d Driver) enter(instance string, cmd []string) (*exec.Cmd, error) {
 			bind = "--ro-bind"
 		}
 		args = append(args, bind, m.Host, m.Path)
+	}
+	if meta.Egress == sandbox.EgressProxy {
+		// The host proxy's socket and the single-purpose forwarder binary land
+		// read-only at the forwarder's fixed paths — bound AFTER the recipe
+		// mounts, since bwrap binds in argv order and a recipe source at /run
+		// listed later would silently mask them. The forwarder is a static linux
+		// binary dabs materialized from its embedded copy.
+		args = append(args,
+			"--ro-bind", meta.ProxySock, forwarder.SockPath,
+			"--ro-bind", meta.ForwarderBin, forwarder.ForwardPath)
 	}
 	haveHome := false
 	for _, kv := range meta.Env {
@@ -214,6 +241,12 @@ func (d Driver) enter(instance string, cmd []string) (*exec.Cmd, error) {
 	// state (the point of a fresh machine) lands in /.
 	if !haveHome {
 		args = append(args, "--setenv", "HOME", "/root")
+	}
+	// The box has no long-lived process, so under proxy egress the forwarder
+	// brackets each entered command: it binds the loopback listener, then runs
+	// the command as its child for exactly as long as the command lives.
+	if meta.Egress == sandbox.EgressProxy && len(cmd) > 0 {
+		cmd = forwarder.WrapCommand(cmd)
 	}
 	// End bwrap's own option parsing before the box command. Without this a
 	// command whose first token starts with '-' (e.g. `exec box -- --version`)
@@ -368,6 +401,12 @@ func (d Driver) HasImage(name string) (bool, error) {
 
 // Kind identifies this driver.
 func (Driver) Kind() string { return "bwrap" }
+
+// CheckEgress reports nil for both modes. None is one namespace flag; proxy
+// additionally mounts a forwarder binary into the box, which dabs materializes
+// from its embedded copy — the linux host makes it directly runnable in the box.
+// bwrap can always enforce both.
+func (Driver) CheckEgress(mode string) error { return nil }
 
 // Images lists the built image rootfs trees under <root>/images. Each is a
 // directory a Build produced; its size is the whole tree, since that is what a

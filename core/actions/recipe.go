@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/jjmerino/dabs/core/params"
+	"github.com/jjmerino/dabs/core/proxy"
 	"github.com/jjmerino/dabs/core/recipe"
 	"github.com/jjmerino/dabs/core/sandbox"
 	"github.com/jjmerino/dabs/core/tui"
@@ -616,6 +617,41 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID, tip string, rec re
 			mounts = append(mounts, sandbox.Mount{Host: rs.origin, Path: s.Path, RO: s.RO})
 		}
 	}
+	// A non-empty proxies chain makes the engine's socket the box's only way out:
+	// start it, mount its CA, point the box's HTTP_PROXY at the in-box forwarder.
+	// The engine runs for the box's lifetime; its PID/dir are recorded on the box
+	// node below so the box's down path (teardown or `dabs rm`) reaps it.
+	// Egress is chosen by the recipe's mode (default open = full outbound): open
+	// leaves the box's network alone, none cuts it entirely, proxy routes it
+	// through the recipe's proxies chain (the driver enforces none/proxy). The
+	// recipe validator already guaranteed the mode↔chain consistency.
+	env := rec.Env
+	egressMode, proxySock, forwarderBin := "", "", ""
+	proxyPID, proxyDir := 0, ""
+	switch rec.EgressMode() {
+	case recipe.EgressProxy:
+		p, perr := proxy.Provision(drv, recipeName, rec.Egress.Proxy, rec.Env, r.expandPath)
+		if perr != nil {
+			return "", perr
+		}
+		env = p.Env
+		mounts = append(mounts, p.Mounts...)
+		egressMode, proxySock, forwarderBin = sandbox.EgressProxy, p.Socket, p.ForwarderBin
+		proxyPID, proxyDir = p.PID, p.Dir
+		// The engine is live now but the box node that carries its PID/dir is not
+		// written until the box is up. If any step between here and writeNode fails
+		// (drv.Up, the smoke check, writeNode itself), nothing else can reap the
+		// engine — no node records it. Reap it on a failed return.
+		defer func() {
+			if err != nil {
+				proxy.Reap(proxyPID, proxyDir)
+			}
+		}()
+	case recipe.EgressNone:
+		egressMode = sandbox.EgressNone // driver cuts the box's network
+	case recipe.EgressOpen:
+		egressMode = sandbox.EgressOpen // full outbound; nothing to provision
+	}
 	sortMountsByDepth(mounts)
 
 	workdir := rec.Workdir
@@ -628,21 +664,24 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID, tip string, rec re
 	if _, ok := rec.Env["PATH"]; ok {
 		fmt.Fprintln(os.Stderr, tui.Warn("recipe %q sets PATH in env, which REPLACES the image PATH — commands in the box may not resolve", recipeName))
 	}
-	instance, err = drv.Up(sandbox.Spec{Name: image, Workdir: workdir, Env: rec.Env, Mounts: mounts})
+	instance, err = drv.Up(sandbox.Spec{Name: image, Workdir: workdir, Env: env, Mounts: mounts, Egress: egressMode, ProxySock: proxySock, ForwarderBin: forwarderBin})
 	if err != nil {
 		return "", err
 	}
 
 	// Mark the box: the node was named before the box came up (its spaces had to
-	// exist to be mounted), so record which sandbox it turned out to be.
-	if err := r.writeNode(Node{
+	// exist to be mounted), so record which sandbox it turned out to be. A proxy
+	// engine's PID/dir ride along so the box's down path can reap it.
+	box := Node{
 		ID:       boxID,
 		Kind:     KindBox,
 		Parent:   tip,
 		Recipe:   recipeName,
 		Created:  stampNow(),
 		Instance: instance,
-	}); err != nil {
+	}
+	box.ProxyPID, box.ProxyDir = proxyPID, proxyDir
+	if err := r.writeNode(box); err != nil {
 		return "", err
 	}
 
@@ -747,14 +786,16 @@ func rebaseImagePaths(reg *recipe.Registry, dir string) {
 }
 
 // rebaseSourcePaths anchors each recipe's RELATIVE source origins (mount/copy/
-// worktree) to dir, for a dabs.yaml loaded BY PATH — the same rule
-// rebaseImagePaths applies to its image, so `dabs recipe path/to/box --detach` provisions the
-// same box from any cwd. Absolute origins, `~`/`$VAR` origins (expanded later),
-// and `perbox:` labels are left alone.
+// worktree) AND its proxy hook `module:` paths to dir, for a dabs.yaml loaded BY
+// PATH — the same rule rebaseImagePaths applies to its image, so `dabs recipe
+// path/to/box --detach` provisions the same box from any cwd. Absolute origins,
+// `~`/`$VAR` origins (expanded later), and `perbox:` labels are left alone.
 //
 // Registry recipes (bundled, ~/.dabs/recipes.yaml, ./dabs.yaml) are NOT rebased:
 // their relative origins stay cwd-relative, which is what `mount: .` = "your
-// cwd, live" means. For a project ./dabs.yaml the two are the same directory.
+// cwd, live" means. For a project ./dabs.yaml the two are the same directory. A
+// proxy module resolves exactly like a source: alongside a dabs.yaml run by
+// path, cwd-relative for a project ./dabs.yaml you invoke from its own root.
 func rebaseSourcePaths(reg *recipe.Registry, dir string) {
 	rebase := func(p string) string {
 		if !isHostRelative(p) {
@@ -771,6 +812,14 @@ func rebaseSourcePaths(reg *recipe.Registry, dir string) {
 			srcs[i].Worktree = rebase(srcs[i].Worktree)
 		}
 		rec.Sources = srcs
+		if hops := rec.Egress.Proxy; len(hops) > 0 {
+			rebased := make([]recipe.ProxyHop, len(hops))
+			copy(rebased, hops)
+			for i := range rebased {
+				rebased[i].Module = rebase(rebased[i].Module)
+			}
+			rec.Egress = recipe.Egress{Mode: rec.Egress.Mode, Proxy: rebased}
+		}
 		reg.Recipes[n] = rec
 	}
 }

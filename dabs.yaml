@@ -95,13 +95,14 @@ recipes:
         - tls: originate
     sources:
       # The WHOLE config dir, persistent and shared by every confined box — its
-      # OWN dir, never your real ~/.dabs/shared/claude. This is what carries
-      # settings.json, onboarding state, theme AND the DUMMY creds across boxes,
-      # so a box onboards once, not every time. It only ever holds dummies: the
-      # broker's inbound real→dummy scrub guarantees the real token never lands
-      # here (it lives only in the host vault). Seed it once with the dummy creds
-      # (util/reinstall.sh, or copy contrib/proxy/creds-inject-anthropic/dummy-credentials.json in) so
-      # the first box needs no login either; an EMPTY dir just means one /login.
+      # OWN dir, never your real ~/.dabs/shared/claude. It carries settings.json,
+      # onboarding state, theme AND the creds across boxes, so a box onboards
+      # once, not every time. It starts EMPTY (logged out): the first box does one
+      # /login, and the broker writes back a creds file that holds the DUMMY
+      # tokens but Anthropic's REAL metadata (scopes, subscriptionType, expiresAt)
+      # — the scrub rewrites only the token strings. From then on every box is
+      # authenticated, and a refresh keeps expiresAt honest. The real token lives
+      # only in the host vault; this dir only ever holds dummies.
       - mkmount: ~/.dabs/shared/confined-claude
         path: /root/.claude
       # Per-place session transcripts, nested over the shared config dir — they

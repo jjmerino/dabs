@@ -17,9 +17,9 @@ RUN CGO_ENABLED=0 go build -o /forward ./egressforwarder/cmd/forward
 FROM dabs-claude
 COPY --from=fwd /forward /run/dabs/forward
 
-# The DUMMY credentials are NOT baked here: the recipe mounts a persistent
-# ~/.dabs/shared/confined-claude over /root/.claude (so settings, onboarding and
-# the dummy creds all persist across boxes), and a dir mount would mask a baked
-# file anyway. That shared dir is seeded with contrib/proxy/creds-inject-anthropic/dummy-credentials.json;
-# an unseeded dir just means the first box does one /login (the broker captures
-# the real token to the host vault and writes a dummy back).
+# No credentials are baked or seeded. The recipe mounts a persistent
+# ~/.dabs/shared/confined-claude over /root/.claude (settings, onboarding, creds
+# persist across boxes); it starts empty, so the first box does one /login. The
+# broker captures the real token to the host vault and writes back a creds file
+# holding dummy tokens but Anthropic's real metadata — no invented scopes,
+# subscription, or expiry.

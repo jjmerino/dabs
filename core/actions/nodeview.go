@@ -8,7 +8,6 @@ package actions
 // again. The split is the point: deciding is separate from drawing.
 
 import (
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -26,6 +25,7 @@ const (
 	CellHolds                // "●"  space holds files a reap would lose
 	CellLive                 // box:      running
 	CellGone                 // box:      gone (no live instance)
+	CellUnknown              // box:      unconfirmed — a driver could not answer
 	CellNoDiff               // worktree: no unreviewed work
 	CellUnmerged             // worktree: commits ahead of the base branch
 	CellHasWork              // worktree: uncommitted/untracked work, nothing ahead
@@ -43,6 +43,8 @@ func (c Cell) Symbol() string {
 		return "live"
 	case CellGone:
 		return "gone"
+	case CellUnknown:
+		return "(error: no driver)"
 	case CellNoDiff:
 		return "no-diff"
 	case CellUnmerged:
@@ -61,7 +63,7 @@ func (c Cell) String() string { return c.Symbol() }
 type NodeView struct {
 	ID       string
 	Kind     NodeKind
-	Where    string // the "where": cwd (project) / on-disk folder (workdir, worktree) / instance (box)
+	Where    string // the node's own dir (~/.dabs/nodes/<id>); a box appends its instance name
 	Volume   Cell   // CellEmpty / CellHolds
 	Held     Cell
 	Tmp      Cell
@@ -108,6 +110,25 @@ func (r Real) viewNodes(nodes []Node, state map[string]boxState) []*NodeView {
 	return roots
 }
 
+// markStateUnknown flips every gone box cell across a view forest to
+// CellUnknown — for a view built from an INCOMPLETE drivers' answer, where a
+// box absent from the state map is unconfirmed, not proven gone. The listing
+// still renders; only the state column admits what could not be checked.
+func markStateUnknown(views []*NodeView) {
+	var walk func(v *NodeView)
+	walk = func(v *NodeView) {
+		if v.Kind == KindBox && v.State == CellGone {
+			v.State = CellUnknown
+		}
+		for _, c := range v.Children {
+			walk(c)
+		}
+	}
+	for _, v := range views {
+		walk(v)
+	}
+}
+
 // viewNode resolves one node's cells. Spaces are always local; box liveness
 // comes only from the passed map; worktree state comes from local git.
 func (r Real) viewNode(n Node, state map[string]boxState) *NodeView {
@@ -119,55 +140,33 @@ func (r Real) viewNode(n Node, state map[string]boxState) *NodeView {
 		Tmp:    r.spaceCell(n.ID, SpaceTmp),
 		State:  CellNA,
 	}
+	// WHERE is ONE uniform path per node: its own dir under ~/.dabs/nodes/<id>
+	// (tilde-abbreviated), whatever the kind — the same path `dabs cd` prints.
+	// The work content sits inside it as subdirectories (held/worktree,
+	// held/work).
+	v.Where = tilde(r.nodeDir(n))
 	switch n.Kind {
 	case KindBox:
-		// A box marks a sandbox, but its bytes still live somewhere: the node dir
-		// under ~/.dabs/nodes/<id> holds its volume/held/tmp spaces. WHERE
-		// points there (tilde-abbreviated) so a box's on-disk location is as
-		// discoverable as a place's; the driver INSTANCE name — the running box —
-		// rides alongside so users still see it and rm/exec still resolve it.
-		where := tilde(r.boxNodeDir(n))
+		// The driver INSTANCE name — the running box — rides alongside so
+		// users still see it and rm/exec still resolve it.
 		if n.Instance != "" {
-			where += "  (" + n.Instance + ")"
+			v.Where += "  (" + n.Instance + ")"
 		}
-		v.Where = where
 		if _, live := state[n.Instance]; live {
 			v.State = CellLive
 		} else {
 			v.State = CellGone
 		}
 	case KindWorktree:
-		v.Where = tilde(r.nodeFolder(n))
 		v.State = r.worktreeState(n)
-	case KindWorkdir:
-		v.Where = tilde(r.nodeFolder(n))
-	default: // project
-		v.Where = tilde(n.Dir)
 	}
 	return v
 }
 
-// nodeFolder is where a node's working bytes actually live on disk — a
-// worktree's checkout, a workdir's copy — resolved from the node's own storage
-// rather than a recorded source path, which for a workdir is its parent project.
-// It falls back to the recorded Dir (a live mount's target has no node-local
-// copy).
-func (r Real) nodeFolder(n Node) string {
-	if data, err := r.resolveNodeData(n.ID); err == nil && r.dataExists(data) {
-		return data
-	}
-	if held, err := r.resolveHeldSpace(n.ID); err == nil {
-		if work := filepath.Join(held, "work"); r.dataExists(work) {
-			return work
-		}
-	}
-	return n.Dir
-}
-
-// boxNodeDir is the directory a box node's bytes live in — its own node dir,
-// which holds the volume/held/tmp spaces. It falls back to the node id when
-// the dir cannot be resolved, so a box row always says something locatable.
-func (r Real) boxNodeDir(n Node) string {
+// nodeDir is a node's own directory — ~/.dabs/nodes/<id>, which holds the
+// volume/held/tmp spaces. It falls back to the node id when the dir cannot be
+// resolved, so a row always says something locatable.
+func (r Real) nodeDir(n Node) string {
 	if dir, err := r.resolveNodeDir(n.ID); err == nil {
 		return dir
 	}
@@ -204,11 +203,19 @@ func (r Real) heldCell(id string) Cell {
 }
 
 // worktreeState reads a worktree's git state into the SAME three-value
-// vocabulary `worktrees ls` prints (see worktreeJudgment). A git error leaves
-// the state unknown rather than guessing.
+// vocabulary `worktrees ls` prints (see worktreeJudgment). The checkout is the
+// node's held one for a worktree dabs cut, or Dir for an externally-managed
+// marker. A git error leaves the state unknown rather than guessing.
 func (r Real) worktreeState(n Node) Cell {
-	path, err := r.resolveNodeData(n.ID)
-	if err != nil {
+	path := n.Dir
+	if n.Worktree != nil {
+		var err error
+		path, err = r.resolveNodeData(n.ID)
+		if err != nil {
+			return CellNA
+		}
+	}
+	if path == "" {
 		return CellNA
 	}
 	_, dirty, ahead, err := r.data.GitState(path)
@@ -422,6 +429,8 @@ func styleState(c Cell) string {
 		return ""
 	case CellLive, CellUnmerged, CellHasWork:
 		return tui.Accent(c.Symbol())
+	case CellUnknown:
+		return tui.Warn("%s", c.Symbol())
 	default:
 		return tui.Muted(c.Symbol())
 	}

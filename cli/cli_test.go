@@ -38,19 +38,20 @@ func TestFlagRowsSingleCharUsesOneDash(t *testing.T) {
 // fakeActions records every delegation so tests can assert the cli parsed
 // argv into the right action call with the right params.
 type fakeActions struct {
-	build  []params.Build
-	exec   []params.Exec
-	ls     []params.Ls
-	rm     []params.Rm
-	prune  []params.Prune
-	recipe []params.Recipe
-	cd     []params.Cd
-	err    error // returned from every action
+	build   []params.Build
+	exec    []params.Exec
+	ls      []params.Ls
+	rm      []params.Rm
+	prune   []params.Prune
+	recipe  []params.Recipe
+	recipes []params.Recipes
+	cd      []params.Cd
+	err     error // returned from every action
 }
 
 func (f *fakeActions) Build(p params.Build) error               { f.build = append(f.build, p); return f.err }
 func (f *fakeActions) Recipe(p params.Recipe) error             { f.recipe = append(f.recipe, p); return f.err }
-func (f *fakeActions) Recipes(params.Recipes) error             { return f.err }
+func (f *fakeActions) Recipes(p params.Recipes) error           { f.recipes = append(f.recipes, p); return f.err }
 func (f *fakeActions) Worktrees(params.Worktrees) error         { return f.err }
 func (f *fakeActions) Cd(p params.Cd) error                     { f.cd = append(f.cd, p); return f.err }
 func (f *fakeActions) Exec(p params.Exec) error                 { f.exec = append(f.exec, p); return f.err }
@@ -67,6 +68,33 @@ func TestRunDelegatesToActions(t *testing.T) {
 		args []string
 		want func(t *testing.T, f *fakeActions)
 	}{
+		{
+			name: "cd takes exactly one node",
+			args: []string{"cd", "boxy"},
+			want: func(t *testing.T, f *fakeActions) {
+				if len(f.cd) != 1 || f.cd[0] != (params.Cd{Node: "boxy"}) {
+					t.Errorf("got %+v, want one Cd{Node:boxy}", f.cd)
+				}
+			},
+		},
+		{
+			name: "recipes --print with a name prints that recipe",
+			args: []string{"recipes", "--print", "sh"},
+			want: func(t *testing.T, f *fakeActions) {
+				if len(f.recipes) != 1 || f.recipes[0] != (params.Recipes{Print: true, Name: "sh"}) {
+					t.Errorf("got %+v, want one Recipes{Print:true Name:sh}", f.recipes)
+				}
+			},
+		},
+		{
+			name: "recipes --print after the name still binds it",
+			args: []string{"recipes", "sh", "--print"},
+			want: func(t *testing.T, f *fakeActions) {
+				if len(f.recipes) != 1 || f.recipes[0] != (params.Recipes{Print: true, Name: "sh"}) {
+					t.Errorf("got %+v, want one Recipes{Print:true Name:sh}", f.recipes)
+				}
+			},
+		},
 		{
 			name: "build with a recipe name",
 			args: []string{"build", "m"},
@@ -367,5 +395,31 @@ func TestNoCommandIsDetach(t *testing.T) {
 		if len(f.recipe) != 1 || !f.recipe[0].Detach {
 			t.Fatalf("recipe m %s: got %+v, want Detach:true", flag, f.recipe)
 		}
+	}
+}
+
+// CONTRACT: every command answers a leading -h/--help WITHOUT touching its
+// actions — main serves per-command help before any driver is built, over a
+// nil Actions, and this is what makes that safe.
+func TestCommandHelpNeedsNoActions(t *testing.T) {
+	for name := range Commands {
+		for _, flag := range []string{"-h", "--help"} {
+			err := New(nil).Run([]string{name, flag})
+			if _, ok := err.(HelpRequestedError); !ok {
+				t.Errorf("%s %s over nil actions = %v, want HelpRequestedError", name, flag, err)
+			}
+		}
+	}
+	if err := New(nil).Run(nil); (err != NoCommandError{}) {
+		t.Errorf("bare run over nil actions = %v, want NoCommandError", err)
+	}
+}
+
+// CONTRACT: a recipe name for `recipes` goes with --print; bare `recipes sh`
+// stays a usage error rather than guessing.
+func TestRecipesNameWithoutPrintRejected(t *testing.T) {
+	err := New(&fakeActions{}).Run([]string{"recipes", "sh"})
+	if _, ok := err.(BadArgsError); !ok {
+		t.Fatalf("recipes sh = %v, want BadArgsError", err)
 	}
 }

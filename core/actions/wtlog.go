@@ -181,9 +181,16 @@ func (r Real) liveByWorktree() map[string]string {
 	if err != nil {
 		return nil
 	}
+	// The drivers are asked only when the journal actually claims a live box:
+	// with none, there is nothing to confirm, and the listing stays fully
+	// driverless.
+	live := liveBoxes(entries)
+	if len(live) == 0 {
+		return nil
+	}
 	alive := r.fleetInstances()
 	byWt := map[string]string{}
-	for inst, wt := range liveBoxes(entries) {
+	for inst, wt := range live {
 		if alive[inst] {
 			byWt[wt] = inst
 		}

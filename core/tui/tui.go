@@ -47,6 +47,9 @@ func Confirm(prompt string) bool {
 		fmt.Fprintln(os.Stderr, prompt)
 		fmt.Fprint(os.Stderr, "Proceed? [y/N] ")
 		line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+		// Piped stdin echoes nothing, so the prompt line is still open — close
+		// it, or whatever prints next runs into "Proceed? [y/N] ".
+		fmt.Fprintln(os.Stderr)
 		if err != nil {
 			return false // no answer (EOF / not a terminal) is a no — default-deny
 		}

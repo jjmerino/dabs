@@ -37,9 +37,9 @@ type cmdDoc struct{ Help, Args string }
 var commandDocs = map[string]cmdDoc{
 	"build":     {"build a recipe's box image: build [recipe|path] (no name → dabs.yaml default). A boot rebuilds automatically when the Dockerfile or a bundled image's files change; a change only to build-context files a `COPY .` pulls in is not detected — run `dabs prune` then build to pick it up", "build [recipe|path]"},
 	"recipe":    {"run a recipe box: recipe [name] [cmd…] (unknown/omitted name → the default recipe, else sh, with the cmd appended); --worktree <wt> binds an existing worktree (git works in-box); --name <n> names the node the boot creates (unique; an inactive holder is reaped); --no-command boots a NEW box and runs no command (--detach: unstable alias — may later mean a true background detach)", "recipe [name] [cmd… | --no-command] [--worktree <wt>] [--name <n>]"},
-	"recipes":   {"list the known recipes, one line each: name and description (--print dumps the bundled YAML, sources and all)", "recipes [--print]"},
+	"recipes":   {"list the known recipes, one line each: name, description, and origin (bundled | global ~/.dabs/recipes.yaml | project ./dabs.yaml). --print dumps the full merged registry as YAML, sources and all, marking each recipe's origin; --print <name> dumps just that recipe", "recipes [--print [name]]"},
 	"worktrees": {"inspect worktree nodes (reap with `dabs rm <name>` or `dabs rm --clean-worktrees`): worktrees [ls | diff <name>]", "worktrees [ls | diff <name>]"},
-	"cd":        {"print a node's directory (the WHERE `ls` shows) as a bare path — shells cannot be moved by a child process, so: cd \"$(dabs cd <node>)\"", "cd <node>"},
+	"cd":        {"print a node's own directory — ~/.dabs/nodes/<id>, the WHERE `ls` shows, one uniform path for every kind — as a bare path; shells cannot be moved by a child process, so: cd \"$(dabs cd <node>)\". The three spaces live as subdirectories inside it: volume/ survives `rm --keep`, held/ carries work you would miss (a worktree's checkout, a workdir's copy — `rm` asks before reaping), tmp/ is scratch `rm` reaps quietly", "cd <node>"},
 	"exec":      {"run a command inside a box: exec <node> -- <cmd…> for an exact argv, or exec <node> <shell…> for a `sh -c` line (pipes/globs/&&)", "exec <node> [--] <cmd…>"},
 	"ls":        {"list the active subtrees dabs owns, as a tree (--inactive: show only the inactive ones instead)", "ls [--inactive]"},
 	"rm":        {"stop a box and remove its node and what it holds (--keep keeps the record instead; --clean-worktrees sweeps every worktree with no unreviewed work; --inactive sweeps every inactive subtree): rm <node> [-y] [--keep] [--volume] [--multiple] [--dry] [--force] | rm --clean-worktrees [--force] [--dry] | rm --inactive [--dry]", "rm <node> [-y] [--keep] [--volume] [--multiple] [--dry] [--force] | rm --clean-worktrees [--force] [--dry] | rm --inactive [--dry]"},
@@ -151,17 +151,28 @@ func (c *CLI) runCd(args []string) error {
 func (c *CLI) runRecipes(args []string) error {
 	if wantsHelp(args) {
 		fs := newFlagSet("recipes")
-		fs.Bool("print", false, "print each recipe's resolved manifest, not just its name")
+		fs.Bool("print", false, "print the full merged registry (bundled + ~/.dabs/recipes.yaml + ./dabs.yaml) as YAML, marking each recipe's origin; `--print <name>` prints one recipe")
 		return HelpRequestedError{helpText("recipes", fs)}
 	}
 	p := params.Recipes{}
+	var rest []string
 	for _, a := range args {
-		switch a {
-		case "--print":
+		switch {
+		case a == "--print":
 			p.Print = true
+		case strings.HasPrefix(a, "-"):
+			return BadArgsError{Cmd: "recipes", Reason: "usage: recipes [--print [name]]"}
 		default:
-			return BadArgsError{Cmd: "recipes", Reason: "usage: recipes [--print]"}
+			rest = append(rest, a)
 		}
+	}
+	// A recipe name is only meaningful with --print (the listing already shows
+	// every name); flag order is free, so `recipes sh --print` works too.
+	if len(rest) > 1 || (len(rest) == 1 && !p.Print) {
+		return BadArgsError{Cmd: "recipes", Reason: "usage: recipes [--print [name]]"}
+	}
+	if len(rest) == 1 {
+		p.Name = rest[0]
 	}
 	return c.actions.Recipes(p)
 }

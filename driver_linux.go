@@ -7,6 +7,10 @@ import (
 	"github.com/jjmerino/dabs/core/sandbox/bwrap"
 )
 
+// localKind is this platform's driver identity, answerable before the driver
+// is built — the lazy wrapper serves Kind() from it.
+const localKind = "bwrap"
+
 // localDriver is this platform's sandbox driver. Foreign-platform drivers
 // are never compiled into this binary.
 func localDriver() (sandbox.Driver, error) {

@@ -100,7 +100,7 @@ func (r Real) reapInactiveHolder(name string, nodes []Node) error {
 			return fmt.Errorf("--name %q: a node holds that name and a driver did not answer — cannot verify it is inactive", name)
 		}
 	}
-	active, _ := r.activeSubtrees(nodes, ans.state)
+	active, _ := r.activeSubtrees(nodes, ans.state, ans.complete, r.foreignWorktrees(nodes))
 	if active[name] {
 		return fmt.Errorf("--name %q: an active node holds that name (see dabs ls) — pick another, or reap it first", name)
 	}

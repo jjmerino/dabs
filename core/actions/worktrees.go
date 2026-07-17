@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 
 	"github.com/jjmerino/dabs/core/params"
 	"github.com/jjmerino/dabs/core/tui"
@@ -59,9 +60,31 @@ func (r Real) Worktrees(p params.Worktrees) error {
 
 	case "diff":
 		if p.Name == "" {
-			return fmt.Errorf("worktrees diff: a worktree name is required")
+			return fmt.Errorf("worktrees diff: a worktree name is required (see dabs worktrees ls)")
 		}
-		path, err := r.resolveNodeData(p.Name)
+		// The name resolves git-style against the node records — the same
+		// exact-then-prefix rule cd/exec/rm use — so a bad name is a clean
+		// refusal here, never a raw git error over an internal path.
+		nodes, err := r.listNodes()
+		if err != nil {
+			return err
+		}
+		hits := matchNodes(p.Name, nodes)
+		if len(hits) == 0 {
+			return fmt.Errorf("worktrees diff: no node %q (see dabs ls)", p.Name)
+		}
+		if len(hits) > 1 {
+			var ids []string
+			for _, h := range hits {
+				ids = append(ids, h.ID)
+			}
+			return fmt.Errorf("worktrees diff: %q matches %d nodes (%s) — name one", p.Name, len(hits), strings.Join(ids, ", "))
+		}
+		n := hits[0]
+		if n.Worktree == nil {
+			return fmt.Errorf("worktrees diff: %q is not a worktree node (see dabs worktrees ls)", n.ID)
+		}
+		path, err := r.resolveNodeData(n.ID)
 		if err != nil {
 			return err
 		}

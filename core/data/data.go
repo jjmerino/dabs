@@ -33,6 +33,11 @@ type Data interface {
 	// human can read it.
 	CopyDir(src, dst string) error
 
+	// EvalSymlinks resolves a path's symlinks to its canonical form, for
+	// identity comparisons — two paths naming one directory must compare
+	// equal. Errors when the path cannot be resolved (absent, permission).
+	EvalSymlinks(path string) (string, error)
+
 	// --- environment ---
 	Getenv(key string) string
 	// Getwd is the process working directory. Actions resolve relative paths
@@ -70,6 +75,10 @@ type Data interface {
 	GitLanded(worktree string) (bool, error)
 	// GitRemoveWorktree removes the worktree and deletes its branch.
 	GitRemoveWorktree(worktree string) error
+	// GitListWorktrees returns the paths of top's LINKED git worktrees — every
+	// checkout the repo's registry knows besides the main one — whoever cut
+	// them. An error (no git binary, not a repo) means the answer is unknown.
+	GitListWorktrees(top string) ([]string, error)
 	// GitCommonDir returns the absolute path of the shared object store (the
 	// parent repo's .git) backing a linked worktree — what `--worktree` must also
 	// mount so git resolves inside the box.

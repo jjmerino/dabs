@@ -67,6 +67,8 @@ func (f *vFakeData) Getwd() (string, error)                       { return "", n
 func (f *vFakeData) LookupEnv(string) (string, bool)              { return "", false }
 func (f *vFakeData) ExpandEnv(s string) string                    { return s }
 func (f *vFakeData) GitToplevel(string) (string, error)           { return "", fs.ErrNotExist }
+func (f *vFakeData) GitListWorktrees(string) ([]string, error)    { return nil, fs.ErrNotExist }
+func (f *vFakeData) EvalSymlinks(string) (string, error)          { return "", fs.ErrNotExist }
 func (f *vFakeData) GitHasCommits(string) bool                    { return false }
 func (f *vFakeData) GitAddWorktree(string, string, string) error  { return nil }
 func (f *vFakeData) GitDiff(string) (string, error)               { return "", nil }
@@ -202,9 +204,10 @@ func TestViewNodesWorktreeState(t *testing.T) {
 	if byID["wt-clean"].State != CellNoDiff {
 		t.Errorf("clean worktree State = %v, want CellNoDiff", byID["wt-clean"].State)
 	}
-	// Where points at the checkout folder on disk, not a recorded source.
-	if !strings.Contains(byID["wt-dirty"].Where, "wt-dirty/held/worktree") {
-		t.Errorf("worktree Where = %q, want the checkout folder", byID["wt-dirty"].Where)
+	// Where is the node's own dir — one uniform path per node; the checkout
+	// sits inside it (held/worktree) — a literal subdirectory of the printed path.
+	if w := byID["wt-dirty"].Where; !strings.Contains(w, ".dabs/nodes/wt-dirty") || strings.Contains(w, "held/worktree") {
+		t.Errorf("worktree Where = %q, want the node dir itself", w)
 	}
 }
 
@@ -264,18 +267,17 @@ func TestRenderForestSanitizesUntrustedFields(t *testing.T) {
 	}
 }
 
-// A workdir's Where is its OWN on-disk folder (where the copy lives), not the
-// recorded source — which for a workdir is the parent project's directory. This
-// resolves from storage, so it is right even for records that stored the source.
-func TestViewNodesWorkdirWhereIsItsCopyFolder(t *testing.T) {
+// A workdir's Where is its own NODE dir — the uniform rule — never a recorded
+// source path, which for a workdir is the parent project's directory. The copy
+// sits inside the node dir (held/work) — a literal subdirectory of the printed path.
+func TestViewNodesWorkdirWhereIsItsNodeDir(t *testing.T) {
 	work := vBase + "wd/held/work"
 	fd := &vFakeData{statOK: map[string]bool{work: true}}
-	// Dir records the SOURCE (the project) — the pre-fix value; Where must not use it.
 	nodes := []Node{{ID: "wd", Kind: KindWorkdir, Dir: "/some/repo", Created: "1"}}
 
 	v := newViewReal(fd).viewNodes(nodes, nil)[0]
-	if !strings.Contains(v.Where, "wd/held/work") {
-		t.Errorf("workdir Where = %q, want its copy folder", v.Where)
+	if !strings.Contains(v.Where, ".dabs/nodes/wd") || strings.Contains(v.Where, "held/work") {
+		t.Errorf("workdir Where = %q, want its node dir", v.Where)
 	}
 	if strings.Contains(v.Where, "/some/repo") {
 		t.Errorf("workdir Where leaked the source path: %q", v.Where)

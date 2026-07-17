@@ -14,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	yaml "go.yaml.in/yaml/v2"
+
 	"github.com/jjmerino/dabs/core/params"
 	"github.com/jjmerino/dabs/core/proxy"
 	"github.com/jjmerino/dabs/core/recipe"
@@ -206,7 +208,7 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 	// Say what is about to run. A command that prints nothing until it finishes
 	// (an agent thinking, a long build) is indistinguishable from a hang without
 	// this line.
-	fmt.Fprintf(os.Stdout, "%s %s\n\n", tui.Muted("running:"), strings.Join(command, " "))
+	fmt.Fprintf(os.Stdout, "%s %s\n\n", tui.Muted("running:"), shellJoin(command))
 	if err := drv.Run(instance, command); err != nil {
 		return fmt.Errorf("recipe %q: %w", name, err)
 	}
@@ -859,18 +861,23 @@ func (r Real) resolveBuiltImage(drv sandbox.Driver, recipeName string, img recip
 	return r.ensureImage(drv, recipeName, img)
 }
 
-// Recipes lists the known recipes, one line each: the recipe name and its
-// description — so a user (or agent) can see what recipes exist at a glance.
+// Recipes lists the known recipes, one line each: the recipe name, its
+// description, and its origin — so a user (or agent) can see what recipes
+// exist, and which layer defined each, at a glance.
 func (r Real) Recipes(p params.Recipes) error {
-	// --print dumps the bundled recipes YAML — the authoring format, comments
-	// and all — so `~/.dabs/recipes.yaml` can be written without guessing.
-	if p.Print {
-		os.Stdout.Write(recipe.Bundled)
-		return nil
-	}
-	reg, err := r.loadRegistry()
+	reg, origins, err := r.loadRegistryOrigins()
 	if err != nil {
 		return err
+	}
+	// --print dumps the full MERGED registry — bundled, ~/.dabs/recipes.yaml
+	// and ./dabs.yaml, later winning — as YAML, each recipe under a comment
+	// naming its origin, so "what does recipe X mount?" is answerable from the
+	// CLI whichever layer defined X. A name prints just that recipe.
+	if p.Print {
+		return printRecipes(reg, origins, p.Name)
+	}
+	if p.Name != "" {
+		return fmt.Errorf("recipes: a name goes with --print (recipes --print %s)", p.Name)
 	}
 	names := reg.Names()
 	if len(names) == 0 {
@@ -889,9 +896,49 @@ func (r Real) Recipes(p params.Recipes) error {
 				desc += " " + tui.Badge("default")
 			}
 		}
-		rows = append(rows, []string{tui.Accent(n), desc})
+		rows = append(rows, []string{tui.Accent(n), desc, tui.Muted("%s", origins[n])})
 	}
 	fmt.Fprintln(os.Stdout, tui.Rows(nil, rows))
+	return nil
+}
+
+// originLabel names a registry layer for a human: which file to edit to change
+// the recipe.
+func originLabel(origin string) string {
+	switch origin {
+	case originGlobal:
+		return "global (~/.dabs/recipes.yaml)"
+	case originProject:
+		return "project (./dabs.yaml)"
+	default:
+		return originBundled
+	}
+}
+
+// printRecipes renders the merged registry (or one recipe of it) as YAML, each
+// recipe preceded by a comment naming the layer that defined it.
+func printRecipes(reg recipe.Registry, origins map[string]string, name string) error {
+	names := reg.Names()
+	if name != "" {
+		if _, ok := reg.Recipes[name]; !ok {
+			return fmt.Errorf("no recipe %q (known: %s)", name, strings.Join(names, ", "))
+		}
+		names = []string{name}
+	}
+	if reg.Default != "" && name == "" {
+		fmt.Fprintf(os.Stdout, "default: %s\n", reg.Default)
+	}
+	fmt.Fprintln(os.Stdout, "recipes:")
+	for _, n := range names {
+		b, err := yaml.Marshal(map[string]recipe.Recipe{n: reg.Recipes[n]})
+		if err != nil {
+			return fmt.Errorf("recipes: %s: %w", n, err)
+		}
+		fmt.Fprintf(os.Stdout, "  # %s\n", originLabel(origins[n]))
+		for _, line := range strings.Split(strings.TrimRight(string(b), "\n"), "\n") {
+			fmt.Fprintln(os.Stdout, "  "+line)
+		}
+	}
 	return nil
 }
 
@@ -915,8 +962,24 @@ func confirmRecipe(name string, rec recipe.Recipe, command []string) string {
 		}
 		fmt.Fprintf(&b, "  %-8s %s → %s\n", kind, origin, s.Path)
 	}
-	fmt.Fprintf(&b, "command: %s", strings.Join(command, " "))
+	fmt.Fprintf(&b, "command: %s", shellJoin(command))
 	return b.String()
+}
+
+// shellJoin renders an argv for human eyes with shell-style quoting, so the
+// token boundaries survive: `sh -c 'echo hi'` reads as three arguments, not
+// four. Args holding whitespace, shell metacharacters, or nothing at all are
+// single-quoted (embedded single quotes escaped the POSIX way).
+func shellJoin(argv []string) string {
+	quoted := make([]string, len(argv))
+	for i, a := range argv {
+		if a != "" && !strings.ContainsAny(a, " \t\n\"'`$&|;<>()*?[]#~\\") {
+			quoted[i] = a
+			continue
+		}
+		quoted[i] = "'" + strings.ReplaceAll(a, "'", `'\''`) + "'"
+	}
+	return strings.Join(quoted, " ")
 }
 
 type copyOp struct{ src, dest string }
@@ -925,27 +988,47 @@ type copyOp struct{ src, dest string }
 // instance can be journalled against the worktree's name and absolute path.
 type wtCut struct{ name, path string }
 
+// The three registry layers a recipe can come from, later winning by name.
+const (
+	originBundled = "bundled"
+	originGlobal  = "global"
+	originProject = "project"
+)
+
 // loadRegistry builds the effective registry: bundled defaults, overlaid by the
 // user's ~/.dabs/recipes.yaml, overlaid by the project's ./dabs.yaml. Later
 // sources win (recipes by name, and `default`). Missing files are fine.
 func (r Real) loadRegistry() (recipe.Registry, error) {
-	reg, err := recipe.Parse(recipe.Bundled)
-	if err != nil {
-		return recipe.Registry{}, fmt.Errorf("recipe: bundled registry: %w", err)
-	}
-	if home, err := r.data.HomeDir(); err == nil {
-		if err := r.mergeRecipeFile(&reg, filepath.Join(home, ".dabs", "recipes.yaml")); err != nil {
-			return reg, err
-		}
-	}
-	if err := r.mergeRecipeFile(&reg, "dabs.yaml"); err != nil { // project-local, cwd
-		return reg, err
-	}
-	return reg, nil
+	reg, _, err := r.loadRegistryOrigins()
+	return reg, err
 }
 
-// mergeRecipeFile overlays a recipes file onto reg if it exists.
-func (r Real) mergeRecipeFile(reg *recipe.Registry, path string) error {
+// loadRegistryOrigins is loadRegistry keeping the provenance: for each recipe
+// name, which layer defined the WINNING entry — bundled, global
+// (~/.dabs/recipes.yaml), or project (./dabs.yaml).
+func (r Real) loadRegistryOrigins() (recipe.Registry, map[string]string, error) {
+	reg, err := recipe.Parse(recipe.Bundled)
+	if err != nil {
+		return recipe.Registry{}, nil, fmt.Errorf("recipe: bundled registry: %w", err)
+	}
+	origins := make(map[string]string, len(reg.Recipes))
+	for n := range reg.Recipes {
+		origins[n] = originBundled
+	}
+	if home, err := r.data.HomeDir(); err == nil {
+		if err := r.mergeRecipeFile(&reg, origins, originGlobal, filepath.Join(home, ".dabs", "recipes.yaml")); err != nil {
+			return reg, origins, err
+		}
+	}
+	if err := r.mergeRecipeFile(&reg, origins, originProject, "dabs.yaml"); err != nil { // project-local, cwd
+		return reg, origins, err
+	}
+	return reg, origins, nil
+}
+
+// mergeRecipeFile overlays a recipes file onto reg if it exists, marking each
+// recipe it defines with the layer's origin.
+func (r Real) mergeRecipeFile(reg *recipe.Registry, origins map[string]string, origin, path string) error {
 	b, err := r.data.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
@@ -956,6 +1039,9 @@ func (r Real) mergeRecipeFile(reg *recipe.Registry, path string) error {
 	parsed, err := recipe.Parse(b)
 	if err != nil {
 		return fmt.Errorf("recipe: %s: %w", path, err)
+	}
+	for n := range parsed.Recipes {
+		origins[n] = origin
 	}
 	reg.Merge(parsed)
 	return nil
@@ -1275,9 +1361,19 @@ func isDotSource(s recipe.Source) bool {
 	return err == nil && origin == "."
 }
 
-// ensureProjectNode marks the directory a command ran from — the project, the
-// root of every chain and what `.` falls back to. Its Dir is the user's: dabs
-// records it and never reaps it.
+// ensureProjectNode marks the directory a command ran from — the root of the
+// chain and what `.` falls back to. Its Dir is the user's: dabs records it and
+// never reaps it.
+//
+// The marker's KIND is what the directory IS. A plain directory (or a repo's
+// main checkout) is a PROJECT. A LINKED git worktree is a WORKTREE: the marker
+// is kind worktree with Dir the checkout and no held checkout of its own (the
+// bytes are externally managed — dabs neither cut them nor reaps them, and rm's
+// unreviewed-work guard does not apply). Its parent is the repo's main-checkout
+// project when dabs tracks one, else it roots its own chain — the one place the
+// project → (workdir|worktree)? → box chain starts below a project. A stale
+// PROJECT record whose dir is a linked worktree (written by an older dabs) is
+// still reused as the chain root and reaps normally.
 //
 // It is created lazily, by commands that PROVISION something. A read-only
 // command (ls, recipes, worktrees) marks nothing, so ~/.dabs/nodes does not grow
@@ -1299,11 +1395,25 @@ func (r Real) ensureProjectNode(recipeName string) (string, error) {
 		return "", err
 	}
 	for _, n := range nodes {
-		if n.Kind == KindProject && n.Dir == cwd {
+		if n.Dir == cwd && (n.Kind == KindProject || (n.Kind == KindWorktree && n.Worktree == nil)) {
 			return n.ID, nil
 		}
 	}
-	// A project node's name is a pure function of the directory it marks, so
+	kind := KindProject
+	parent := ""
+	if top, terr := r.data.GitToplevel(cwd); terr == nil {
+		if cd, cerr := r.data.GitCommonDir(cwd); cerr == nil && filepath.Dir(cd) != top {
+			kind = KindWorktree
+			main := filepath.Dir(cd) // the common dir is <main checkout>/.git
+			for _, n := range nodes {
+				if n.Kind == KindProject && n.Dir == main {
+					parent = n.ID
+					break
+				}
+			}
+		}
+	}
+	// A chain-root node's name is a pure function of the directory it marks, so
 	// every boot racing in one directory computes the SAME name, and the
 	// exclusive create of that node dir is the lock: exactly one boot mints the
 	// node, the others find the dir taken and read the winner's record.
@@ -1329,11 +1439,12 @@ func (r Real) ensureProjectNode(recipeName string) (string, error) {
 				return n.ID, nil
 			}
 		}
-		return "", fmt.Errorf("project node %s: its dir exists but no readable record appeared", id)
+		return "", fmt.Errorf("node %s: its dir exists but no readable record appeared", id)
 	}
 	if err := r.writeNode(Node{
 		ID:      id,
-		Kind:    KindProject,
+		Kind:    kind,
+		Parent:  parent,
 		Recipe:  recipeName,
 		Created: stampNow(),
 		Dir:     cwd,

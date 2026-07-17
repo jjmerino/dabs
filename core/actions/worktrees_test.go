@@ -323,3 +323,37 @@ func TestWorktreeCleanSweepSkipsStrayEntries(t *testing.T) {
 		t.Fatalf("sweep should reap only the real node, removed %v", fd.removed)
 	}
 }
+
+// CONTRACT: `worktrees diff <name>` resolves the name git-style (unambiguous
+// prefix), like cd/exec/rm — a reviewer types the prefix `ls` showed.
+func TestWorktreesDiffResolvesPrefix(t *testing.T) {
+	fd := baseData()
+	data := seedWorktreeNode(fd, "wt-abcd", wtState{branch: "b"})
+	out := captureStdout(t, func() {
+		if err := newReal("", fd, &fakeDriver{}).Worktrees(params.Worktrees{Sub: "diff", Name: "wt-a"}); err != nil {
+			t.Fatalf("diff by prefix: %v", err)
+		}
+	})
+	if !strings.Contains(out, "diff of "+data) {
+		t.Fatalf("want the worktree's diff, got %q", out)
+	}
+}
+
+// CONTRACT: `worktrees diff` on a name that matches nothing, or on a node that
+// is not a worktree, is a clean refusal naming the problem — never a raw git
+// error over an internal path.
+func TestWorktreesDiffBadNamesRefuseCleanly(t *testing.T) {
+	fd := baseData()
+	seedWorktreeNode(fd, "wt-abcd", wtState{branch: "b"})
+	seedBoxNode(fd, "boxy", "inst-b")
+	r := newReal("", fd, &fakeDriver{})
+
+	err := r.Worktrees(params.Worktrees{Sub: "diff", Name: "ghost"})
+	if err == nil || !strings.Contains(err.Error(), `no node "ghost"`) || !strings.Contains(err.Error(), "dabs ls") {
+		t.Fatalf("missing name: want a no-node error pointing at dabs ls, got %v", err)
+	}
+	err = r.Worktrees(params.Worktrees{Sub: "diff", Name: "boxy"})
+	if err == nil || !strings.Contains(err.Error(), "not a worktree node") {
+		t.Fatalf("non-worktree node: want a not-a-worktree error, got %v", err)
+	}
+}

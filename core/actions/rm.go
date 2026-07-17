@@ -50,24 +50,41 @@ func (r Real) rmResolved(p params.Rm, nodes []Node, states func() driversAnswer)
 		if cleared, err := r.rmUnfinishedClaim(p); cleared || err != nil {
 			return err
 		}
-		// A no-match reap is not an error: naming a node that isn't there leaves
-		// nothing to do, so a cleanup script gets a stable exit status whether or
-		// not the node still exists.
-		fmt.Fprintln(os.Stdout, tui.Muted("no node %s", p.Node))
-		return nil
+		// Naming a node that isn't there is an error, the same one cd and exec
+		// report for the same situation — a typo must not read as a clean reap.
+		return fmt.Errorf("rm: no node %q (see dabs ls)", p.Node)
 	}
 
 	// A node stood on is a node in use — everything above it goes with it. Gather
 	// the whole set across every match, deduped and nearest-first, before anything
-	// is touched, so a refusal loses nothing.
+	// is touched, so a refusal loses nothing. matched remembers which of the
+	// doomed the NAME hit, so the preview can say why each node is included.
 	var doomed []Node
 	seen := map[string]bool{}
+	matched := map[string]bool{}
 	for _, t := range targets {
+		matched[t.ID] = true
 		for _, n := range append([]Node{t}, descendantsOf(t, nodes)...) {
 			if !seen[n.ID] {
 				seen[n.ID] = true
 				doomed = append(doomed, n)
 			}
+		}
+	}
+
+	// --force only ever approves discarding a worktree's unreviewed git work;
+	// on a reap that touches no worktree it is dead weight, and saying so
+	// beats letting the caller believe it authorized something.
+	if p.Force {
+		hasWorktree := false
+		for _, n := range doomed {
+			if n.Worktree != nil {
+				hasWorktree = true
+				break
+			}
+		}
+		if !hasWorktree {
+			fmt.Fprintln(os.Stdout, tui.Muted("--force had no effect here: no worktree among the reaped nodes (it only approves discarding unreviewed worktree work)"))
 		}
 	}
 	// Build the view once: it is BOTH the preview and the source of the data
@@ -84,6 +101,9 @@ func (r Real) rmResolved(p params.Rm, nodes []Node, states func() driversAnswer)
 	}
 	state := ans.state
 	views := r.viewNodes(doomed, state)
+	if !ans.complete {
+		markStateUnknown(views)
+	}
 	held, vol, tmp := countHoldingSpaces(views)
 
 	// --keep keeps the record instead of removing: stop the box(es) but leave the
@@ -93,9 +113,16 @@ func (r Real) rmResolved(p params.Rm, nodes []Node, states func() driversAnswer)
 		return r.archive(targets, p)
 	}
 
-	// --dry previews the reap and touches nothing.
+	// --dry previews the reap and touches nothing. A worktree in the set that
+	// holds unreviewed work is named WITH what reviewing it takes — a preview
+	// that says work would be lost without saying which work isn't a preview.
 	if p.Dry {
-		fmt.Fprint(os.Stdout, rmPreview(p.Node, views, held, vol, tmp, p.Volume))
+		fmt.Fprint(os.Stdout, rmPreview(p.Node, matched, views, held, vol, tmp, p.Volume))
+		for _, n := range doomed {
+			if err := r.guardWorktreeWork(n, false); err != nil {
+				fmt.Fprintln(os.Stdout, tui.Warn("%v", err))
+			}
+		}
 		return nil
 	}
 
@@ -115,7 +142,7 @@ func (r Real) rmResolved(p params.Rm, nodes []Node, states func() driversAnswer)
 	batchYes := p.Yes
 	showed := false
 	if (len(doomed) > 1 || live || held > 0 || vol > 0) && !p.Yes {
-		b := rmPreview(p.Node, views, held, vol, tmp, p.Volume)
+		b := rmPreview(p.Node, matched, views, held, vol, tmp, p.Volume)
 		// With no terminal there is nobody to ask, and asking anyway would block on
 		// a pipe forever. Say what it would take, and take nothing — exit nonzero so
 		// a script sees the reap did not happen.
@@ -177,10 +204,12 @@ func (r Real) rmCleanWorktrees(p params.Rm) error {
 	}
 	states := r.memoBoxStates()
 	var kept, keptLive []string
+	swept := 0
 	for _, n := range nodes {
 		if n.Worktree == nil {
 			continue
 		}
+		swept++
 		// The sweep reaps clean CHECKOUTS; a live box standing on one is a machine
 		// someone is using, and stopping it is the same loss a named `rm <box>`
 		// asks about — so it needs the same consent. Without -y the worktree is
@@ -197,6 +226,11 @@ func (r Real) rmCleanWorktrees(p params.Rm) error {
 			}
 			return fmt.Errorf("rm %s: %w", n.ID, err)
 		}
+	}
+	// A sweep over nothing says so — silence reads as a hang or a swallow.
+	if swept == 0 {
+		fmt.Fprintln(os.Stdout, tui.Muted("no worktrees to clean"))
+		return nil
 	}
 	if len(kept) > 0 {
 		fmt.Fprintln(os.Stdout, tui.Warn("kept %d worktree(s) with unreviewed work: %s", len(kept), strings.Join(kept, ", ")))
@@ -275,11 +309,33 @@ func reapDataSummary(held, vol, tmp int, volume bool) string {
 
 // rmPreview renders what a reap would take: the forest of doomed nodes and the
 // per-space data summary under it. It is shown by --dry, and as the body of the
-// consent prompt, so the preview and the question can never disagree.
-func rmPreview(name string, views []*NodeView, held, vol, tmp int, volume bool) string {
+// consent prompt, so the preview and the question can never disagree. matched
+// names the nodes the given name actually hit; whenever the set holds more —
+// descendants standing on a matched node, reaped with it — the preview says
+// which is which, so a cascade never reads as a name-match gone wide.
+func rmPreview(name string, matched map[string]bool, views []*NodeView, held, vol, tmp int, volume bool) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Removing %s reaps %d node(s):\n", tui.Accent(name), countViews(views))
 	b.WriteString(renderForest(views, rmColumns, 2))
+	var byName, descendants []string
+	var walk func(v *NodeView)
+	walk = func(v *NodeView) {
+		if matched[v.ID] {
+			byName = append(byName, v.ID)
+		} else {
+			descendants = append(descendants, v.ID)
+		}
+		for _, c := range v.Children {
+			walk(c)
+		}
+	}
+	for _, v := range views {
+		walk(v)
+	}
+	if len(descendants) > 0 {
+		b.WriteString(tui.Muted("matched %s: %s", name, strings.Join(byName, ", ")) + "\n")
+		b.WriteString(tui.Warn("reaped as descendants (they stand on a matched node): %s", strings.Join(descendants, ", ")) + "\n")
+	}
 	b.WriteString(reapDataSummary(held, vol, tmp, volume))
 	return b.String()
 }
@@ -339,7 +395,7 @@ func (r Real) rmInactive(p params.Rm) error {
 		return err
 	}
 	ans := r.boxStates()
-	_, inactiveRoots := r.activeSubtrees(nodes, ans.state)
+	_, inactiveRoots := r.activeSubtrees(nodes, ans.state, ans.complete, r.foreignWorktrees(nodes))
 	if len(inactiveRoots) == 0 {
 		fmt.Fprintln(os.Stdout, tui.Muted("no inactive subtrees"))
 		return nil
@@ -386,9 +442,15 @@ func (r Real) guardWorktreeWork(n Node, force bool) error {
 	if err != nil {
 		return err
 	}
+	// A checkout no longer on disk holds no work to review — a prior rm reaped
+	// the held space and kept the record for its volume. Asking git about the
+	// missing path would only produce a raw error, so the guard passes.
+	if !r.dataExists(path) {
+		return nil
+	}
 	_, dirty, ahead, err := r.data.GitState(path)
 	if err != nil {
-		return err
+		return fmt.Errorf("%s: reading worktree state: %w", n.ID, err)
 	}
 	// The same judgment `ls`/`worktrees ls` print: commits ahead whose content
 	// already landed in the base (a squash merge) are reviewed work, and
@@ -525,8 +587,8 @@ func (r Real) consentToHeld(n Node, dir string) bool {
 // (never everything), and a prefix matching several nodes is REFUSED unless
 // multiple is set, so a stray prefix cannot reap several nodes at once — the
 // guard is the same whether the hits came from ids or instance names. A no-match
-// returns no nodes and no error; the caller reports it and stops, so a reap of a
-// name that isn't there is idempotent rather than a failure.
+// returns no nodes and no error; the caller decides what a miss means (rm
+// reports it as an error after ruling out an unfinished claim).
 func rmMatches(name string, nodes []Node, multiple bool) ([]Node, error) {
 	if strings.TrimSpace(name) == "" {
 		return nil, fmt.Errorf("a name is required (see dabs ls)")

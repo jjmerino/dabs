@@ -135,7 +135,8 @@ type Recipe struct {
 
 // Recipes are the inputs to listing the known recipes.
 type Recipes struct {
-	Print bool // print the full bundled recipes YAML (the authoring format) instead of a summary
+	Print bool   // print the full MERGED registry as YAML (each recipe marked with its origin) instead of a summary
+	Name  string // with Print: print only this recipe
 }
 
 // Worktrees are the inputs to inspecting/reaping recipe-created git worktrees.

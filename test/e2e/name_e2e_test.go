@@ -83,14 +83,19 @@ func TestNamedNodesSessionJourney(t *testing.T) {
 		t.Fatalf("worktrees ls does not carry the names:\n%s", wl)
 	}
 
-	// cd: the printed path IS the node's directory — bare, absolute, usable.
+	// cd: the printed path IS the node's own directory — bare, absolute, one
+	// uniform rule per kind — and the checkout is its held/worktree
+	// subdirectory, reached with plain path arithmetic.
 	out, code = run("dabs cd squash-fix")
 	if code != 0 {
 		t.Fatalf("cd squash-fix failed (%d): %s", code, out)
 	}
-	wtPath := strings.TrimSpace(out)
-	if _, err := os.Stat(filepath.Join(wtPath, "tracked.txt")); err != nil {
-		t.Fatalf("cd printed %q, which is not the checkout: %v", wtPath, err)
+	nodePath := strings.TrimSpace(out)
+	if !strings.Contains(nodePath, ".dabs/nodes/squash-fix") {
+		t.Fatalf("cd printed %q, want the node dir", nodePath)
+	}
+	if _, err := os.Stat(filepath.Join(nodePath, "held", "worktree", "tracked.txt")); err != nil {
+		t.Fatalf("held/worktree under %q is not the checkout: %v", nodePath, err)
 	}
 	out, code = run("dabs cd dev-box")
 	if code != 0 {
@@ -101,7 +106,7 @@ func TestNamedNodesSessionJourney(t *testing.T) {
 	}
 	// A prefix resolves too — same rules as every handle — but an ambiguous one
 	// is refused, never guessed.
-	if out, code := run("dabs cd squash"); code != 0 || strings.TrimSpace(out) != wtPath {
+	if out, code := run("dabs cd squash"); code != 0 || strings.TrimSpace(out) != nodePath {
 		t.Fatalf("cd by unambiguous prefix failed (%d): %s", code, out)
 	}
 

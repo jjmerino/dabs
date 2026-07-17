@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -18,6 +17,30 @@ import (
 // main owns the process boundary: it installs the real actions, injects
 // argv, prints errors generically, and translates cli errors into exit codes.
 func main() {
+	args := os.Args[1:]
+	// Help and usage are answerable from argv alone, so they are served BEFORE
+	// any driver is built — a machine with no working sandbox driver can still
+	// print help. Help is not an error: render it to stdout and exit 0. Basic
+	// help points agents at the full guide; the full guide is the bundled
+	// AGENTS.md.
+	if len(args) == 1 {
+		switch args[0] {
+		case "-h", "--help", "help":
+			cli.Usage(os.Stdout)
+			return
+		case "--help-full", "--help-full-for-agents":
+			os.Stdout.Write(agentsGuide)
+			return
+		}
+	}
+	// A bare `dabs`, and a per-command `dabs <cmd> --help`, resolve entirely in
+	// the cli layer: every parser answers a leading help flag before its action
+	// is touched, so a nil Actions is never reached.
+	if len(args) == 0 || (len(args) >= 2 && (args[1] == "-h" || args[1] == "--help")) {
+		finish(cli.New(nil).Run(args))
+		return
+	}
+
 	// All deps are constructed here, one per line, in dependency order.
 	// Do not nest New calls — keep the wiring flat and readable.
 	drivers, order, err := buildDrivers()
@@ -33,24 +56,16 @@ func main() {
 	// Snapshot the instances now and, on SIGINT/SIGTERM, best-effort down any
 	// that appeared since — the box being created/run. Best-effort: it ignores
 	// errors and never blocks if nothing is up.
-	if creates := createsBox(os.Args[1:]); creates {
+	if creates := createsBox(args); creates {
 		installInterruptCleanup(drivers)
 	}
 
-	// Help is not an error: render it to stdout and exit 0. Basic help points
-	// agents at the full guide; the full guide is the bundled AGENTS.md.
-	if args := os.Args[1:]; len(args) == 1 {
-		switch args[0] {
-		case "-h", "--help", "help":
-			cli.Usage(os.Stdout)
-			return
-		case "--help-full", "--help-full-for-agents":
-			os.Stdout.Write(agentsGuide)
-			return
-		}
-	}
+	finish(c.Run(args))
+}
 
-	err = c.Run(os.Args[1:])
+// finish translates a command's error into output and an exit code — the one
+// place cli errors become process results.
+func finish(err error) {
 	if err == nil {
 		return
 	}
@@ -62,8 +77,11 @@ func main() {
 	}
 	// A box command that merely exited non-zero is the box command's failure,
 	// not dabs's: mirror its exit code and print no spurious `dabs: …` line.
-	var exit *exec.ExitError
-	if errors.As(err, &exit) {
+	// Only a BARE *exec.ExitError is the box command's result (drivers return
+	// it unwrapped by contract — see execx.BoxErr); a WRAPPED one is dabs's own
+	// machinery failing (an unreachable docker daemon during name resolution)
+	// and must print its message, never exit silently.
+	if exit, ok := err.(*exec.ExitError); ok {
 		os.Exit(exit.ExitCode())
 	}
 	fmt.Fprintf(os.Stderr, "dabs: %v\n", err)

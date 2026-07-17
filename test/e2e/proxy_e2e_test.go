@@ -1,18 +1,18 @@
 //go:build e2e
 
-// Proxy-chain end-to-end: a box whose ONLY egress is a dabs proxy engine
-// running an ordered chain of two custom hooks. The box hits
-// https://dabs.dev/<path> (a made-up endpoint) and the chain — not the real
-// internet — answers. Assertions land on BOTH sides:
+// Egress end-to-end: a box whose ONLY egress is a dabs proxy engine enforcing a
+// recipe's policy (allow/deny at CONNECT) and, optionally, an HTTP content chain
+// (http_proxy) of streaming four-verb hooks. The box hits https://<host>/<path>
+// and the engine — not the real internet — decides and answers. Assertions land
+// on BOTH sides: what the in-box process received, and what each hook saw.
 //
-//   - inner (box-side) hook: records every request, RESPONDS to /secret
-//     (breaking the chain), and MODIFIES the response body of what it forwards.
-//   - outer (internet-side) hook: records every request it sees and responds.
+// The engine never buffers a body: request and response bodies stream through
+// the hooks chunk by chunk. Content hooks are pure per-request transforms:
 //
-// We assert the in-box process saw the right bodies (mock answered, modify
-// applied) AND that the outer hook never saw /secret (the inner hook stopped it
-// before it could reach the credential-nearest hop). Nothing leaves for the
-// real dabs.dev.
+//	onRequest(head)        edit request headers, or respond/deny
+//	onRequestChunk(chunk)  transform each request body chunk (null = EOF)
+//	onResponse(head)       edit status/headers
+//	onResponseChunk(chunk) transform each response body chunk (null = EOF)
 package e2e
 
 import (
@@ -27,17 +27,18 @@ import (
 )
 
 // The inner hook: nearest the box. Logs every request path, answers /secret
-// itself, and rewrites the body of any response it forwarded (proving a hook
-// can both stop and modify).
+// itself, and streams a "inner-saw:" prefix onto the body of any response it
+// forwarded (proving a hook can both stop a request and transform a response,
+// without buffering).
 const innerHook = `import { appendFileSync } from "node:fs";
 export default (config) => ({
-  onRequest(req) {
-    appendFileSync(config.log, req.path + "\n");
-    if (req.path === "/secret") return { action: "respond", status: 200, body: "inner-secret" };
-    return { action: "forward" };
+  onRequest(head) {
+    appendFileSync(config.log, head.path + "\n");
+    if (head.path === "/secret") return { action: "respond", status: 200, body: "inner-secret" };
   },
-  onResponse(res) {
-    return { body: "inner-saw:" + res.body };
+  onResponseChunk(chunk, ctx) {
+    if (chunk === null) return;
+    if (!ctx.pre) { ctx.pre = true; return Buffer.concat([Buffer.from("inner-saw:"), chunk]); }
   },
 });
 `
@@ -46,9 +47,9 @@ export default (config) => ({
 // It must NEVER see /secret — the inner hook stops that one.
 const outerHook = `import { appendFileSync } from "node:fs";
 export default (config) => ({
-  onRequest(req) {
-    appendFileSync(config.log, req.path + "\n");
-    return { action: "respond", status: 200, body: "outer:" + req.path };
+  onRequest(head) {
+    appendFileSync(config.log, head.path + "\n");
+    return { action: "respond", status: 200, body: "outer:" + head.path };
   },
 });
 `
@@ -99,7 +100,7 @@ recipes:
     image: dabs-e2e
     keep: true
     egress:
-      proxy:
+      http_proxy:
         - tls: terminate
         - { module: %s/inner.ts, log: %s }
         - { module: %s/outer.ts, log: %s }
@@ -124,10 +125,10 @@ recipes:
 
 	// --- box side: what the in-box process actually received ---
 	boxOut := readFile(t, filepath.Join(outDir, "out.txt"))
-	// /secret: inner responds AND (now) its own onResponse runs on that response,
-	// wrapping it — a hook that responds still post-processes its own answer.
+	// /secret: inner responds AND its own onResponseChunk streams onto that answer
+	// — a hook that responds still post-processes its own answer.
 	if !strings.Contains(boxOut, "secret 200 inner-saw:inner-secret") {
-		t.Errorf("box did not get the inner hook's terminal answer for /secret (with its own onResponse applied):\n%s", boxOut)
+		t.Errorf("box did not get the inner hook's terminal answer for /secret (with its own onResponseChunk applied):\n%s", boxOut)
 	}
 	if !strings.Contains(boxOut, "public 200 inner-saw:outer:/public") {
 		t.Errorf("box did not get the outer answer modified by the inner hook for /public:\n%s", boxOut)
@@ -177,7 +178,7 @@ recipes:
     image: dabs-e2e
     keep: true
     egress:
-      proxy:
+      http_proxy:
         - tls: terminate
         - { module: %s/h.ts }
         - tls: originate
@@ -278,37 +279,30 @@ func instanceLine(t *testing.T, out string) string {
 	return ""
 }
 
-// TestProxyConnectionTierPolicy covers the tls-less connection tier: an
-// authorize hook denies one host (403 at CONNECT → curl 000) and allows another
-// (raw tunnel to the real host, real HTTP status). Regression for "a proxy chain
-// with no tls step should work for domain allow/deny".
-func TestProxyConnectionTierPolicy(t *testing.T) {
+// TestEgressDenyList covers the engine-native CONNECT gate as a denylist: a
+// `deny:` pattern refuses one host (403 at CONNECT → curl 000) while everything
+// else tunnels to the real host. No module, no tls — pure engine policy.
+func TestEgressDenyList(t *testing.T) {
 	clean(t)
 	dir, err := os.MkdirTemp(home, "proxypolicy-")
 	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "gate.ts"),
-		[]byte(`export default () => ({ authorize({ host }) { return host === "blocked.test" ? "deny" : "allow"; } });`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	outDir := filepath.Join(dir, "out")
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// No tls hop → the module runs purely at the connection tier (authorize).
 	yaml := fmt.Sprintf(`default: gate
 recipes:
   gate:
     image: dabs-e2e
     keep: true
     egress:
-      proxy:
-        - module: %s/gate.ts
+      deny: blocked.test
     sources:
       - mount: %s
         path: /out
-`, dir, outDir)
+`, outDir)
 	if err := os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -335,14 +329,15 @@ echo "allowed $(curl -s -o /dev/null -w '%{http_code}' -m 12 https://example.com
 	if !strings.Contains(got, "blocked 000") {
 		t.Errorf("blocked.test should be denied at CONNECT (000):\n%s", got)
 	}
-	// Allow tunnels to the real host (needs network in the e2e box, which has it).
+	// Everything else tunnels to the real host (needs network in the e2e box).
 	if !strings.Contains(got, "allowed 200") {
 		t.Errorf("example.com should be allowed and reach the real host (200):\n%s", got)
 	}
 }
 
 // TestProxyDenyCarriesHeaders is the regression for the `deny`-drops-headers bug:
-// a content-tier deny must emit its custom response headers, like respond.
+// a content-tier deny (a hook answering with action:"deny") must emit its custom
+// response headers, like respond.
 func TestProxyDenyCarriesHeaders(t *testing.T) {
 	clean(t)
 	dir, err := os.MkdirTemp(home, "proxydeny-")
@@ -363,7 +358,7 @@ recipes:
     image: dabs-e2e
     keep: true
     egress:
-      proxy:
+      http_proxy:
         - tls: terminate
         - module: %s/deny.ts
         - tls: originate
@@ -408,7 +403,7 @@ recipes:
   bad:
     image: dabs-e2e
     egress:
-      proxy:
+      http_proxy:
         - tls: terminate
         - module: /nope/does-not-exist.ts
         - tls: originate
@@ -431,17 +426,14 @@ recipes:
 // TestProxyInjectsEcosystemCAEnv checks the box gets the CA-trust and proxy env
 // vars the common tools actually read — including GIT_SSL_CAINFO (git ignores
 // CURL_CA_BUNDLE) and NODE_USE_ENV_PROXY (node's fetch/https ignore proxy env).
+// A pure allow-all gate (no chain) still routes egress through the engine.
 func TestProxyInjectsEcosystemCAEnv(t *testing.T) {
 	clean(t)
 	dir, err := os.MkdirTemp(home, "proxyenv-")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "gate.ts"),
-		[]byte(`export default () => ({ authorize() { return "allow"; } });`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	yaml := fmt.Sprintf("default: e\nrecipes:\n  e:\n    image: dabs-e2e\n    keep: true\n    egress:\n      proxy:\n        - module: %s/gate.ts\n", dir)
+	yaml := "default: e\nrecipes:\n  e:\n    image: dabs-e2e\n    keep: true\n    egress:\n      allow: \"*\"\n"
 	os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644)
 	out, code := run("dabs recipe " + dir + " --detach")
 	if code != 0 {
@@ -456,23 +448,24 @@ func TestProxyInjectsEcosystemCAEnv(t *testing.T) {
 	}
 }
 
-// TestProxyHostCanonicalizationHolds is the regression for the case/trailing-dot
-// denylist bypass: authorize keys on the CANONICAL host, so a deny of a lowercase
-// host also blocks its uppercase and trailing-dot spellings (which reach the same
-// server). An unrelated allowed host still gets through.
-func TestProxyHostCanonicalizationHolds(t *testing.T) {
+// TestEgressHostCanonicalizationHolds is the regression for the case/trailing-dot
+// denylist bypass: the engine keys policy on the CANONICAL host, so a deny of a
+// lowercase host also blocks its uppercase and trailing-dot spellings (which
+// reach the same server). An unrelated allowed host still gets through, answered
+// by a content hook.
+func TestEgressHostCanonicalizationHolds(t *testing.T) {
 	clean(t)
 	dir, err := os.MkdirTemp(home, "proxycanon-")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "gate.ts"),
-		[]byte(`export default () => ({ authorize({ host }) { return host === "block.test" ? "deny" : "allow"; }, onRequest() { return { action: "respond", status: 200, body: "ok" }; } });`), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "hook.ts"),
+		[]byte(`export default () => ({ onRequest() { return { action: "respond", status: 200, body: "ok" }; } });`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	outDir := filepath.Join(dir, "out")
 	os.MkdirAll(outDir, 0o755)
-	yaml := fmt.Sprintf("default: c\nrecipes:\n  c:\n    image: dabs-e2e\n    keep: true\n    egress:\n      proxy:\n        - tls: terminate\n        - module: %s/gate.ts\n        - tls: originate\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
+	yaml := fmt.Sprintf("default: c\nrecipes:\n  c:\n    image: dabs-e2e\n    keep: true\n    egress:\n      deny: block.test\n      http_proxy:\n        - tls: terminate\n        - module: %s/hook.ts\n        - tls: originate\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
 	os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644)
 	os.WriteFile(filepath.Join(outDir, "run.sh"), []byte(`#!/bin/sh
 out=/out/out.txt
@@ -511,7 +504,7 @@ func TestProxyMalformedFactoryFailsClosed(t *testing.T) {
 		[]byte(`export default () => null;`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	yaml := fmt.Sprintf("default: n\nrecipes:\n  n:\n    image: dabs-e2e\n    egress:\n      proxy:\n        - module: %s/nullish.ts\n", dir)
+	yaml := fmt.Sprintf("default: n\nrecipes:\n  n:\n    image: dabs-e2e\n    egress:\n      http_proxy:\n        - tls: terminate\n        - module: %s/nullish.ts\n        - tls: originate\n", dir)
 	os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644)
 	out, code := run("dabs recipe " + dir + " --detach")
 	if code == 0 {
@@ -539,7 +532,7 @@ func TestProxyFailedBootLeavesNoTempDir(t *testing.T) {
 		[]byte("this is not valid typescript ((("), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	yaml := fmt.Sprintf("default: boom\nrecipes:\n  boom:\n    image: dabs-e2e\n    egress:\n      proxy:\n        - module: %s/boom.ts\n", dir)
+	yaml := fmt.Sprintf("default: boom\nrecipes:\n  boom:\n    image: dabs-e2e\n    egress:\n      http_proxy:\n        - tls: terminate\n        - module: %s/boom.ts\n        - tls: originate\n", dir)
 	if err := os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -555,24 +548,25 @@ func TestProxyFailedBootLeavesNoTempDir(t *testing.T) {
 }
 
 // TestProxyDoesNotFollowRedirects is the regression for a domain-policy bypass:
-// the engine must NOT follow a 30x server-side on the forwarded leg. authorize
-// gates only the CONNECT host, so following a redirect could bounce the box to a
-// host the policy never saw. The box must receive the 3xx itself (and re-request,
-// which re-runs authorize). http://github.com issues a permanent 301; if the
-// engine followed it, the box would see the 200 of the https target instead.
+// the engine must NOT follow a 30x server-side on the forwarded leg. Policy gates
+// only the CONNECT host, so following a redirect could bounce the box to a host
+// the policy never saw. The box must receive the 3xx itself (and re-request,
+// which re-runs policy). http://github.com issues a permanent 301; if the engine
+// followed it, the box would see the 200 of the https target instead.
 func TestProxyDoesNotFollowRedirects(t *testing.T) {
 	clean(t)
 	dir, err := os.MkdirTemp(home, "proxyredir-")
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A pass-through content hook (no transform) so the request forwards upstream.
 	if err := os.WriteFile(filepath.Join(dir, "fwd.ts"),
-		[]byte(`export default () => ({ onRequest() { return { action: "forward" }; } });`), 0o644); err != nil {
+		[]byte(`export default () => ({ onRequest() {} });`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	outDir := filepath.Join(dir, "out")
 	os.MkdirAll(outDir, 0o755)
-	yaml := fmt.Sprintf("default: r\nrecipes:\n  r:\n    image: dabs-e2e\n    keep: true\n    egress:\n      proxy:\n        - tls: terminate\n        - module: %s/fwd.ts\n        - tls: originate\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
+	yaml := fmt.Sprintf("default: r\nrecipes:\n  r:\n    image: dabs-e2e\n    keep: true\n    egress:\n      http_proxy:\n        - tls: terminate\n        - module: %s/fwd.ts\n        - tls: originate\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
 	os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644)
 	// No -L: the box must see the redirect status itself, not the followed page.
 	os.WriteFile(filepath.Join(outDir, "run.sh"), []byte("#!/bin/sh\ncurl -s -o /dev/null -w 'code=%{http_code}\\n' -m 12 http://github.com/ > /out/resp.txt 2>&1\n"), 0o755)
@@ -589,7 +583,7 @@ func TestProxyDoesNotFollowRedirects(t *testing.T) {
 }
 
 // TestProxyReapsEngineWhenBoxEntryFails is the regression for the engine leak on
-// a boot that fails AFTER the engine started: the module exists and the engine
+// a boot that fails AFTER the engine started: the policy is valid and the engine
 // boots, but the box's workdir does not exist so the entry (smoke check) fails.
 // No box node is written to carry the engine's PID, so buildBox must reap it on
 // the failed return — otherwise the engine and its temp dir leak forever.
@@ -599,13 +593,9 @@ func TestProxyReapsEngineWhenBoxEntryFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "gate.ts"),
-		[]byte(`export default () => ({ authorize() { return "allow"; } });`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	// A valid engine chain, but a workdir that does not exist in the box → the
+	// A valid engine policy, but a workdir that does not exist in the box → the
 	// post-boot entry fails after Provision already started the engine.
-	yaml := fmt.Sprintf("default: g\nrecipes:\n  g:\n    image: dabs-e2e\n    workdir: /does/not/exist\n    egress:\n      proxy:\n        - module: %s/gate.ts\n", dir)
+	yaml := "default: g\nrecipes:\n  g:\n    image: dabs-e2e\n    workdir: /does/not/exist\n    egress:\n      allow: \"*\"\n"
 	os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644)
 	before, _ := filepath.Glob("/tmp/dabs-proxy-*")
 	out, code := run("dabs recipe " + dir + " --detach")
@@ -620,8 +610,8 @@ func TestProxyReapsEngineWhenBoxEntryFails(t *testing.T) {
 
 // TestProxyCarriesNonStandardPort is the regression for the dropped upstream
 // port: a box connecting to a host on a non-standard port through a terminate
-// window must have that port on the request the engine sees (and re-originates
-// to), not be silently rewritten to 443. The hook echoes the port it observed.
+// window must have that port on the request head the engine sees (and
+// re-originates to), not be silently rewritten to 443. The hook echoes the port.
 func TestProxyCarriesNonStandardPort(t *testing.T) {
 	clean(t)
 	dir, err := os.MkdirTemp(home, "proxyport-")
@@ -629,12 +619,12 @@ func TestProxyCarriesNonStandardPort(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "hook.ts"),
-		[]byte(`export default () => ({ onRequest(req) { return { action: "respond", status: 200, body: "port=" + req.port }; } });`), 0o644); err != nil {
+		[]byte(`export default () => ({ onRequest(head) { return { action: "respond", status: 200, body: "port=" + head.port }; } });`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	outDir := filepath.Join(dir, "out")
 	os.MkdirAll(outDir, 0o755)
-	yaml := fmt.Sprintf("default: p\nrecipes:\n  p:\n    image: dabs-e2e\n    keep: true\n    egress:\n      proxy:\n        - tls: terminate\n        - module: %s/hook.ts\n        - tls: originate\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
+	yaml := fmt.Sprintf("default: p\nrecipes:\n  p:\n    image: dabs-e2e\n    keep: true\n    egress:\n      http_proxy:\n        - tls: terminate\n        - module: %s/hook.ts\n        - tls: originate\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
 	os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644)
 	os.WriteFile(filepath.Join(outDir, "run.sh"), []byte("#!/bin/sh\ncurl -s -m 8 https://mock.test:8443/ > /out/resp.txt 2>&1\n"), 0o755)
 	out, code := run("dabs recipe " + dir + " --detach")
@@ -645,7 +635,7 @@ func TestProxyCarriesNonStandardPort(t *testing.T) {
 	run("dabs exec " + inst + " -- sh /out/run.sh")
 	resp := readFile(t, filepath.Join(outDir, "resp.txt"))
 	if !strings.Contains(resp, "port=8443") {
-		t.Errorf("the non-standard port must reach the engine's request, got:\n%s", resp)
+		t.Errorf("the non-standard port must reach the engine's request head, got:\n%s", resp)
 	}
 }
 
@@ -669,7 +659,7 @@ recipes:
     image: dabs-e2e
     keep: true
     egress:
-      proxy:
+      http_proxy:
         - module: %s/hook.ts
 `, dir)
 	if err := os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644); err != nil {
@@ -684,29 +674,31 @@ recipes:
 	}
 }
 
-// TestProxyAuthorizeThrowSurvivesEngine is the regression for the DoS: a hook
-// that THROWS in authorize must be contained (deny + close), not crash the
-// engine and kill all egress. We prove survival: a throwing host is refused,
-// then an allowed host still works.
-func TestProxyAuthorizeThrowSurvivesEngine(t *testing.T) {
+// TestProxyHookThrowSurvivesEngine is the regression for the DoS: a content hook
+// that THROWS on one request must be contained (that request gets a 502), not
+// crash the engine and kill all egress. We prove survival: a request that trips
+// the throw fails, then a later request through the same engine still works.
+func TestProxyHookThrowSurvivesEngine(t *testing.T) {
 	clean(t)
 	dir, err := os.MkdirTemp(home, "proxythrow-")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "gate.ts"),
-		[]byte(`export default () => ({ authorize({ host }) { if (host === "boom.test") throw new Error("boom"); return "allow"; } });`), 0o644); err != nil {
+	// Throw for one host; answer for any other. The engine isolates the throw
+	// per connection, so the second request still gets its answer.
+	if err := os.WriteFile(filepath.Join(dir, "hook.ts"),
+		[]byte(`export default () => ({ onRequest(head) { if (head.host === "boom.test") throw new Error("boom"); return { action: "respond", status: 200, body: "ok" }; } });`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	outDir := filepath.Join(dir, "out")
 	os.MkdirAll(outDir, 0o755)
-	yaml := fmt.Sprintf("default: g\nrecipes:\n  g:\n    image: dabs-e2e\n    keep: true\n    egress:\n      proxy:\n        - module: %s/gate.ts\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
+	yaml := fmt.Sprintf("default: g\nrecipes:\n  g:\n    image: dabs-e2e\n    keep: true\n    egress:\n      http_proxy:\n        - tls: terminate\n        - module: %s/hook.ts\n        - tls: originate\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
 	os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644)
 	os.WriteFile(filepath.Join(outDir, "run.sh"), []byte(`#!/bin/sh
 out=/out/out.txt
 : > "$out"
 echo "throw $(curl -s -o /dev/null -w '%{http_code}' -m 8 https://boom.test/ || echo 000)" >> "$out"
-echo "survived $(curl -s -o /dev/null -w '%{http_code}' -m 12 https://example.com/ || echo 000)" >> "$out"
+echo "survived $(curl -s -m 12 https://ok.test/ || echo 000)" >> "$out"
 `), 0o755)
 	out, code := run("dabs recipe " + dir + " --detach")
 	if code != 0 {
@@ -717,15 +709,18 @@ echo "survived $(curl -s -o /dev/null -w '%{http_code}' -m 12 https://example.co
 		t.Fatalf("script failed (%d):\n%s", code, out)
 	}
 	got := readFile(t, filepath.Join(outDir, "out.txt"))
-	// The throwing host is refused, and — the point — the engine SURVIVES, so the
-	// allowed host still reaches the real internet afterward.
-	if !strings.Contains(got, "survived 200") {
-		t.Errorf("engine did not survive an authorize throw (allowed host after the throw should be 200):\n%s", got)
+	// The throwing request gets a 502; the point is the engine SURVIVES, so the
+	// next request still gets the hook's answer.
+	if !strings.Contains(got, "throw 502") {
+		t.Errorf("a throwing hook should yield 502 for that request:\n%s", got)
+	}
+	if !strings.Contains(got, "survived ok") {
+		t.Errorf("engine did not survive a hook throw (next request should be answered):\n%s", got)
 	}
 }
 
 // TestProxyHookExceptionNoLeak is the regression for the info leak: a content
-// hook that throws must yield a terse 502, never Bun's error page carrying the
+// hook that throws must yield a terse 502, never an error page carrying the
 // engine source and host paths into the untrusted box.
 func TestProxyHookExceptionNoLeak(t *testing.T) {
 	clean(t)
@@ -739,7 +734,7 @@ func TestProxyHookExceptionNoLeak(t *testing.T) {
 	}
 	outDir := filepath.Join(dir, "out")
 	os.MkdirAll(outDir, 0o755)
-	yaml := fmt.Sprintf("default: b\nrecipes:\n  b:\n    image: dabs-e2e\n    keep: true\n    egress:\n      proxy:\n        - tls: terminate\n        - module: %s/boom.ts\n        - tls: originate\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
+	yaml := fmt.Sprintf("default: b\nrecipes:\n  b:\n    image: dabs-e2e\n    keep: true\n    egress:\n      http_proxy:\n        - tls: terminate\n        - module: %s/boom.ts\n        - tls: originate\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
 	os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644)
 	os.WriteFile(filepath.Join(outDir, "run.sh"), []byte("#!/bin/sh\ncurl -s -m 8 https://x.test/ -w '\\ncode=%{http_code}\\n' > /out/resp.txt 2>&1\n"), 0o755)
 	out, code := run("dabs recipe " + dir + " --detach")
@@ -761,7 +756,7 @@ func TestProxyHookExceptionNoLeak(t *testing.T) {
 
 // TestProxyOriginateForwards covers the upstream-forwarding path (terminate →
 // module → originate) that terminal chains never exercise: forward to a real
-// host and rewrite its real response on the way back.
+// host and stream a prefix onto its real response on the way back.
 func TestProxyOriginateForwards(t *testing.T) {
 	clean(t)
 	dir, err := os.MkdirTemp(home, "proxyfwd-")
@@ -769,12 +764,12 @@ func TestProxyOriginateForwards(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "mod.ts"),
-		[]byte(`export default () => ({ onRequest() { return { action: "forward" }; }, onResponse(res) { return { body: "PROXIED:" + res.body }; } });`), 0o644); err != nil {
+		[]byte(`export default () => ({ onResponseChunk(chunk, ctx) { if (chunk === null) return; if (!ctx.p) { ctx.p = true; return Buffer.concat([Buffer.from("PROXIED:"), chunk]); } } });`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	outDir := filepath.Join(dir, "out")
 	os.MkdirAll(outDir, 0o755)
-	yaml := fmt.Sprintf("default: f\nrecipes:\n  f:\n    image: dabs-e2e\n    keep: true\n    egress:\n      proxy:\n        - tls: terminate\n        - module: %s/mod.ts\n        - tls: originate\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
+	yaml := fmt.Sprintf("default: f\nrecipes:\n  f:\n    image: dabs-e2e\n    keep: true\n    egress:\n      http_proxy:\n        - tls: terminate\n        - module: %s/mod.ts\n        - tls: originate\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
 	os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644)
 	os.WriteFile(filepath.Join(outDir, "run.sh"), []byte("#!/bin/sh\ncurl -s -m 15 https://example.com/ > /out/body.txt 2>&1\n"), 0o755)
 	out, code := run("dabs recipe " + dir + " --detach")
@@ -784,9 +779,9 @@ func TestProxyOriginateForwards(t *testing.T) {
 	inst := instanceLine(t, out)
 	run("dabs exec " + inst + " -- sh /out/run.sh")
 	body := readFile(t, filepath.Join(outDir, "body.txt"))
-	// The request really went to example.com and came back modified by the hook.
+	// The request really went to example.com and came back with the hook's prefix.
 	if !strings.Contains(body, "PROXIED:") || !strings.Contains(body, "Example Domain") {
-		t.Errorf("originate should forward to the real host and let the hook rewrite the real response:\n%s", body)
+		t.Errorf("originate should forward to the real host and let the hook stream-transform the real response:\n%s", body)
 	}
 }
 
@@ -800,12 +795,12 @@ func TestProxyPlainHTTP(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "mod.ts"),
-		[]byte(`export default () => ({ onRequest() { return { action: "forward" }; }, onResponse(res) { return { body: "HTTP-PROXIED:" + res.body }; } });`), 0o644); err != nil {
+		[]byte(`export default () => ({ onResponseChunk(chunk, ctx) { if (chunk === null) return; if (!ctx.p) { ctx.p = true; return Buffer.concat([Buffer.from("HTTP-PROXIED:"), chunk]); } } });`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	outDir := filepath.Join(dir, "out")
 	os.MkdirAll(outDir, 0o755)
-	yaml := fmt.Sprintf("default: h\nrecipes:\n  h:\n    image: dabs-e2e\n    keep: true\n    egress:\n      proxy:\n        - tls: terminate\n        - module: %s/mod.ts\n        - tls: originate\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
+	yaml := fmt.Sprintf("default: h\nrecipes:\n  h:\n    image: dabs-e2e\n    keep: true\n    egress:\n      http_proxy:\n        - tls: terminate\n        - module: %s/mod.ts\n        - tls: originate\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
 	os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644)
 	// http:// (not https) — the box emits a plain forward-proxy request.
 	os.WriteFile(filepath.Join(outDir, "run.sh"), []byte("#!/bin/sh\ncurl -s -m 15 http://example.com/ -w '\\ncode=%{http_code}\\n' > /out/resp.txt 2>&1\n"), 0o755)
@@ -821,12 +816,12 @@ func TestProxyPlainHTTP(t *testing.T) {
 	}
 }
 
-// TestProxyPlainHTTPHeaderInjectionFailsClosed is the regression for CRLF
-// response-splitting on the plain-HTTP path: a hook header value carrying "\r\n"
-// must not inject headers/body into the box's response. The engine builds the
-// reply through Headers() (which rejects CRLF) and fails closed, like the HTTPS
-// path — the smuggled header must never reach the box.
-func TestProxyPlainHTTPHeaderInjectionFailsClosed(t *testing.T) {
+// TestProxyResponseHeaderInjectionFailsClosed is the regression for CRLF
+// response-splitting: a hook response header value carrying "\r\n" must not
+// inject headers/body into the box's response. The engine serializes the reply
+// rejecting CRLF and fails closed with a 502 — the smuggled header must never
+// reach the box.
+func TestProxyResponseHeaderInjectionFailsClosed(t *testing.T) {
 	clean(t)
 	dir, err := os.MkdirTemp(home, "proxycrlf-")
 	if err != nil {
@@ -838,10 +833,9 @@ func TestProxyPlainHTTPHeaderInjectionFailsClosed(t *testing.T) {
 	}
 	outDir := filepath.Join(dir, "out")
 	os.MkdirAll(outDir, 0o755)
-	// No tls window → the box's http:// request takes the plain forward path.
-	yaml := fmt.Sprintf("default: e\nrecipes:\n  e:\n    image: dabs-e2e\n    keep: true\n    egress:\n      proxy:\n        - module: %s/evil.ts\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
+	yaml := fmt.Sprintf("default: e\nrecipes:\n  e:\n    image: dabs-e2e\n    keep: true\n    egress:\n      http_proxy:\n        - tls: terminate\n        - module: %s/evil.ts\n        - tls: originate\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
 	os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644)
-	os.WriteFile(filepath.Join(outDir, "run.sh"), []byte("#!/bin/sh\ncurl -s -i -m 12 http://any.test/ > /out/resp.txt 2>&1\n"), 0o755)
+	os.WriteFile(filepath.Join(outDir, "run.sh"), []byte("#!/bin/sh\ncurl -s -i -m 12 https://any.test/ > /out/resp.txt 2>&1\n"), 0o755)
 	out, code := run("dabs recipe " + dir + " --detach")
 	if code != 0 {
 		t.Fatalf("boot failed (%d):\n%s", code, out)
@@ -855,9 +849,9 @@ func TestProxyPlainHTTPHeaderInjectionFailsClosed(t *testing.T) {
 }
 
 // TestProxyBinaryBodyPreserved is the regression for binary corruption through a
-// terminate window: the engine round-trips bodies as latin1 byte-strings, so all
-// 256 byte values survive. A hook responds with bytes 0x00..0xff (256 bytes); the
-// box must receive exactly 256 bytes, not a UTF-8-inflated blob.
+// terminate window: the engine streams bodies as raw Buffers, so all 256 byte
+// values survive. A hook responds with bytes 0x00..0xff (256 bytes); the box
+// must receive exactly 256 bytes, not a UTF-8-inflated blob.
 func TestProxyBinaryBodyPreserved(t *testing.T) {
 	clean(t)
 	dir, err := os.MkdirTemp(home, "proxybin-")
@@ -870,7 +864,7 @@ func TestProxyBinaryBodyPreserved(t *testing.T) {
 	}
 	outDir := filepath.Join(dir, "out")
 	os.MkdirAll(outDir, 0o755)
-	yaml := fmt.Sprintf("default: b\nrecipes:\n  b:\n    image: dabs-e2e\n    keep: true\n    egress:\n      proxy:\n        - tls: terminate\n        - module: %s/bin.ts\n        - tls: originate\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
+	yaml := fmt.Sprintf("default: b\nrecipes:\n  b:\n    image: dabs-e2e\n    keep: true\n    egress:\n      http_proxy:\n        - tls: terminate\n        - module: %s/bin.ts\n        - tls: originate\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
 	os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644)
 	os.WriteFile(filepath.Join(outDir, "run.sh"), []byte("#!/bin/sh\ncurl -s -m 12 https://any.test/ | wc -c | tr -d ' \\n' > /out/size.txt\n"), 0o755)
 	out, code := run("dabs recipe " + dir + " --detach")
@@ -895,12 +889,12 @@ func TestProxyDirectIPThroughWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "pass.ts"),
-		[]byte(`export default () => ({ onRequest() { return { action: "forward" }; } });`), 0o644); err != nil {
+		[]byte(`export default () => ({ onRequest() {} });`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	outDir := filepath.Join(dir, "out")
 	os.MkdirAll(outDir, 0o755)
-	yaml := fmt.Sprintf("default: ip\nrecipes:\n  ip:\n    image: dabs-e2e\n    keep: true\n    egress:\n      proxy:\n        - tls: terminate\n        - module: %s/pass.ts\n        - tls: originate\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
+	yaml := fmt.Sprintf("default: ip\nrecipes:\n  ip:\n    image: dabs-e2e\n    keep: true\n    egress:\n      http_proxy:\n        - tls: terminate\n        - module: %s/pass.ts\n        - tls: originate\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
 	os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644)
 	// 1.1.1.1 serves HTTPS; the status does not matter, only that the leaf's IP
 	// SAN lets the handshake succeed (exit 0, not 60).
@@ -933,7 +927,7 @@ func TestProxyTerminateDomainsScopeInterception(t *testing.T) {
 	}
 	outDir := filepath.Join(dir, "out")
 	os.MkdirAll(outDir, 0o755)
-	yaml := fmt.Sprintf("default: d\nrecipes:\n  d:\n    image: dabs-e2e\n    keep: true\n    egress:\n      proxy:\n        - tls: terminate\n          domains: [mock.test]\n        - module: %s/hook.ts\n        - tls: originate\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
+	yaml := fmt.Sprintf("default: d\nrecipes:\n  d:\n    image: dabs-e2e\n    keep: true\n    egress:\n      http_proxy:\n        - tls: terminate\n          domains: [mock.test]\n        - module: %s/hook.ts\n        - tls: originate\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
 	os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644)
 	os.WriteFile(filepath.Join(outDir, "run.sh"), []byte(`#!/bin/sh
 out=/out/out.txt
@@ -960,30 +954,32 @@ echo "unlisted=$(curl -s -m 12 https://example.com/ | grep -o 'Example Domain' |
 
 // TestProxyBrokerHeaderRoundTrip is the flagship credential-broker path over
 // HEADERS across a two-hop chain: the box sends a DUMMY Authorization token; the
-// box-side broker injects the REAL token on the way out; the internet-side "API"
-// hop echoes the header it actually received (proving the injection reached it);
-// the broker scrubs the real token back to dummy on the way home. The box must
-// end up seeing the dummy and NEVER the real secret.
+// box-side broker injects the REAL token on the way out (onRequest header edit);
+// the internet-side "API" hop echoes the header it actually received (proving the
+// injection reached it); the broker scrubs the real token back to dummy on the
+// way home (onResponseChunk). The box must end up seeing the dummy and NEVER the
+// real secret.
 func TestProxyBrokerHeaderRoundTrip(t *testing.T) {
 	clean(t)
 	dir, err := os.MkdirTemp(home, "proxybroker-")
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Box-side broker: inject real on request, scrub back to dummy on response.
+	// Box-side broker: inject real on request head, scrub back to dummy on the
+	// streamed response.
 	if err := os.WriteFile(filepath.Join(dir, "broker.ts"),
-		[]byte(`export default () => ({ onRequest(req) { if (req.headers["authorization"] === "Bearer dummy") return { action: "forward", headers: { authorization: "Bearer REALSECRET" } }; return { action: "forward" }; }, onResponse(res) { if (typeof res.body === "string") return { body: res.body.split("REALSECRET").join("dummy") }; } });`), 0o644); err != nil {
+		[]byte(`export default () => ({ onRequest(head) { if (head.headers["authorization"] === "Bearer dummy") return { headers: { authorization: "Bearer REALSECRET" } }; }, onResponseChunk(chunk) { if (chunk === null) return; return Buffer.from(chunk.toString("latin1").split("REALSECRET").join("dummy")); } });`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	// Internet-side API: echo the Authorization header it received, terminally.
 	if err := os.WriteFile(filepath.Join(dir, "api.ts"),
-		[]byte(`export default () => ({ onRequest(req) { return { action: "respond", status: 200, body: "seen=" + (req.headers["authorization"] || "none") }; } });`), 0o644); err != nil {
+		[]byte(`export default () => ({ onRequest(head) { return { action: "respond", status: 200, body: "seen=" + (head.headers["authorization"] || "none") }; } });`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	outDir := filepath.Join(dir, "out")
 	os.MkdirAll(outDir, 0o755)
 	// Chain box→internet: broker (nearest box) then api (nearest internet).
-	yaml := fmt.Sprintf("default: br\nrecipes:\n  br:\n    image: dabs-e2e\n    keep: true\n    egress:\n      proxy:\n        - tls: terminate\n        - module: %s/broker.ts\n        - module: %s/api.ts\n        - tls: originate\n    sources:\n      - mount: %s\n        path: /out\n", dir, dir, outDir)
+	yaml := fmt.Sprintf("default: br\nrecipes:\n  br:\n    image: dabs-e2e\n    keep: true\n    egress:\n      http_proxy:\n        - tls: terminate\n        - module: %s/broker.ts\n        - module: %s/api.ts\n        - tls: originate\n    sources:\n      - mount: %s\n        path: /out\n", dir, dir, outDir)
 	os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644)
 	os.WriteFile(filepath.Join(outDir, "run.sh"), []byte("#!/bin/sh\ncurl -s -m 8 -H 'Authorization: Bearer dummy' https://api.test/ > /out/body.txt 2>&1\n"), 0o755)
 	out, code := run("dabs recipe " + dir + " --detach")
@@ -1003,23 +999,22 @@ func TestProxyBrokerHeaderRoundTrip(t *testing.T) {
 }
 
 // TestProxySingleHookSwapBack proves a single hook can both `respond` and
-// post-process its own answer via onResponse (the broker swap-back pattern):
-// inject on request, respond, then swap back on response so the box sees only
-// the safe value.
+// post-process its own answer via onResponseChunk (the broker swap-back pattern):
+// respond with REAL, then stream-swap REAL→DUMMY so the box sees only the safe
+// value.
 func TestProxySingleHookSwapBack(t *testing.T) {
 	clean(t)
 	dir, err := os.MkdirTemp(home, "proxyswap-")
 	if err != nil {
 		t.Fatal(err)
 	}
-	// onRequest respond with REAL; onResponse swap REAL->DUMMY so the box sees DUMMY.
 	if err := os.WriteFile(filepath.Join(dir, "broker.ts"),
-		[]byte(`export default () => ({ onRequest() { return { action: "respond", status: 200, body: "REAL-SECRET" }; }, onResponse(res) { return { body: res.body.replace("REAL-SECRET", "DUMMY") }; } });`), 0o644); err != nil {
+		[]byte(`export default () => ({ onRequest() { return { action: "respond", status: 200, body: "REAL-SECRET" }; }, onResponseChunk(chunk) { if (chunk === null) return; return Buffer.from(chunk.toString("latin1").replace("REAL-SECRET", "DUMMY")); } });`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	outDir := filepath.Join(dir, "out")
 	os.MkdirAll(outDir, 0o755)
-	yaml := fmt.Sprintf("default: b\nrecipes:\n  b:\n    image: dabs-e2e\n    keep: true\n    egress:\n      proxy:\n        - tls: terminate\n        - module: %s/broker.ts\n        - tls: originate\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
+	yaml := fmt.Sprintf("default: b\nrecipes:\n  b:\n    image: dabs-e2e\n    keep: true\n    egress:\n      http_proxy:\n        - tls: terminate\n        - module: %s/broker.ts\n        - tls: originate\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
 	os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644)
 	os.WriteFile(filepath.Join(outDir, "run.sh"), []byte("#!/bin/sh\ncurl -s -m 8 https://api.test/ > /out/body.txt 2>&1\n"), 0o755)
 	out, code := run("dabs recipe " + dir + " --detach")
@@ -1030,33 +1025,34 @@ func TestProxySingleHookSwapBack(t *testing.T) {
 	run("dabs exec " + inst + " -- sh /out/run.sh")
 	body := readFile(t, filepath.Join(outDir, "body.txt"))
 	if strings.Contains(body, "REAL-SECRET") {
-		t.Errorf("single-hook onResponse did not run on its own respond — real value leaked to the box:\n%s", body)
+		t.Errorf("single-hook onResponseChunk did not run on its own respond — real value leaked to the box:\n%s", body)
 	}
 	if !strings.Contains(body, "DUMMY") {
 		t.Errorf("box should see the swapped-back DUMMY value:\n%s", body)
 	}
 }
 
-// TestProxyHungHookTimesOut proves a hook that hangs is bounded (blocked), not an
-// indefinite egress stall — the request returns quickly with a refusal.
+// TestProxyHungHookTimesOut proves a hook that hangs is bounded, not an
+// indefinite egress stall — the request returns quickly with a 502, well within
+// curl's own timeout.
 func TestProxyHungHookTimesOut(t *testing.T) {
 	clean(t)
 	dir, err := os.MkdirTemp(home, "proxyhang-")
 	if err != nil {
 		t.Fatal(err)
 	}
-	// authorize hangs forever → fail-closed deny (bounded by the hook timeout).
+	// onRequest hangs forever → bounded by the hook timeout → 502.
 	if err := os.WriteFile(filepath.Join(dir, "hang.ts"),
-		[]byte(`export default () => ({ async authorize() { await new Promise(() => {}); } });`), 0o644); err != nil {
+		[]byte(`export default () => ({ async onRequest() { await new Promise(() => {}); } });`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	outDir := filepath.Join(dir, "out")
 	os.MkdirAll(outDir, 0o755)
-	yaml := fmt.Sprintf("default: g\nrecipes:\n  g:\n    image: dabs-e2e\n    keep: true\n    egress:\n      proxy:\n        - module: %s/hang.ts\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
+	yaml := fmt.Sprintf("default: g\nrecipes:\n  g:\n    image: dabs-e2e\n    keep: true\n    egress:\n      http_proxy:\n        - tls: terminate\n        - module: %s/hang.ts\n        - tls: originate\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
 	os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644)
-	// curl -m 5: if the hook hangs unbounded, curl hits its own timeout (28);
-	// with the engine timeout it is refused quickly (56, CONNECT refused).
-	os.WriteFile(filepath.Join(outDir, "run.sh"), []byte("#!/bin/sh\ncurl -s -o /dev/null -m 5 https://x.test/; echo \"exit=$?\" > /out/r.txt\n"), 0o755)
+	// curl -m 8: if the hook hung unbounded, curl would hit its own timeout (28);
+	// with the engine hook timeout it gets a quick 502.
+	os.WriteFile(filepath.Join(outDir, "run.sh"), []byte("#!/bin/sh\ncode=$(curl -s -o /dev/null -w '%{http_code}' -m 8 https://x.test/); echo \"code=$code exit=$?\" > /out/r.txt\n"), 0o755)
 	out, code := run("dabs recipe " + dir + " --detach")
 	if code != 0 {
 		t.Fatalf("boot failed (%d):\n%s", code, out)
@@ -1067,8 +1063,8 @@ func TestProxyHungHookTimesOut(t *testing.T) {
 	if strings.Contains(r, "exit=28") {
 		t.Errorf("a hung hook stalled egress past curl's timeout (no engine timeout):\n%s", r)
 	}
-	if !strings.Contains(r, "exit=56") {
-		t.Errorf("hung authorize hook should be refused at CONNECT (exit 56):\n%s", r)
+	if !strings.Contains(r, "code=502") {
+		t.Errorf("a hung hook should be bounded to a quick 502:\n%s", r)
 	}
 }
 
@@ -1077,25 +1073,22 @@ func TestProxyHungHookTimesOut(t *testing.T) {
 // is REQUIRED, so a host we cannot intercept is refused, not waved through —
 // passing it through would let a credential the host was meant to swap out reach
 // the box. The pinned host stays unreachable; a trusting client is still
-// intercepted; the connection-tier domain denylist STILL holds.
+// intercepted; the CONNECT domain denylist STILL holds.
 func TestProxyPinnedCertFailsClosed(t *testing.T) {
 	clean(t)
 	dir, err := os.MkdirTemp(home, "proxypin-")
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Connection tier: deny one domain. Content tier: a hook that would intercept.
-	if err := os.WriteFile(filepath.Join(dir, "gate.ts"),
-		[]byte(`export default () => ({ authorize({ host }) { return host === "blocked.test" ? "deny" : "allow"; } });`), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	// Content tier: a hook that would intercept. Policy: deny one domain via the
+	// engine-native gate.
 	if err := os.WriteFile(filepath.Join(dir, "hook.ts"),
 		[]byte(`export default () => ({ onRequest() { return { action: "respond", status: 200, body: "INTERCEPTED" }; } });`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	outDir := filepath.Join(dir, "out")
 	os.MkdirAll(outDir, 0o755)
-	yaml := fmt.Sprintf("default: p\nrecipes:\n  p:\n    image: dabs-e2e\n    keep: true\n    egress:\n      proxy:\n        - module: %s/gate.ts\n        - tls: terminate\n        - module: %s/hook.ts\n        - tls: originate\n    sources:\n      - mount: %s\n        path: /out\n", dir, dir, outDir)
+	yaml := fmt.Sprintf("default: p\nrecipes:\n  p:\n    image: dabs-e2e\n    keep: true\n    egress:\n      deny: blocked.test\n      http_proxy:\n        - tls: terminate\n        - module: %s/hook.ts\n        - tls: originate\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
 	os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644)
 	// SYS is the box's system CA bundle — it does NOT include our MITM CA, so
 	// `--cacert $SYS` makes curl reject our leaf (a stand-in for cert pinning).
@@ -1133,29 +1126,29 @@ curl -s --cacert $SYS -o /dev/null -m 8 https://blocked.test/; echo "deny_exit=$
 	}
 }
 
-// TestProxyAuthorizeOnContentHook verifies a hook INSIDE a tls: terminate window
-// still gets its authorize (domain check) called at CONNECT — allow/deny works
-// even on a TLS-inspecting hook, not only on out-of-window connection hops.
-func TestProxyAuthorizeOnContentHook(t *testing.T) {
+// TestEgressAllowGatesTerminateChain proves the allow list holds even when a
+// terminate window is present: an allowlisted host reaches the content hook while
+// any other host is default-denied at CONNECT (HTTP does not get to skip the
+// policy just because a content chain exists).
+func TestEgressAllowGatesTerminateChain(t *testing.T) {
 	clean(t)
-	dir, err := os.MkdirTemp(home, "proxyauthz-")
+	dir, err := os.MkdirTemp(home, "proxyallowgate-")
 	if err != nil {
 		t.Fatal(err)
 	}
-	// One hook, INSIDE the window, doing BOTH a domain check and content answer.
 	if err := os.WriteFile(filepath.Join(dir, "hook.ts"),
-		[]byte(`export default () => ({ authorize({ host }) { return host === "blocked.test" ? "deny" : "allow"; }, onRequest() { return { action: "respond", status: 200, body: "ok" }; } });`), 0o644); err != nil {
+		[]byte(`export default () => ({ onRequest() { return { action: "respond", status: 200, body: "ok" }; } });`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	outDir := filepath.Join(dir, "out")
 	os.MkdirAll(outDir, 0o755)
-	yaml := fmt.Sprintf("default: a\nrecipes:\n  a:\n    image: dabs-e2e\n    keep: true\n    egress:\n      proxy:\n        - tls: terminate\n        - module: %s/hook.ts\n        - tls: originate\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
+	yaml := fmt.Sprintf("default: a\nrecipes:\n  a:\n    image: dabs-e2e\n    keep: true\n    egress:\n      allow: ok.test\n      http_proxy:\n        - tls: terminate\n        - module: %s/hook.ts\n        - tls: originate\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
 	os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644)
 	os.WriteFile(filepath.Join(outDir, "run.sh"), []byte(`#!/bin/sh
 out=/out/out.txt
 : > "$out"
 echo "allowed=$(curl -s -m 8 https://ok.test/)" >> "$out"
-curl -s -o /dev/null -m 8 https://blocked.test/; echo "deny_exit=$?" >> "$out"
+curl -s -o /dev/null -m 8 https://other.test/; echo "deny_exit=$?" >> "$out"
 `), 0o755)
 	out, code := run("dabs recipe " + dir + " --detach")
 	if code != 0 {
@@ -1165,34 +1158,28 @@ curl -s -o /dev/null -m 8 https://blocked.test/; echo "deny_exit=$?" >> "$out"
 	run("dabs exec " + inst + " -- sh /out/run.sh")
 	got := readFile(t, filepath.Join(outDir, "out.txt"))
 	if !strings.Contains(got, "allowed=ok") {
-		t.Errorf("an allowed host should reach the content hook (ok):\n%s", got)
+		t.Errorf("an allowlisted host should reach the content hook (ok):\n%s", got)
 	}
 	if !strings.Contains(got, "deny_exit=56") {
-		t.Errorf("a content-window hook's authorize must still deny at CONNECT (exit 56):\n%s", got)
+		t.Errorf("an unlisted host must be default-denied at CONNECT (exit 56), even with a terminate chain:\n%s", got)
 	}
 }
 
-// TestProxyAllowlistDefaultDeny is the allowlist shape (the inverse of the
-// denylist in TestProxyConnectionTierPolicy): authorize allows ONLY a named host
-// and default-denies everything else. The listed host (example.com) reaches the
-// real internet; the UNLISTED host is www.dabs.dev/test/hello — a LIVE endpoint —
-// so its 000 proves a real CONNECT refusal, not an unreachable host. Content is
-// never asserted.
-func TestProxyAllowlistDefaultDeny(t *testing.T) {
+// TestEgressAllowlistDefaultDeny is the allowlist shape (the inverse of the
+// denylist): allow ONLY a named host and default-deny everything else. The listed
+// host (example.com) reaches the real internet; the UNLISTED host is a LIVE
+// endpoint, so its 000 proves a real CONNECT refusal, not an unreachable host.
+func TestEgressAllowlistDefaultDeny(t *testing.T) {
 	clean(t)
 	dir, err := os.MkdirTemp(home, "proxyallow-")
 	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "gate.ts"),
-		[]byte(`export default () => ({ authorize({ host }) { return host === "example.com" ? "allow" : "deny"; } });`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	outDir := filepath.Join(dir, "out")
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	yaml := fmt.Sprintf("default: allow\nrecipes:\n  allow:\n    image: dabs-e2e\n    keep: true\n    egress:\n      proxy:\n        - module: %s/gate.ts\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
+	yaml := fmt.Sprintf("default: allow\nrecipes:\n  allow:\n    image: dabs-e2e\n    keep: true\n    egress:\n      allow: example.com\n    sources:\n      - mount: %s\n        path: /out\n", outDir)
 	if err := os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644); err != nil {
 		t.Fatal(err)
 	}

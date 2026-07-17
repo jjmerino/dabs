@@ -17,7 +17,7 @@ import (
 func TestRebaseAnchorsProxyModulePathsOnYamlDir(t *testing.T) {
 	reg := recipe.Registry{Recipes: map[string]recipe.Recipe{
 		"gate": {
-			Egress: recipe.Egress{Mode: recipe.EgressProxy, Proxy: []recipe.ProxyHop{
+			Egress: recipe.Egress{Mode: recipe.EgressProxy, HTTPProxy: []recipe.ProxyHop{
 				{Module: "gate.ts"},       // relative → anchored on the yaml dir
 				{Module: "hooks/swap.ts"}, // relative subdir → anchored too
 				{TLS: "terminate"},        // a tls hop has no module → untouched
@@ -29,7 +29,7 @@ func TestRebaseAnchorsProxyModulePathsOnYamlDir(t *testing.T) {
 
 	rebaseSourcePaths(&reg, "/proj/box")
 
-	got := reg.Recipes["gate"].Egress.Proxy
+	got := reg.Recipes["gate"].Egress.HTTPProxy
 	want := []string{"/proj/box/gate.ts", "/proj/box/hooks/swap.ts", "", "/abs/keep.ts", "$HOME/env.ts"}
 	for i, w := range want {
 		if got[i].Module != w {

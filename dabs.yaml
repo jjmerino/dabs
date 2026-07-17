@@ -53,6 +53,55 @@ recipes:
       - mount: .
         path: /work
 
+  # dabs recipe confined-claude — the `claude` box, but the box NEVER holds the
+  # real credential. It runs Claude Code with a fully DUMMY, read-only creds file;
+  # the box's only egress is the dabs proxy engine, whose broker hook injects the
+  # REAL token host-side on api.anthropic.com traffic and scrubs it back out of
+  # every response. The real tokens live only in a host vault
+  # (~/.dabs/broker/vault.json), born on the first in-box `/login`.
+  confined-claude:
+    description: Claude box that never holds the real credential (broker-injected)
+    # The bundled claude image plus the linux forwarder proxy egress needs on the
+    # apple driver (built from this checkout — see the Dockerfile). Bases on the
+    # already-built dabs-claude image: run `dabs recipe claude` once first.
+    image: { dockerfile: contrib/recipes/confined-claude.Dockerfile, context: . }
+    command: [claude]
+    keep: true
+    env:
+      CLAUDE_CONFIG_DIR: /root/.claude
+    egress:
+      # A bare domain matches the apex AND every subdomain, so this reaches api,
+      # console (OAuth/refresh), statsig, etc.
+      allow: "anthropic.com, claude.ai, claude.com"
+      # Terminate the WHOLE managed set, not just api: the OAuth refresh rides
+      # console.anthropic.com / claude.ai, and a leg left un-terminated would
+      # tunnel the dummy token past the broker un-swapped.
+      http_proxy:
+        - tls: terminate
+          domains: [anthropic.com, claude.ai, claude.com]
+        - module: contrib/proxy/creds-inject-anthropic/broker.ts
+          # vault: ~/.dabs/broker/vault.json   # default; the real tokens' only home
+        - tls: originate
+    sources:
+      # The WHOLE config dir, persistent and shared by every confined box — its
+      # OWN dir, never your real ~/.dabs/shared/claude. It carries settings.json,
+      # onboarding state, theme AND the creds across boxes, so a box onboards
+      # once, not every time. It starts EMPTY (logged out): the first box does one
+      # /login, and the broker writes back a creds file that holds the DUMMY
+      # tokens but Anthropic's REAL metadata (scopes, subscriptionType, expiresAt)
+      # — the scrub rewrites only the token strings. From then on every box is
+      # authenticated, and a refresh keeps expiresAt honest. The real token lives
+      # only in the host vault; this dir only ever holds dummies.
+      - mkmount: ~/.dabs/shared/confined-claude
+        path: /root/.claude
+      # Per-place session transcripts, nested over the shared config dir — they
+      # live in $PARENT_VOLUME so they survive this box's reaping and reload for
+      # the next box on the same code (same as the `claude` recipe).
+      - mkmount: $PARENT_VOLUME/claude/projects
+        path: /root/.claude/projects
+      - mount: .
+        path: /work
+
   # dabs recipe fresh-claude — a DETACHED, logged-OUT Claude Code box. It mounts
   # NOTHING from ~/.dabs/shared/claude: the box boots with an empty /root/.claude,
   # so `claude` reports "Not logged in" and forces a fresh `/login`. That login —

@@ -43,13 +43,14 @@ type Provisioned struct {
 }
 
 // Provision starts the host-side proxy for a box whose recipe declares a
-// proxies chain: it adapts the chain to the engine's config, starts the engine,
-// mints/materializes the CA and forwarder, and returns what the driver and box
-// need. The driver must enforce proxy egress — a box that asked for a proxied
-// wall is never silently left open. expandPath resolves ~ and $VAR in module
-// paths (the caller owns path semantics); recipeEnv is the recipe's own env,
-// which wins over the proxy/CA env on conflict.
-func Provision(drv sandbox.Driver, recipeName string, hops []recipe.ProxyHop, recipeEnv map[string]string, expandPath func(string) (string, error)) (*Provisioned, error) {
+// mapping egress: it adapts the allow/deny patterns and the http_proxy chain to
+// the engine's config, starts the engine, mints/materializes the CA and
+// forwarder, and returns what the driver and box need. The driver must enforce
+// proxy egress — a box that asked for a proxied wall is never silently left
+// open. expandPath resolves ~ and $VAR in module paths (the caller owns path
+// semantics); recipeEnv is the recipe's own env, which wins over the proxy/CA
+// env on conflict.
+func Provision(drv sandbox.Driver, recipeName string, egress recipe.Egress, recipeEnv map[string]string, expandPath func(string) (string, error)) (*Provisioned, error) {
 	ee, ok := drv.(sandbox.EgressEnforcer)
 	if !ok {
 		return nil, fmt.Errorf("recipe %q: target driver cannot enforce proxy egress — refusing to boot", recipeName)
@@ -57,7 +58,7 @@ func Provision(drv sandbox.Driver, recipeName string, hops []recipe.ProxyHop, re
 	if err := ee.CheckEgress(sandbox.EgressProxy); err != nil {
 		return nil, fmt.Errorf("recipe %q: target driver cannot enforce proxy egress: %w", recipeName, err)
 	}
-	chain, err := buildChain(recipeName, hops, expandPath)
+	chain, err := buildChain(recipeName, egress.HTTPProxy, expandPath)
 	if err != nil {
 		return nil, err
 	}
@@ -65,7 +66,7 @@ func Provision(drv sandbox.Driver, recipeName string, hops []recipe.ProxyHop, re
 	if err != nil {
 		return nil, err
 	}
-	eng, err := engine.Start(dir, chain)
+	eng, err := engine.Start(dir, engine.Policy{Allow: egress.Allow, Deny: egress.Deny}, chain)
 	if err != nil {
 		// The engine never bound, so no box node will carry its dir for a later
 		// Reap — clean the temp dir here or it leaks, one per failed boot.
@@ -118,7 +119,7 @@ func buildChain(recipeName string, hops []recipe.ProxyHop, expandPath func(strin
 	chain := make([]engine.HopConfig, 0, len(hops))
 	for _, h := range hops {
 		if h.IsTLS() {
-			chain = append(chain, engine.HopConfig{TLS: h.TLS, Domains: h.Domains})
+			chain = append(chain, engine.HopConfig{TLS: h.TLS, Domains: h.Domains, FailOpen: h.FailOpen})
 			continue
 		}
 		// A module hop: its engine identity is its Label (name or basename); the

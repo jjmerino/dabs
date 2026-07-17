@@ -630,7 +630,7 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID, tip string, rec re
 	proxyPID, proxyDir := 0, ""
 	switch rec.EgressMode() {
 	case recipe.EgressProxy:
-		p, perr := proxy.Provision(drv, recipeName, rec.Egress.Proxy, rec.Env, r.expandPath)
+		p, perr := proxy.Provision(drv, recipeName, rec.Egress, rec.Env, r.expandPath)
 		if perr != nil {
 			return "", perr
 		}
@@ -812,13 +812,13 @@ func rebaseSourcePaths(reg *recipe.Registry, dir string) {
 			srcs[i].Worktree = rebase(srcs[i].Worktree)
 		}
 		rec.Sources = srcs
-		if hops := rec.Egress.Proxy; len(hops) > 0 {
+		if hops := rec.Egress.HTTPProxy; len(hops) > 0 {
 			rebased := make([]recipe.ProxyHop, len(hops))
 			copy(rebased, hops)
 			for i := range rebased {
 				rebased[i].Module = rebase(rebased[i].Module)
 			}
-			rec.Egress = recipe.Egress{Mode: rec.Egress.Mode, Proxy: rebased}
+			rec.Egress.HTTPProxy = rebased
 		}
 		reg.Recipes[n] = rec
 	}

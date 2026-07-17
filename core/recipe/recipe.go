@@ -38,17 +38,30 @@ type Recipe struct {
 	Sources     []Source          `json:"sources,omitempty" yaml:"sources,omitempty"`         // what lands in the box, and how
 	Target      string            `json:"target,omitempty" yaml:"target,omitempty"`           // which fleet driver runs it (e.g. "docker", a server); default local
 	Keep        bool              `json:"keep,omitempty" yaml:"keep,omitempty"`               // keep the box alive after the command (default: delete it)
-	Egress      Egress            `json:"egress,omitempty" yaml:"egress,omitempty"`           // the box's outbound network: open | none | {proxy: [chain]}
+	Egress      Egress            `json:"egress,omitempty" yaml:"egress,omitempty"`           // the box's outbound network: open | none | {allow/deny/http_proxy}
 }
 
 // Egress is the box's outbound network — a union. As a scalar it is `open`
 // (full outbound, the DEFAULT when unset) or `none` (no network). As a mapping
-// `{proxy: [chain]}` it routes ALL egress through an ordered interception chain.
+// it routes ALL egress through the dabs proxy engine, which enforces two
+// independent layers:
+//
+//   - POLICY (protocol-agnostic): `allow:` or `deny:` — domain patterns the
+//     engine checks at CONNECT time, on the plaintext host:port, before any
+//     tunnel, for every protocol. Mutually exclusive: allow default-denies the
+//     rest, deny default-allows it. A pattern is `example.com` (exact),
+//     `*.example.com` (any subdomain, not the apex), or `*` (all). Written as
+//     a comma-separated string or a YAML list.
+//   - CONTENT (HTTP/1.1 only): `http_proxy:` — an ordered chain of tls
+//     boundary directives and hook modules that inspect decrypted HTTP.
+//
 // The default is open: dabs is a dev tool, and a box that silently reaches
 // nowhere confuses far more than it protects — locking egress down is an opt-in.
 type Egress struct {
-	Mode  string     `json:"mode,omitempty" yaml:"-"`  // open | none | proxy (empty → open)
-	Proxy []ProxyHop `json:"proxy,omitempty" yaml:"-"` // the chain, box→internet, when Mode == proxy
+	Mode      string     `json:"mode,omitempty" yaml:"-"`       // open | none | proxy (empty → open)
+	Allow     []string   `json:"allow,omitempty" yaml:"-"`      // CONNECT allowlist patterns; default-deny the rest
+	Deny      []string   `json:"deny,omitempty" yaml:"-"`       // CONNECT denylist patterns; default-allow the rest
+	HTTPProxy []ProxyHop `json:"http_proxy,omitempty" yaml:"-"` // the HTTP content chain, box→internet, when Mode == proxy
 }
 
 // Egress modes.
@@ -69,8 +82,15 @@ func (e Egress) resolvedMode() string {
 // EgressMode is the recipe's resolved egress mode.
 func (r Recipe) EgressMode() string { return r.Egress.resolvedMode() }
 
+// The mapping egress vocabulary.
+const (
+	egressAllow     = "allow"
+	egressDeny      = "deny"
+	egressHTTPProxy = "http_proxy"
+)
+
 // UnmarshalYAML accepts the scalar forms (`egress: open`) or the proxy mapping
-// (`egress: {proxy: [ ... ]}`).
+// (`egress: {allow: …, deny: …, http_proxy: [ ... ]}`).
 func (e *Egress) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	var s string
 	if err := unmarshal(&s); err == nil {
@@ -79,21 +99,23 @@ func (e *Egress) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	}
 	// Validate the mapping's KEYS on a permissive decode first, so a mis-keyed
 	// mapping gets the friendly "unknown key" diagnostic — decoding straight into
-	// the hop list would fail with a raw decoder error whenever the value is not
-	// itself a list (e.g. `egress: {foo: bar}`).
+	// the typed struct would fail with a raw decoder error.
 	var keys map[string]interface{}
 	if err := unmarshal(&keys); err != nil {
-		return fmt.Errorf("egress: want a mode string (open|none) or `{proxy: [ ... ]}`: %w", err)
+		return fmt.Errorf("egress: want a mode string (open|none) or a mapping with allow/deny/http_proxy: %w", err)
 	}
 	if err := checkEgressMapKeys(keys); err != nil {
 		return err
 	}
-	var m map[string][]ProxyHop
-	if err := unmarshal(&m); err != nil {
-		return fmt.Errorf("egress: `proxy` must be a list of hops: %w", err)
+	var m struct {
+		Allow     interface{} `yaml:"allow"`
+		Deny      interface{} `yaml:"deny"`
+		HTTPProxy []ProxyHop  `yaml:"http_proxy"`
 	}
-	e.Mode, e.Proxy = EgressProxy, m[EgressProxy]
-	return nil
+	if err := unmarshal(&m); err != nil {
+		return fmt.Errorf("egress: `http_proxy` must be a list of hops: %w", err)
+	}
+	return e.setMapping(m.Allow, m.Deny, m.HTTPProxy)
 }
 
 // UnmarshalJSON mirrors UnmarshalYAML for the server's JSON decode path.
@@ -105,33 +127,81 @@ func (e *Egress) UnmarshalJSON(b []byte) error {
 	}
 	var keys map[string]interface{}
 	if err := json.Unmarshal(b, &keys); err != nil {
-		return fmt.Errorf("egress: want a mode string or `{proxy: [ ... ]}`: %w", err)
+		return fmt.Errorf("egress: want a mode string or a mapping with allow/deny/http_proxy: %w", err)
 	}
 	if err := checkEgressMapKeys(keys); err != nil {
 		return err
 	}
-	var m map[string][]ProxyHop
-	if err := json.Unmarshal(b, &m); err != nil {
-		return fmt.Errorf("egress: `proxy` must be a list of hops: %w", err)
+	var m struct {
+		Allow     interface{} `json:"allow"`
+		Deny      interface{} `json:"deny"`
+		HTTPProxy []ProxyHop  `json:"http_proxy"`
 	}
-	e.Mode, e.Proxy = EgressProxy, m[EgressProxy]
+	if err := json.Unmarshal(b, &m); err != nil {
+		return fmt.Errorf("egress: `http_proxy` must be a list of hops: %w", err)
+	}
+	return e.setMapping(m.Allow, m.Deny, m.HTTPProxy)
+}
+
+// setMapping fills a mapping egress from its decoded pieces. allow/deny arrive
+// untyped (a comma-separated string or a list, the user's choice); the chain is
+// already typed. A mapping is always proxy mode — even with no http_proxy chain,
+// an allow/deny gate routes egress through the engine to be enforced.
+func (e *Egress) setMapping(allow, deny interface{}, chain []ProxyHop) error {
+	al, err := toPatternList(egressAllow, allow)
+	if err != nil {
+		return err
+	}
+	dl, err := toPatternList(egressDeny, deny)
+	if err != nil {
+		return err
+	}
+	e.Mode, e.Allow, e.Deny, e.HTTPProxy = EgressProxy, al, dl, chain
 	return nil
 }
 
-// checkEgressMapKeys validates that a mapping egress carries exactly the `proxy`
-// key. It runs on a type-agnostic key set so the diagnostic is the same friendly
-// message whatever the value's shape.
+// checkEgressMapKeys validates that a mapping egress carries only the known keys
+// and at least one of them. It runs on a type-agnostic key set so the diagnostic
+// is the same friendly message whatever a value's shape.
 func checkEgressMapKeys(keys map[string]interface{}) error {
-	if len(keys) != 1 {
-		return errors.New("egress: a mapping must hold exactly the `proxy` key")
+	if len(keys) == 0 {
+		return errors.New("egress: an empty mapping — say open, none, or give allow/deny/http_proxy")
 	}
-	// Exactly one key here (len checked above); if it is not `proxy`, name it.
 	for k := range keys {
-		if k != EgressProxy {
-			return fmt.Errorf("egress: unknown key %q — a mapping egress is `{proxy: [ ... ]}`", k)
+		switch k {
+		case egressAllow, egressDeny, egressHTTPProxy:
+		default:
+			return fmt.Errorf("egress: unknown key %q — a mapping egress takes allow, deny, and http_proxy", k)
 		}
 	}
 	return nil
+}
+
+// toPatternList coerces an allow/deny value into a pattern list: a YAML/JSON
+// list of strings, or a single comma-separated string ("a.com, *.b.com").
+func toPatternList(field string, v interface{}) ([]string, error) {
+	switch x := v.(type) {
+	case nil:
+		return nil, nil
+	case string:
+		var out []string
+		for _, p := range strings.Split(x, ",") {
+			if p = strings.TrimSpace(p); p != "" {
+				out = append(out, p)
+			}
+		}
+		return out, nil
+	default:
+		nv, err := normalizeYAML(v)
+		if err != nil {
+			return nil, fmt.Errorf("egress %s: %w", field, err)
+		}
+		out, err := toStringList(nv)
+		if err != nil {
+			return nil, fmt.Errorf("egress %s: want a comma-separated string or a list of domain patterns: %w", field, err)
+		}
+		return out, nil
+	}
 }
 
 // ProxyHop is one entry in an egress proxy chain, ordered box→internet (the
@@ -322,21 +392,54 @@ func normalizeYAML(v interface{}) (interface{}, error) {
 }
 
 // validateEgress checks a recipe's egress mode: open, none, or proxy. The union
-// makes mode↔chain consistency structural (a scalar mode carries no chain), so
-// this only rejects an unknown scalar mode and an empty proxy chain, then
-// validates the chain itself.
+// makes mode↔fields consistency structural (a scalar mode carries no mapping
+// fields), so this checks the mapping's own rules: allow and deny are mutually
+// exclusive, patterns are well-formed, at least one of the three fields is
+// given, and the chain (if any) is valid.
 func validateEgress(name string, e Egress) error {
 	switch e.Mode {
 	case "", EgressOpen, EgressNone:
 		return nil
 	case EgressProxy:
-		if len(e.Proxy) == 0 {
-			return fmt.Errorf("recipe %q: egress proxy needs a non-empty chain", name)
+		if len(e.Allow) > 0 && len(e.Deny) > 0 {
+			return fmt.Errorf("recipe %q: egress allow and deny are mutually exclusive — an allowlist already denies the rest", name)
 		}
-		return validateProxies(name, e.Proxy)
+		if len(e.Allow) == 0 && len(e.Deny) == 0 && len(e.HTTPProxy) == 0 {
+			return fmt.Errorf("recipe %q: a mapping egress needs allow, deny, or a non-empty http_proxy chain", name)
+		}
+		for _, p := range e.Allow {
+			if err := validatePattern(name, egressAllow, p); err != nil {
+				return err
+			}
+		}
+		for _, p := range e.Deny {
+			if err := validatePattern(name, egressDeny, p); err != nil {
+				return err
+			}
+		}
+		return validateProxies(name, e.HTTPProxy)
 	default:
-		return fmt.Errorf("recipe %q: egress %q is not one of open, none, or {proxy: [ ... ]}", name, e.Mode)
+		return fmt.Errorf("recipe %q: egress %q is not one of open, none, or a mapping with allow/deny/http_proxy", name, e.Mode)
 	}
+}
+
+// validatePattern checks one allow/deny domain pattern: `*` (all),
+// `*.example.com` (any subdomain, not the apex), or an exact hostname. A `*`
+// anywhere else has no defined meaning, so it is rejected rather than silently
+// matched literally.
+func validatePattern(recipeName, field, p string) error {
+	if err := rejectControl(fmt.Sprintf("egress %s pattern in recipe %q", field, recipeName), p); err != nil {
+		return err
+	}
+	rest := p
+	if p == "*" {
+		return nil
+	}
+	rest = strings.TrimPrefix(rest, "*.")
+	if rest == "" || strings.ContainsAny(rest, "*/ ") {
+		return fmt.Errorf("recipe %q: egress %s pattern %q — a pattern is `*`, `*.example.com`, or an exact hostname", recipeName, field, p)
+	}
+	return nil
 }
 
 // validateProxies checks an egress proxy chain: a hop is a tls directive or a

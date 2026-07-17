@@ -18,6 +18,7 @@ recipes:
     keep: true                     # keep the box after the command exits (default: delete)
     env: { KEY: value }            # environment inside the box
     target: my-server              # route to a registered server; omit for local
+    egress: open                   # outbound network: open (default) | none | {allow/deny/http_proxy}
     sources:
       - mount: .                   # live bind; origin must exist
         path: /work
@@ -50,3 +51,42 @@ recipes:
 - **boxless recipes** — a recipe with no `image:` provisions its places (a
   worktree, a copied dir) and stops; `wt` and `scratch` are the bundled
   examples.
+
+## Egress
+
+`egress` controls the box's outbound network. As a scalar it is `open` (full
+outbound, the **default** when unset) or `none` (no network). As a mapping it
+routes ALL egress through the dabs proxy engine, which enforces two independent
+layers:
+
+```yaml
+egress:
+  allow: "api.anthropic.com, *.github.com"   # OR deny: — the CONNECT gate
+  http_proxy:                                # optional HTTP content chain
+    - tls: terminate
+      domains: [api.anthropic.com]           # scope: decrypt only these hosts
+    - module: ./broker.ts                    # a streaming content hook
+    - tls: originate
+```
+
+- **Policy — `allow` / `deny`** (protocol-agnostic). The engine checks the
+  CONNECT host against these patterns on the plaintext `host:port`, before any
+  tunnel, for **every** protocol (HTTPS, WebSocket, raw TCP — HTTP cannot skip
+  it). `allow` default-denies the rest; `deny` default-allows it; they are
+  mutually exclusive. A pattern is `example.com` (exact), `*.example.com` (any
+  subdomain, not the apex), or `*` (all). Write a comma-separated string or a
+  YAML list.
+- **Content — `http_proxy`** (HTTP/1.1 only). An ordered chain, box→internet, of
+  `tls` boundary directives and hook `module`s. A `tls: terminate` opens a
+  plaintext window (optionally scoped to `domains:`) that a `tls: originate`
+  closes; module hooks inside it inspect decrypted HTTP through four streaming
+  verbs (`onRequest`, `onRequestChunk`, `onResponse`, `onResponseChunk`). Bodies
+  stream through chunk by chunk — the engine never buffers. Non-HTTP traffic
+  inside a terminate window (h2, WebSocket over TLS, any raw protocol) is
+  re-originated untouched, so terminating a domain never costs the box its other
+  protocols to it. Module paths resolve like sources: relative to the recipe's
+  own `dabs.yaml`.
+
+Proxy egress needs `bun` and `openssl` on the host PATH, and a dabs built with
+the forwarder embedded (`-tags withforwarder`); without them, `open`/`none` still
+work and proxy egress fails clearly at boot.

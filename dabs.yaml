@@ -53,6 +53,53 @@ recipes:
       - mount: .
         path: /work
 
+  # dabs recipe confined-claude — the `claude` box, but the box NEVER holds the
+  # real credential. It runs Claude Code with a fully DUMMY, read-only creds file;
+  # the box's only egress is the dabs proxy engine, whose broker hook injects the
+  # REAL token host-side on api.anthropic.com traffic and scrubs it back out of
+  # every response. The real tokens live only in a host vault
+  # (~/.dabs/broker/vault.json), born on the first in-box `/login`.
+  #
+  # This is a stronger guarantee than the `claude` recipe's mount ban: there, the
+  # real credential is physically in the box and only tool-access is blocked;
+  # here, the real credential is never in the box at all — the broker's inbound
+  # real→dummy pass is a by-construction backstop, and the read-only dummy mount
+  # is the second.
+  confined-claude:
+    description: Claude box that never holds the real credential (broker-injected)
+    image: claude
+    command: [claude]
+    keep: true
+    env:
+      CLAUDE_CONFIG_DIR: /root/.claude
+    egress:
+      # Protocol-agnostic CONNECT gate: only Anthropic. Everything else is denied
+      # at CONNECT, whatever the protocol — the box cannot phone home elsewhere.
+      allow: api.anthropic.com
+      # HTTP content chain: terminate Anthropic's TLS, run the broker, re-originate.
+      http_proxy:
+        - tls: terminate
+          domains: [api.anthropic.com]
+        - module: contrib/broker/broker.ts
+          # vault: ~/.dabs/broker/vault.json   # default; the real tokens' only home
+          # debug: ~/.dabs/broker/trace.jsonl  # uncomment to trace the exchange
+        - tls: originate
+    sources:
+      # Config + sessions persist across boxes (as the `claude` recipe), but the
+      # real credential is deliberately NOT mounted here.
+      - mkmount: $PARENT_VOLUME/confined-claude/config
+        path: /root/.claude
+      - mkmount: $PARENT_VOLUME/claude/projects
+        path: /root/.claude/projects
+      # The DUMMY credentials the box authenticates with — read-only. The broker
+      # maps these sentinels to the real tokens on the wire; the box only ever
+      # sees the dummies, and cannot overwrite them.
+      - mount: contrib/broker/dummy-credentials.json
+        path: /root/.claude/.credentials.json
+        ro: true
+      - mount: .
+        path: /work
+
   # dabs recipe fresh-claude — a DETACHED, logged-OUT Claude Code box. It mounts
   # NOTHING from ~/.dabs/shared/claude: the box boots with an empty /root/.claude,
   # so `claude` reports "Not logged in" and forces a fresh `/login`. That login —

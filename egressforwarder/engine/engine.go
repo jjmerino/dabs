@@ -32,10 +32,21 @@ type HopConfig struct {
 	Config  map[string]interface{} `json:"config,omitempty"`
 }
 
+// Policy is the engine-enforced CONNECT gate: domain patterns checked on the
+// plaintext host before any tunnel, for every protocol. Allow default-denies
+// the rest; Deny default-allows it; both empty means every host is allowed.
+// The recipe validator guarantees they are mutually exclusive.
+type Policy struct {
+	Allow []string `json:"allow,omitempty"`
+	Deny  []string `json:"deny,omitempty"`
+}
+
 // engineConfig is the JSON the engine reads on boot.
 type engineConfig struct {
 	Socket string      `json:"socket"`
 	CADir  string      `json:"caDir"`
+	Allow  []string    `json:"allow,omitempty"`
+	Deny   []string    `json:"deny,omitempty"`
 	Chain  []HopConfig `json:"chain"`
 }
 
@@ -56,7 +67,7 @@ type Engine struct {
 // waits for its socket to come up (the engine mints the CA before binding, so a
 // live socket means the CA cert exists too). The caller mounts CACert into the
 // box and points the box's HTTP_PROXY at the in-box forwarder.
-func Start(dir string, chain []HopConfig) (*Engine, error) {
+func Start(dir string, policy Policy, chain []HopConfig) (*Engine, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
@@ -67,7 +78,7 @@ func Start(dir string, chain []HopConfig) (*Engine, error) {
 	caDir := filepath.Join(dir, "ca")
 	socket := filepath.Join(dir, "engine.sock")
 	cfgPath := filepath.Join(dir, "config.json")
-	cfg, err := json.Marshal(engineConfig{Socket: socket, CADir: caDir, Chain: chain})
+	cfg, err := json.Marshal(engineConfig{Socket: socket, CADir: caDir, Allow: policy.Allow, Deny: policy.Deny, Chain: chain})
 	if err != nil {
 		return nil, err
 	}

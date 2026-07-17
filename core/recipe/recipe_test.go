@@ -264,7 +264,7 @@ recipes:
   claude:
     image: claude
     egress:
-      proxy:
+      http_proxy:
         - tls: terminate
         - module: $RECIPE_DIR/recorder.ts
         - module: $RECIPE_DIR/responder.ts
@@ -273,7 +273,7 @@ recipes:
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := reg.Recipes["claude"].Egress.Proxy
+	p := reg.Recipes["claude"].Egress.HTTPProxy
 	if len(p) != 4 {
 		t.Fatalf("got %d hops, want 4", len(p))
 	}
@@ -295,7 +295,7 @@ recipes:
   r:
     image: x
     egress:
-      proxy:
+      http_proxy:
         - module: rec.ts
           name: logger
           dir: /tmp/cassettes
@@ -303,7 +303,7 @@ recipes:
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := reg.Recipes["r"].Egress.Proxy[0]
+	h := reg.Recipes["r"].Egress.HTTPProxy[0]
 	if h.Label() != "logger" {
 		t.Errorf("label = %q, want logger (name overrides basename)", h.Label())
 	}
@@ -320,7 +320,7 @@ recipes:
   r:
     image: x
     egress:
-      proxy:
+      http_proxy:
         - module: policy.ts
 `))
 	if err != nil {
@@ -330,7 +330,7 @@ recipes:
 
 // A hop key that is neither tls nor module is a typo, not a hop.
 func TestUnknownHopKeyRejected(t *testing.T) {
-	_, err := recipe.Parse([]byte("recipes:\n  r:\n    image: x\n    egress:\n      proxy:\n        - recorder: { module: rec.ts }\n"))
+	_, err := recipe.Parse([]byte("recipes:\n  r:\n    image: x\n    egress:\n      http_proxy:\n        - recorder: { module: rec.ts }\n"))
 	if err == nil || !strings.Contains(err.Error(), "tls") {
 		t.Fatalf("want unknown-key error mentioning tls/module, got %v", err)
 	}
@@ -351,7 +351,7 @@ func TestTLSBalanceValidation(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			_, err := recipe.Parse([]byte("recipes:\n  r:\n    image: x\n    egress:\n      proxy:\n        " + c.chain + "\n"))
+			_, err := recipe.Parse([]byte("recipes:\n  r:\n    image: x\n    egress:\n      http_proxy:\n        " + c.chain + "\n"))
 			if c.wantErr == "" {
 				if err != nil {
 					t.Fatalf("want ok, got %v", err)
@@ -365,21 +365,30 @@ func TestTLSBalanceValidation(t *testing.T) {
 	}
 }
 
-// The egress mode is open|none, or a {proxy: [chain]} mapping; the default is
-// open. A proxy mapping needs a non-empty chain; a bogus scalar is rejected.
+// The egress mode is open|none, or a mapping with allow/deny/http_proxy; the
+// default is open. A mapping needs at least one field; a bogus scalar or key is
+// rejected; allow and deny are mutually exclusive.
 func TestEgressModeValidation(t *testing.T) {
 	cases := []struct{ name, egress, wantErr string }{
 		{"open", "    egress: open\n", ""},
 		{"none", "    egress: none\n", ""},
 		{"unset defaults open", "", ""},
-		{"proxy chain ok", "    egress:\n      proxy:\n        - module: h.ts\n", ""},
-		{"proxy empty chain", "    egress:\n      proxy: []\n", "non-empty chain"},
+		{"proxy chain ok", "    egress:\n      http_proxy:\n        - module: h.ts\n", ""},
+		{"proxy empty chain", "    egress:\n      http_proxy: []\n", "non-empty http_proxy chain"},
+		{"allow list ok", "    egress:\n      allow: [api.example.com, '*.example.org']\n", ""},
+		{"allow comma string ok", "    egress:\n      allow: \"api.example.com, *.example.org\"\n", ""},
+		{"deny ok", "    egress:\n      deny: evil.example.com\n", ""},
+		{"allow plus chain ok", "    egress:\n      allow: api.example.com\n      http_proxy:\n        - module: h.ts\n", ""},
+		{"allow and deny exclusive", "    egress:\n      allow: a.com\n      deny: b.com\n", "mutually exclusive"},
+		{"bad pattern", "    egress:\n      allow: \"a.*.com\"\n", "exact hostname"},
+		{"bare star ok", "    egress:\n      deny: \"*\"\n", ""},
+		{"empty mapping", "    egress: {}\n", "empty mapping"},
 		{"bogus scalar", "    egress: sideways\n", "not one of open, none"},
 		{"bogus mapping key", "    egress:\n      tunnel: []\n", "unknown key"},
 		// A mis-keyed mapping whose value is NOT a hop list must still get the
 		// friendly key diagnostic, not a raw decoder error.
 		{"bogus key scalar value", "    egress:\n      foo: bar\n", "unknown key"},
-		{"extra key alongside proxy", "    egress:\n      proxy:\n        - module: h.ts\n      extra: 1\n", "exactly the `proxy` key"},
+		{"extra key alongside proxy", "    egress:\n      http_proxy:\n        - module: h.ts\n      extra: 1\n", "unknown key"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -397,22 +406,47 @@ func TestEgressModeValidation(t *testing.T) {
 	}
 }
 
+// allow/deny parse as a YAML list or a comma-separated string, onto the same
+// fields; either form is proxy mode even with no http_proxy chain (the engine
+// must run to enforce the gate).
+func TestEgressAllowDenyParse(t *testing.T) {
+	reg, err := recipe.Parse([]byte("recipes:\n  r:\n    image: x\n    egress:\n      allow: \" api.example.com , *.example.org \"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := reg.Recipes["r"].Egress
+	if len(e.Allow) != 2 || e.Allow[0] != "api.example.com" || e.Allow[1] != "*.example.org" {
+		t.Errorf("comma allow = %#v, want the two trimmed patterns", e.Allow)
+	}
+	if got := reg.Recipes["r"].EgressMode(); got != recipe.EgressProxy {
+		t.Errorf("EgressMode() = %q, want %q (an allow gate runs through the engine)", got, recipe.EgressProxy)
+	}
+	reg, err = recipe.Parse([]byte("recipes:\n  r:\n    image: x\n    egress:\n      deny: [evil.example.com, '*']\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e = reg.Recipes["r"].Egress
+	if len(e.Deny) != 2 || e.Deny[0] != "evil.example.com" || e.Deny[1] != "*" {
+		t.Errorf("list deny = %#v", e.Deny)
+	}
+}
+
 // A `tls: terminate` may carry a `domains` list scoping which hosts are
 // decrypted. The list parses onto the hop; `domains` on `originate` or a
 // non-list value is a clear error.
 func TestEgressTerminateDomainsParse(t *testing.T) {
-	reg, err := recipe.Parse([]byte("recipes:\n  r:\n    image: x\n    egress:\n      proxy:\n        - tls: terminate\n          domains: [api.example.com, example.org]\n        - module: h.ts\n        - tls: originate\n"))
+	reg, err := recipe.Parse([]byte("recipes:\n  r:\n    image: x\n    egress:\n      http_proxy:\n        - tls: terminate\n          domains: [api.example.com, example.org]\n        - module: h.ts\n        - tls: originate\n"))
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	hops := reg.Recipes["r"].Egress.Proxy
+	hops := reg.Recipes["r"].Egress.HTTPProxy
 	if len(hops[0].Domains) != 2 || hops[0].Domains[0] != "api.example.com" || hops[0].Domains[1] != "example.org" {
 		t.Errorf("domains not parsed: %+v", hops[0])
 	}
-	if _, err := recipe.Parse([]byte("recipes:\n  r:\n    image: x\n    egress:\n      proxy:\n        - tls: terminate\n        - module: h.ts\n        - tls: originate\n          domains: [x.com]\n")); err == nil || !strings.Contains(err.Error(), "only applies to") {
+	if _, err := recipe.Parse([]byte("recipes:\n  r:\n    image: x\n    egress:\n      http_proxy:\n        - tls: terminate\n        - module: h.ts\n        - tls: originate\n          domains: [x.com]\n")); err == nil || !strings.Contains(err.Error(), "only applies to") {
 		t.Errorf("want error for domains on originate, got %v", err)
 	}
-	if _, err := recipe.Parse([]byte("recipes:\n  r:\n    image: x\n    egress:\n      proxy:\n        - tls: terminate\n          domains: nope\n")); err == nil || !strings.Contains(err.Error(), "list of hostnames") {
+	if _, err := recipe.Parse([]byte("recipes:\n  r:\n    image: x\n    egress:\n      http_proxy:\n        - tls: terminate\n          domains: nope\n")); err == nil || !strings.Contains(err.Error(), "list of hostnames") {
 		t.Errorf("want error for non-list domains, got %v", err)
 	}
 }
@@ -432,7 +466,7 @@ func TestEgressDefaultsToOpen(t *testing.T) {
 // Only one tls window per chain — multiple terminate…originate windows are
 // rejected (the engine would silently merge them).
 func TestSingleTLSWindow(t *testing.T) {
-	_, err := recipe.Parse([]byte("recipes:\n  r:\n    image: x\n    egress:\n      proxy:\n        - tls: terminate\n        - tls: originate\n        - tls: terminate\n        - tls: originate\n"))
+	_, err := recipe.Parse([]byte("recipes:\n  r:\n    image: x\n    egress:\n      http_proxy:\n        - tls: terminate\n        - tls: originate\n        - tls: terminate\n        - tls: originate\n"))
 	if err == nil || !strings.Contains(err.Error(), "only one") {
 		t.Fatalf("want single-window error, got %v", err)
 	}

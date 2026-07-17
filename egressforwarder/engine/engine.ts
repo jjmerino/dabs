@@ -1,59 +1,61 @@
-// The dabs proxy engine: one in-process Bun program per box that runs the
-// recipe's ordered egress proxy chain. The box's egress is pointed at this
-// engine's unix socket (HTTP-proxy protocol); per connection the engine keys on
-// the verified CONNECT host and runs each hook at up to two moments:
+// The dabs proxy engine: one in-process Bun program per box that runs a recipe's
+// egress policy and (optional) HTTP content chain. The box's egress is pointed
+// at this engine's unix socket (HTTP-proxy protocol). Two independent layers:
 //
-//   - CONNECTION check (EVERY module hop): the hook's `authorize({host, port})`
-//     decides allow / deny at CONNECT, BEFORE any tunnel — no decryption.
-//     This is the domain allow/deny tier, and it runs whether the connection is
-//     then terminated OR passed through, so the domain policy always applies.
-//   - CONTENT inspection (module hops INSIDE a `tls: terminate` … `tls: originate`
-//     window): the engine terminates TLS with a CA the box trusts and runs the
-//     hook's `onRequest`/`onResponse` on the decrypted request; `tls: originate`
-//     re-encrypts to the real upstream. A hook outside a window has no plaintext,
-//     so only its `authorize` runs.
+//   - POLICY (protocol-agnostic): the engine checks the CONNECT host against the
+//     recipe's allow/deny patterns, on the plaintext host:port, BEFORE any
+//     tunnel — for every protocol. A denied host gets 403; an allowed host is
+//     tunneled. This is not a hook: it is engine-native and cannot be skipped.
+//   - CONTENT (HTTP/1.1 only): inside a `tls: terminate` … `tls: originate`
+//     window, the engine terminates TLS with a CA the box trusts and runs each
+//     module hook's four verbs on the DECRYPTED HTTP/1.1 stream — streaming,
+//     never buffering. Non-HTTP traffic inside a terminate window (h2, a raw
+//     protocol) is re-originated untouched (a transparent tunnel), so
+//     terminating a domain never costs the box its other protocols to it.
 //
-// A chain with no `tls: terminate` needs no CA: allowed connections raw-tunnel to
-// the real host. A `tls: terminate` is always closed by a `tls: originate` (the
-// recipe validator requires it), so decrypted traffic that is forwarded is always
-// re-encrypted — never downgraded to plaintext. A hook that `respond`s answers
-// locally and breaks the chain before the close. A client that PINS its cert
-// (rejects our leaf) is learned and passed through un-intercepted; its content
-// hooks are skipped (no plaintext), but authorize still gated the connection.
-// ECH (encrypted SNI) is refused: it would hide the destination from authorize.
+// The no-buffering law: request and response bodies flow through chunk by chunk,
+// so a stream stays a stream and the wire framing/timing is preserved. A hook
+// that needs whole-body context accumulates it ITSELF across chunks.
 //
-// Contract (all fields plain JSON; a handler never touches a socket):
-//   authorize({host, port})
-//     → "allow" (or nothing)                          let the connection through
-//     → "deny"  (or {action:"deny"})                  refuse the CONNECT (403)
-//   onRequest({host, method, path, headers, body})
-//     → {action:"forward", headers?, body?}           continue down the chain
-//     → {action:"respond", status, headers?, body}    ANSWER here, break the chain
-//     → {action:"deny", status?, headers?, body?}     refuse
-//   onResponse({host, status, headers, body})
-//     → {status?, headers?, body?}                    rewrite (or return nothing)
+// The four content verbs (all fields plain JSON/Buffer; a hook never touches a
+// socket), each given a per-request scratch `ctx`:
+//   onRequest({host,port,method,path,headers}, ctx)
+//     → nothing / {headers}                    edit request headers, continue
+//     → {action:"respond", status?, headers?, body?}   answer here, break the chain
+//     → {action:"deny", status?, headers?, body?}      refuse
+//   onRequestChunk(chunk|null, ctx)  → Buffer|string|null|void
+//     each request body chunk (null = EOF/flush). Return bytes to REPLACE the
+//     chunk, or nothing to pass it through unchanged.
+//   onResponse({host,status,headers}, ctx)  → nothing / {status?, headers?}
+//   onResponseChunk(chunk|null, ctx)  → Buffer|string|null|void
+//     each response body chunk (null = EOF/flush); transform or observe.
 //
-// A `respond` turns the request around: the response unwinds through onResponse
-// of every hook the request already passed, in REVERSE order.
+// Request hooks run chain order (box→internet); response hooks run REVERSE
+// (internet→box), so a box-side hook is the last to touch a response.
 
 import * as net from "node:net";
+import * as tls from "node:tls";
+import * as http from "node:http";
+import * as https from "node:https";
 import { existsSync, mkdirSync, unlinkSync, copyFileSync } from "node:fs";
 
 type Json = Record<string, unknown>;
 
-interface RequestView { host: string; port: number; method: string; path: string; headers: Record<string, string>; body: string; }
-interface ResponseView { host: string; status: number; headers: Record<string, string>; body: string; }
+interface RequestHead { host: string; port: number; method: string; path: string; headers: Record<string, string>; }
+interface ResponseHead { host: string; status: number; headers: Record<string, string>; }
+type ChunkResult = Buffer | string | null | undefined | void;
 interface Handler {
-  authorize?(conn: { host: string; port: number }): Promise<Json | string | void> | Json | string | void;
-  onRequest?(req: RequestView): Promise<Json | void> | Json | void;
-  onResponse?(res: ResponseView): Promise<Json | void> | Json | void;
+  onRequest?(head: RequestHead, ctx: Json): Promise<Json | void> | Json | void;
+  onRequestChunk?(chunk: Buffer | null, ctx: Json): Promise<ChunkResult> | ChunkResult;
+  onResponse?(head: ResponseHead, ctx: Json): Promise<Json | void> | Json | void;
+  onResponseChunk?(chunk: Buffer | null, ctx: Json): Promise<ChunkResult> | ChunkResult;
 }
 interface HopConfig { name?: string; tls?: string; domains?: string[]; module?: string; config?: Json; }
-interface EngineConfig { socket: string; caDir: string; chain: HopConfig[]; }
+interface EngineConfig { socket: string; caDir: string; allow?: string[]; deny?: string[]; chain: HopConfig[]; }
 
 interface Hop { name: string; kind: "tls-terminate" | "tls-originate" | "module"; handler?: Handler; domains?: string[]; }
 
-// --- certs: a CA (minted once) and a per-host leaf signed by it, cached.
+// --- certs: a CA (minted once) and a per-host leaf signed by it, cached. -----
 
 // runOpenssl runs openssl and FAILS LOUD on a non-zero exit — a swallowed failure
 // caches an empty cert and breaks TLS termination for that host with no trace.
@@ -108,7 +110,34 @@ async function mintLeaf(dir: string, host: string): Promise<{ cert: string; key:
   return { cert: await Bun.file(`${base}.crt`).text(), key: await Bun.file(`${base}.key`).text() };
 }
 
-// --- chain: load module hooks at boot; classify tls boundary directives.
+// --- policy: the engine-native CONNECT gate. --------------------------------
+
+// canonicalHost normalizes a host for policy: DNS names are case-insensitive and
+// a trailing dot is the same server, so lowercase and strip it — otherwise
+// "WWW.X.COM" or "www.x.com." would slip past a deny of "www.x.com".
+function canonicalHost(host: string): string {
+  return host.toLowerCase().replace(/\.+$/, "");
+}
+
+// matchPattern tests one canonical host against one pattern: `*` (all),
+// `*.example.com` (any subdomain, not the apex), or an exact hostname.
+function matchPattern(pattern: string, host: string): boolean {
+  const p = pattern.toLowerCase();
+  if (p === "*") return true;
+  if (p.startsWith("*.")) return host.endsWith(p.slice(1)); // ".example.com" — subdomains only
+  return host === p;
+}
+
+// compilePolicy turns allow/deny lists into a host→allowed predicate. Allow
+// default-denies the rest; deny default-allows it; neither means all allowed.
+// The recipe validator guarantees allow and deny are not both set.
+function compilePolicy(allow: string[], deny: string[]): (host: string) => boolean {
+  if (allow.length) return (host) => allow.some((p) => matchPattern(p, host));
+  if (deny.length) return (host) => !deny.some((p) => matchPattern(p, host));
+  return () => true;
+}
+
+// --- chain: load module hooks at boot; classify tls boundary directives. ----
 async function resolveChain(chain: HopConfig[]): Promise<Hop[]> {
   const hops: Hop[] = [];
   for (const h of chain) {
@@ -122,21 +151,19 @@ async function resolveChain(chain: HopConfig[]): Promise<Hop[]> {
     if (typeof factory !== "function") throw new Error(`proxy module ${h.module}: default export must be a factory (config) => handler`);
     const handler = factory(h.config ?? {});
     // A factory that returns a non-object (null, a number, undefined) would become
-    // a silent pass-through — no authorize, no hooks — while a bad default export
-    // fails loudly. Fail closed here too: reject at boot rather than open egress.
+    // a silent pass-through — no hooks — while a bad default export fails loudly.
+    // Fail closed here too: reject at boot rather than open egress.
     if (!handler || typeof handler !== "object") throw new Error(`proxy module ${h.module}: factory must return a handler object, got ${handler === null ? "null" : typeof handler}`);
     hops.push({ name: h.name ?? h.module, kind: "module", handler: handler as Handler });
   }
   return hops;
 }
 
-// Classify the chain. EVERY module hop's `authorize` runs at CONNECT (the domain
-// check, whether we terminate or pass through), so moduleHops is all of them in
-// order. contentHops is the subset inside a terminate…originate window — only
-// those see decrypted content via onRequest/onResponse. Also report whether the
-// chain terminates (needs a CA) and originates (forwards upstream).
+// Classify the chain. contentHops is the subset of module hops inside a
+// terminate…originate window — only those see decrypted HTTP content. Report
+// whether the chain terminates (needs a CA) and originates (forwards upstream),
+// and the terminate window's domain scope.
 function classify(hops: Hop[]) {
-  const moduleHops: Hop[] = [];
   const contentHops: Hop[] = [];
   let inWindow = false, terminates = false, originates = false;
   let terminateDomains: string[] | null = null;
@@ -149,27 +176,19 @@ function classify(hops: Hop[]) {
       continue;
     }
     if (h.kind === "tls-originate") { inWindow = false; originates = true; continue; }
-    moduleHops.push(h);
     if (inWindow) contentHops.push(h);
-  }
-  // Diagnostic: a hook with content methods but no window will never inspect
-  // content (its authorize still runs). Say so at boot, loudly.
-  for (const h of moduleHops) {
-    if (!contentHops.includes(h) && (h.handler?.onRequest || h.handler?.onResponse)) {
-      console.warn(`warning: proxy hook "${h.name}" is OUTSIDE a "tls: terminate" window — its onRequest/onResponse will NOT run (only its authorize does). Add "tls: terminate" before it to inspect content.`);
+    else if (h.handler?.onRequest || h.handler?.onResponse || h.handler?.onRequestChunk || h.handler?.onResponseChunk) {
+      // A hook with content verbs but no window will never run. Say so at boot.
+      console.warn(`warning: proxy hook "${h.name}" is OUTSIDE a "tls: terminate" window — its content verbs will NOT run. Add "tls: terminate" before it to inspect content.`);
     }
   }
-  return { moduleHops, contentHops, terminates, originates, terminateDomains };
+  return { contentHops, terminates, originates, terminateDomains };
 }
 
-// Hooks are user code, so bound every call: a hung or slow hook must not stall
-// the box's egress forever. On timeout the promise rejects and the caller turns
-// it into a clean refusal (deny / 502), never a hang. The timer is cleared when
-// the hook settles, so a fast hook leaves nothing dangling. The budget assumes a
-// LOCAL hook (a lookup, a string swap): a hook that does its own network I/O
-// (e.g. fetching a token) will not fit and should not be written against this
-// contract. A single async event-loop block is caught; a synchronous CPU spin is
-// not (it starves the timer) — hooks must not block the loop.
+// Hooks are user code, so bound every call: a hung hook must not stall the box's
+// egress forever. On timeout the promise rejects and the caller turns it into a
+// clean refusal, never a hang. The budget assumes a LOCAL hook (a lookup, a
+// string swap); a hook doing its own network I/O will not fit this contract.
 const HOOK_TIMEOUT_MS = 100;
 function callHook<T>(p: Promise<T> | T): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -181,28 +200,18 @@ function callHook<T>(p: Promise<T> | T): Promise<T> {
   });
 }
 
-// FAIL_OPEN is the policy when an authorize hook FAILS — throws, times out, or
-// returns a verdict the engine does not recognize. false (the default) blocks
-// egress on any such failure: a broken security control must not silently let
-// traffic through. It is a single constant so a future recipe-schema knob can
-// wire it per box without touching this logic.
-const FAIL_OPEN = false;
-
-// PASSTHROUGH_ON_TLS_FAILURE: a client that PINS its cert rejects our MITM leaf.
-// A "tls: terminate" window is a declaration that the traffic MUST be inspected,
-// so a host we cannot intercept must be REFUSED, not waved through: passthrough
-// on a broker would let a credential the host was meant to swap out land inside
-// the box. false (the default) fails closed — a pinned host on a terminate chain
-// stays unreachable. true would learn the host and tunnel later connections
-// through un-intercepted (graceful for observability-only chains, unsafe for any
-// control). A single constant so a future recipe-schema knob — ideally per
-// domain — can wire it per box without touching this logic.
-const PASSTHROUGH_ON_TLS_FAILURE = false;
-
 // ALLOW_ECH: Encrypted Client Hello hides the real SNI, so we cannot verify the
 // destination a connection actually targets — a hole in the domain policy. false
 // (the default) refuses any ClientHello carrying the ECH extension.
 const ALLOW_ECH = false;
+
+// PASSTHROUGH_ON_TLS_FAILURE: a client that PINS its cert rejects our MITM leaf.
+// A "tls: terminate" window is a declaration that the traffic MUST be inspected,
+// so a host we cannot intercept is REFUSED, not waved through: passthrough on a
+// broker would let a credential the host was meant to swap out land inside the
+// box. false (the default) fails closed. A single constant so a future
+// recipe-schema knob can wire it per box without touching this logic.
+const PASSTHROUGH_ON_TLS_FAILURE = false;
 
 // helloHasECH parses a buffered TLS ClientHello for the encrypted_client_hello
 // extension (0xfe0d). Best-effort: a malformed or non-handshake buffer is "no".
@@ -239,112 +248,331 @@ function firstChunk(sock: net.Socket): Promise<Buffer | null> {
   });
 }
 
-// --- CONNECTION tier: run authorize on each connection hook; allow or deny.
-// A recognized "allow"/nothing lets it through; "deny" blocks. A throw, a
-// timeout, or any unrecognized verdict is a FAILURE, handled per FAIL_OPEN
-// (default: block).
-// canonicalHost normalizes a host for policy: DNS names are case-insensitive and
-// a trailing dot is the same server, so lowercase and strip it — otherwise
-// "WWW.X.COM" or "www.x.com." would slip past a deny of "www.x.com".
-function canonicalHost(host: string): string {
-  return host.toLowerCase().replace(/\.+$/, "");
+// --- streaming reader: pull bytes off a duplex as they arrive. ---------------
+// A promise-based pull over a socket's data/end/error, so the HTTP parser can
+// `await` the next bytes without buffering the whole stream.
+function makePull(sock: NodeJS.ReadableStream): () => Promise<Buffer | null> {
+  const queue: Buffer[] = [];
+  let waiting: ((b: Buffer | null) => void) | null = null;
+  let ended = false;
+  let errored: Error | null = null;
+  sock.on("data", (d: Buffer) => {
+    if (waiting) { const w = waiting; waiting = null; w(d); }
+    else queue.push(d);
+  });
+  sock.on("end", () => { ended = true; if (waiting) { const w = waiting; waiting = null; w(null); } });
+  sock.on("error", (e: Error) => { errored = e; if (waiting) { const w = waiting; waiting = null; w(null); } });
+  return () => new Promise<Buffer | null>((resolve) => {
+    if (queue.length) return resolve(queue.shift()!);
+    if (ended || errored) return resolve(null);
+    waiting = resolve;
+  });
 }
 
-async function authorizeConn(hops: Hop[], host: string, port: number): Promise<{ allow: boolean; host: string; port: number }> {
-  const failed = () => ({ allow: FAIL_OPEN, host, port });
-  for (const hop of hops) {
-    if (!hop.handler?.authorize) continue;
-    let v: Json | string | void;
-    try {
-      v = await callHook(hop.handler.authorize({ host, port }));
-    } catch {
-      if (FAIL_OPEN) continue; // treat the failure as allow
-      return failed();
-    }
-    const action = v && typeof v === "object" ? (v as Json).action : undefined;
-    if (v == null || v === "allow" || action === "allow") continue; // explicit allow
-    if (v === "deny" || action === "deny") return { allow: false, host, port };
-    // Anything else is a malformed verdict — a failure.
-    if (!FAIL_OPEN) return failed();
+// BufReader gives the HTTP parser readUntil / readSome / readExact over a pull,
+// holding only the current unconsumed bytes (bounded by one chunk plus a head).
+class BufReader {
+  private buf = Buffer.alloc(0);
+  private done = false;
+  constructor(private pull: () => Promise<Buffer | null>, initial: Buffer) { this.buf = initial; }
+  private async more(): Promise<boolean> {
+    if (this.done) return false;
+    const d = await this.pull();
+    if (d === null) { this.done = true; return false; }
+    this.buf = this.buf.length ? Buffer.concat([this.buf, d]) : d;
+    return true;
   }
-  return { allow: true, host, port };
+  async readUntil(delim: string): Promise<Buffer | null> {
+    for (;;) {
+      const i = this.buf.indexOf(delim);
+      if (i >= 0) { const out = this.buf.subarray(0, i); this.buf = this.buf.subarray(i + delim.length); return out; }
+      if (!(await this.more())) return this.buf.length ? this.take() : null;
+    }
+  }
+  async readSome(max: number): Promise<Buffer> {
+    if (!this.buf.length && !(await this.more())) return Buffer.alloc(0);
+    const n = Math.min(max, this.buf.length);
+    const out = this.buf.subarray(0, n);
+    this.buf = this.buf.subarray(n);
+    return out;
+  }
+  async readExact(n: number): Promise<Buffer> {
+    while (this.buf.length < n) { if (!(await this.more())) break; }
+    return this.readSome(n);
+  }
+  private take(): Buffer { const o = this.buf; this.buf = Buffer.alloc(0); return o; }
 }
 
-// --- CONTENT tier: onRequest in order until a hook responds (or forwards past
-//     the last hook to the real upstream), then onResponse in reverse through
-//     the hooks the request passed — INCLUDING the hook that responded, so a
-//     single hook can both answer and post-process its own answer (the broker
-//     swap-back pattern). scheme is https for a terminated TLS request, http for
-//     a plain forward-proxy request.
-async function runContent(hops: Hop[], forwardToUpstream: boolean, req: RequestView, scheme: "http" | "https" = "https"): Promise<ResponseView> {
-  let response: ResponseView | null = null;
+// parseHeadLines splits a raw header block into the start line and a lowercased
+// header map. Duplicate headers keep the last value (rare on requests).
+function parseHeadLines(raw: Buffer): { start: string; headers: Record<string, string> } {
+  const lines = raw.toString("latin1").split("\r\n");
+  const start = lines[0] ?? "";
+  const headers: Record<string, string> = {};
+  for (const l of lines.slice(1)) {
+    const i = l.indexOf(":");
+    if (i > 0) headers[l.slice(0, i).trim().toLowerCase()] = l.slice(i + 1).trim();
+  }
+  return { start, headers };
+}
+
+// bodyChunks yields the request/response body as a stream, decoding the wire
+// framing (content-length or chunked) but NOT buffering the whole body.
+async function* bodyChunks(reader: BufReader, headers: Record<string, string>, method?: string): AsyncGenerator<Buffer> {
+  if (method === "GET" || method === "HEAD") return;
+  const te = (headers["transfer-encoding"] ?? "").toLowerCase();
+  if (te.includes("chunked")) {
+    for (;;) {
+      const line = await reader.readUntil("\r\n");
+      if (line === null) return;
+      const size = parseInt(line.toString("latin1").trim().split(";")[0], 16);
+      if (!Number.isFinite(size) || size <= 0) { await reader.readUntil("\r\n"); return; } // 0-chunk (or garbage): end
+      let rem = size;
+      while (rem > 0) { const c = await reader.readSome(rem); if (!c.length) return; rem -= c.length; yield c; }
+      await reader.readExact(2); // trailing CRLF
+    }
+  }
+  const clen = Number(headers["content-length"] ?? 0);
+  if (clen > 0) {
+    let rem = clen;
+    while (rem > 0) { const c = await reader.readSome(rem); if (!c.length) return; rem -= c.length; yield c; }
+  }
+  // No framing header and not chunked: no body (a request without content-length
+  // is bodyless; a response body with neither is handled by connection close on
+  // the upstream side, which node's http client surfaces as stream end).
+}
+
+function asBuf(v: ChunkResult): Buffer | null {
+  if (v == null) return null;
+  return Buffer.isBuffer(v) ? v : Buffer.from(String(v), "latin1");
+}
+
+// A per-request bundle: the content hops with a fresh scratch ctx each.
+interface Traversal { hop: Hop; ctx: Json; }
+
+// applyDataChunk folds a body chunk through a sequence of hooks (request order,
+// or response REVERSE order). Each hook returns replacement bytes or nothing
+// (pass through). An empty result drops the chunk.
+async function applyDataChunk(seq: Traversal[], verb: "onRequestChunk" | "onResponseChunk", chunk: Buffer): Promise<Buffer> {
+  let cur = chunk;
+  for (const t of seq) {
+    const fn = t.hop.handler?.[verb];
+    if (!fn) continue;
+    const r = asBuf(await callHook(fn.call(t.hop.handler, cur, t.ctx)));
+    if (r !== null) cur = r;
+  }
+  return cur;
+}
+
+// applyEOF flushes every hook's end-of-body bytes (the null chunk). Returns the
+// concatenated trailing bytes to emit before closing the body.
+async function applyEOF(seq: Traversal[], verb: "onRequestChunk" | "onResponseChunk"): Promise<Buffer> {
+  const extra: Buffer[] = [];
+  for (const t of seq) {
+    const fn = t.hop.handler?.[verb];
+    if (!fn) continue;
+    const r = asBuf(await callHook(fn.call(t.hop.handler, null, t.ctx)));
+    if (r && r.length) extra.push(r);
+  }
+  return extra.length ? Buffer.concat(extra) : Buffer.alloc(0);
+}
+
+// chunkEncode wraps bytes as one HTTP/1.1 chunked-transfer chunk.
+function chunkEncode(b: Buffer): Buffer {
+  return Buffer.concat([Buffer.from(`${b.length.toString(16)}\r\n`, "latin1"), b, Buffer.from("\r\n", "latin1")]);
+}
+
+// serializeResponseHead builds the status line + header block for the box, using
+// chunked transfer (the body length is unknown until hooks finish streaming).
+// Header VALUES are validated against CRLF — a hook value carrying "\r\n" must
+// not split the response and smuggle headers. Throws on an invalid header
+// (the caller fails closed with a 502).
+function serializeResponseHead(status: number, headers: Record<string, string | string[]>): Buffer {
+  let out = `HTTP/1.1 ${status}\r\n`;
+  for (const [k, v] of Object.entries(headers)) {
+    const lk = k.toLowerCase();
+    if (lk === "content-length" || lk === "transfer-encoding" || lk === "connection") continue;
+    for (const one of Array.isArray(v) ? v : [v]) {
+      if (/[\r\n]/.test(one)) throw new Error(`header ${k} carries CRLF`);
+      out += `${k}: ${one}\r\n`;
+    }
+  }
+  out += "Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
+  return Buffer.from(out, "latin1");
+}
+
+// --- CONTENT tier: one HTTP/1.1 request over a decrypted (or plain) duplex. ---
+// Reads the request head, runs onRequest in order (a hook may respond/deny and
+// break the chain), streams the request body upstream through onRequestChunk,
+// then streams the upstream response back through onResponse/onResponseChunk in
+// REVERSE. forwardToUpstream is false for a terminal chain (no `tls: originate`):
+// then only a hook that responds can produce an answer.
+async function serveHTTP(
+  client: net.Socket | tls.TLSSocket,
+  contentHops: Hop[],
+  forwardToUpstream: boolean,
+  host: string,
+  port: number,
+  scheme: "http" | "https",
+  initial: Buffer,
+): Promise<void> {
+  const reader = new BufReader(makePull(client), initial);
+  const rawHead = await reader.readUntil("\r\n\r\n");
+  if (rawHead === null) { client.destroy(); return; }
+  const { start, headers } = parseHeadLines(rawHead);
+  const m = start.match(/^([A-Z]+)\s+(\S+)\s+HTTP\/1\.[01]$/i);
+  if (!m) { client.end("HTTP/1.1 400 Bad Request\r\n\r\n"); return; }
+  const method = m[1].toUpperCase();
+  // For a plain forward-proxy request the target is an absolute URL; for a
+  // terminated TLS request it is an origin-form path.
+  const path = scheme === "http" && /^https?:\/\//i.test(m[2]) ? new URL(m[2]).pathname + new URL(m[2]).search : m[2];
+
+  const seq: Traversal[] = contentHops.map((hop) => ({ hop, ctx: {} }));
+  const reqHead: RequestHead = { host, port, method, path, headers };
+
+  // onRequest in order. A respond/deny short-circuits; the hops the request
+  // already passed (including the responder) unwind the response in reverse.
   let traversed = 0;
-
-  for (let i = 0; i < hops.length; i++) {
-    const verdict = (await callHook(hops[i].handler?.onRequest?.(req))) as Json | undefined;
-    if (verdict?.action === "respond") {
-      response = { host: req.host, status: Number(verdict.status ?? 200), headers: (verdict.headers as Record<string, string>) ?? {}, body: String(verdict.body ?? "") };
-      traversed = i + 1; // include the responder in the onResponse unwind
-      break;
-    }
-    if (verdict?.action === "deny") {
-      // deny honors headers, just like respond — a refusal can carry policy metadata.
-      response = { host: req.host, status: Number(verdict.status ?? 403), headers: (verdict.headers as Record<string, string>) ?? {}, body: String(verdict.body ?? "denied") };
-      traversed = i + 1;
-      break;
-    }
-    if (verdict?.headers) req.headers = { ...req.headers, ...(verdict.headers as Record<string, string>) };
-    if (typeof verdict?.body === "string") req.body = verdict.body;
+  let localResponse: { status: number; headers: Record<string, string>; body: Buffer } | null = null;
+  for (let i = 0; i < seq.length; i++) {
     traversed = i + 1;
-  }
-
-  if (!response) {
-    response = forwardToUpstream
-      ? await fetchUpstream(req, scheme)
-      : { host: req.host, status: 502, headers: {}, body: "request forwarded past the last hook but the chain is terminal — add a hook that responds, or a `tls: originate` to reach the upstream" };
-  }
-
-  for (let i = traversed - 1; i >= 0; i--) {
-    const rewrite = (await callHook(hops[i].handler?.onResponse?.(response))) as Json | undefined;
-    if (rewrite) {
-      if (rewrite.status != null) response.status = Number(rewrite.status);
-      if (rewrite.headers) response.headers = { ...response.headers, ...(rewrite.headers as Record<string, string>) };
-      if (typeof rewrite.body === "string") response.body = rewrite.body;
+    const fn = seq[i].hop.handler?.onRequest;
+    if (!fn) continue;
+    let verdict: Json | void;
+    try { verdict = await callHook(fn.call(seq[i].hop.handler, reqHead, seq[i].ctx)); }
+    catch (e) { client.end("HTTP/1.1 502 Bad Gateway\r\n\r\n"); console.error(`warning: onRequest hook failed for ${host}: ${(e as Error)?.message ?? e}`); return; }
+    if (verdict?.action === "respond" || verdict?.action === "deny") {
+      const dflt = verdict.action === "deny" ? 403 : 200;
+      localResponse = {
+        status: Number(verdict.status ?? dflt),
+        headers: (verdict.headers as Record<string, string>) ?? {},
+        body: asBuf(verdict.body as ChunkResult) ?? Buffer.alloc(0),
+      };
+      break;
     }
+    if (verdict?.headers) Object.assign(reqHead.headers, verdict.headers as Record<string, string>);
   }
-  return response;
+
+  const respSeq = seq.slice(0, traversed).reverse(); // response unwinds in reverse
+
+  if (localResponse) {
+    // Drain any request body the client is still sending, so the socket is not
+    // left half-read (the box's client waits on us, not the other way round).
+    // A local responder answers without upstream, so we discard it.
+    await drain(bodyChunks(reader, reqHead.headers, method));
+    await writeResponse(client, { status: localResponse.status, headers: localResponse.headers }, singleChunk(localResponse.body), respSeq, host);
+    return;
+  }
+
+  if (!forwardToUpstream) {
+    await drain(bodyChunks(reader, reqHead.headers, method));
+    await writeResponse(client, { status: 502, headers: {} }, singleChunk(Buffer.from("request reached the last hook but the chain is terminal — add a hook that responds, or a `tls: originate` to reach the upstream", "latin1")), respSeq, host);
+    return;
+  }
+
+  // Forward upstream, streaming the request body through onRequestChunk.
+  const isDefaultPort = (scheme === "https" && port === 443) || (scheme === "http" && port === 80);
+  const authority = isDefaultPort ? host : `${host}:${port}`;
+  const outHeaders: Record<string, string> = {};
+  for (const [k, v] of Object.entries(reqHead.headers)) {
+    const lk = k.toLowerCase();
+    if (lk === "host" || lk === "proxy-connection" || lk === "content-length" || lk === "connection") continue;
+    outHeaders[k] = v;
+  }
+  outHeaders["host"] = authority;
+  outHeaders["connection"] = "close";
+
+  const mod = scheme === "https" ? https : http;
+  const upReq = mod.request({ host, port, method, path, headers: outHeaders, servername: scheme === "https" ? host : undefined, rejectUnauthorized: true });
+
+  const upResPromise = new Promise<http.IncomingMessage>((resolve, reject) => {
+    upReq.on("response", resolve);
+    upReq.on("error", reject);
+  });
+
+  // Pump the request body up, one transformed chunk at a time.
+  try {
+    for await (const chunk of bodyChunks(reader, reqHead.headers, method)) {
+      const out = await applyDataChunk(seq, "onRequestChunk", chunk);
+      if (out.length) upReq.write(out);
+    }
+    const tail = await applyEOF(seq, "onRequestChunk");
+    if (tail.length) upReq.write(tail);
+    upReq.end();
+  } catch (e) {
+    upReq.destroy();
+    client.end("HTTP/1.1 502 Bad Gateway\r\n\r\n");
+    console.error(`warning: request stream failed for ${host}: ${(e as Error)?.message ?? e}`);
+    return;
+  }
+
+  let upRes: http.IncomingMessage;
+  try { upRes = await upResPromise; }
+  catch (e) { client.end("HTTP/1.1 502 Bad Gateway\r\n\r\n"); console.error(`warning: upstream error for ${host}: ${(e as Error)?.message ?? e}`); return; }
+
+  const respHead: ResponseHead = { host, status: upRes.statusCode ?? 502, headers: {} };
+  for (const [k, v] of Object.entries(upRes.headers)) respHead.headers[k] = Array.isArray(v) ? v.join(", ") : String(v ?? "");
+  await writeResponse(client, respHead, upRes as unknown as AsyncIterable<Buffer>, respSeq, host, upRes.headers);
 }
 
-async function fetchUpstream(req: RequestView, scheme: "http" | "https"): Promise<ResponseView> {
-  // Carry a non-default port to the upstream — the box may have connected to
-  // host:8443, and re-originating to :443 would reach the wrong service. The Host
-  // header carries it too, as a real client would for a non-standard port.
-  const isDefaultPort = (scheme === "https" && req.port === 443) || (scheme === "http" && req.port === 80);
-  const authority = isDefaultPort ? req.host : `${req.host}:${req.port}`;
-  const headers = new Headers();
-  for (const [k, v] of Object.entries(req.headers)) if (k.toLowerCase() !== "host") headers.set(k, v);
-  headers.set("host", authority);
-  // Bodies flow as latin1 byte-strings (1 char = 1 byte, lossless) so a hook can
-  // inspect/rewrite text without corrupting a binary payload (images, gzip, wasm)
-  // that merely passes through. .text() would UTF-8-decode and mangle those bytes.
-  const reqBody = req.method === "GET" || req.method === "HEAD" ? undefined : Buffer.from(req.body, "latin1");
-  // redirect: "manual" — do NOT let fetch follow 30x server-side. authorize gates
-  // the CONNECT host only; if we followed a redirect here, an allowed host could
-  // bounce the box to a DENIED host and we'd fetch it, bypassing the policy. Pass
-  // the 3xx back so the box re-CONNECTs and authorize re-checks the new host.
-  const up = await fetch(`${scheme}://${authority}${req.path}`, { method: req.method, headers, body: reqBody, redirect: "manual" });
-  return { host: req.host, status: up.status, headers: Object.fromEntries(up.headers), body: Buffer.from(await up.arrayBuffer()).toString("latin1") };
+// singleChunk adapts one Buffer into a body stream (for a local respond).
+async function* singleChunk(b: Buffer): AsyncGenerator<Buffer> { if (b.length) yield b; }
+async function drain(gen: AsyncGenerator<Buffer>) { try { for await (const _ of gen) { /* discard */ } } catch { /* ignore */ } }
+
+// writeResponse runs onResponse (reverse) over the head, writes the head to the
+// box with chunked framing, then streams the body through onResponseChunk
+// (reverse), chunk-encoding each result — never buffering the body.
+async function writeResponse(
+  client: net.Socket | tls.TLSSocket,
+  head: { status: number; headers: Record<string, string> },
+  body: AsyncIterable<Buffer>,
+  respSeq: Traversal[],
+  host: string,
+  rawHeaders?: http.IncomingHttpHeaders,
+): Promise<void> {
+  const resHead: ResponseHead = { host, status: head.status, headers: { ...head.headers } };
+  for (const t of respSeq) {
+    const fn = t.hop.handler?.onResponse;
+    if (!fn) continue;
+    try {
+      const r = await callHook(fn.call(t.hop.handler, resHead, t.ctx)) as Json | undefined;
+      if (r?.status != null) resHead.status = Number(r.status);
+      if (r?.headers) Object.assign(resHead.headers, r.headers as Record<string, string>);
+    } catch (e) { console.error(`warning: onResponse hook failed for ${host}: ${(e as Error)?.message ?? e}`); }
+  }
+  // set-cookie may be multi-valued: pull the raw array through so each cookie is
+  // emitted as its own header line.
+  const outHeaders: Record<string, string | string[]> = { ...resHead.headers };
+  if (rawHeaders && Array.isArray(rawHeaders["set-cookie"])) outHeaders["set-cookie"] = rawHeaders["set-cookie"] as string[];
+  let status = Number(resHead.status);
+  if (!Number.isInteger(status) || status < 200 || status > 599) status = 502;
+  try { client.write(serializeResponseHead(status, outHeaders)); }
+  catch { client.end("HTTP/1.1 502 Bad Gateway\r\n\r\n"); return; }
+  try {
+    for await (const chunk of body) {
+      const out = await applyDataChunk(respSeq, "onResponseChunk", Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      if (out.length) client.write(chunkEncode(out));
+    }
+    const tail = await applyEOF(respSeq, "onResponseChunk");
+    if (tail.length) client.write(chunkEncode(tail));
+    client.write(Buffer.from("0\r\n\r\n", "latin1"));
+    client.end();
+  } catch (e) {
+    console.error(`warning: response stream failed for ${host}: ${(e as Error)?.message ?? e}`);
+    client.destroy();
+  }
 }
 
-// --- boot ------------------------------------------------------------------
+// --- boot -------------------------------------------------------------------
 export async function start(cfg: EngineConfig): Promise<{ stop: () => void }> {
   const hops = await resolveChain(cfg.chain);
-  const { moduleHops, contentHops, terminates, originates, terminateDomains } = classify(hops);
+  const { contentHops, terminates, originates, terminateDomains } = classify(hops);
+  const policyAllows = compilePolicy(cfg.allow ?? [], cfg.deny ?? []);
 
   // shouldInspect decides whether THIS host's TLS is terminated and its content
   // inspected. With no `domains` list a terminate window covers every host; a
   // list scopes it (exact host or a subdomain), so traffic we don't care about
-  // passes through un-decrypted. authorize still runs either way.
+  // passes through un-decrypted.
   function shouldInspect(host: string): boolean {
     if (!terminates) return false;
     if (!terminateDomains) return true;
@@ -354,187 +582,115 @@ export async function start(cfg: EngineConfig): Promise<{ stop: () => void }> {
   // must exist), and a chain that gains a `tls: terminate` later needs it anyway.
   ensureCA(cfg.caDir);
 
-  // Hosts whose clients pin (rejected our leaf) — passed through un-intercepted.
-  const pinnedHosts = new Set<string>();
+  const pinnedHosts = new Set<string>(); // clients that rejected our leaf (pinning)
 
+  // A TLS terminator per host:port — a node:tls server bound to a unix socket,
+  // presenting the host's leaf. The CONNECT handler pipes the client's raw TLS
+  // bytes into it; the server hands back a DECRYPTED duplex (onDecrypted), which
+  // is either served as HTTP/1.1 or re-originated untouched for any other
+  // protocol. Single-flighted like leafFor so concurrent first-contacts share
+  // one server. node:tls (not Bun's HTTP server) is what lets a non-HTTP stream
+  // pass through — terminating a domain never costs the box its other protocols.
   const terminators = new Map<string, Promise<string>>();
   function terminatorFor(host: string, port: number): Promise<string> {
     const key = `${host}:${port}`;
     const existing = terminators.get(key);
     if (existing) return existing;
-    // Single-flight like leafFor: memoize the in-flight Promise so two concurrent
-    // first-contacts don't both Bun.serve the same socket.
     const p = makeTerminator(host, port);
     p.catch(() => terminators.delete(key));
     terminators.set(key, p);
     return p;
   }
   async function makeTerminator(host: string, port: number): Promise<string> {
-    const leaf = await leafFor(cfg.caDir, host); // the leaf is by host (SNI); the port does not affect it
-    // A unix socket path is capped (~108 bytes); a long hostname would overflow it
-    // and fail opaquely. Keep the basename bounded — a readable prefix plus a hash
-    // for uniqueness when the host is long.
+    const leaf = await leafFor(cfg.caDir, host);
     const safe = `${host}_${port}`.replace(/[^a-zA-Z0-9.-]/g, "_");
     const base = safe.length <= 40 ? safe : `${safe.slice(0, 24)}-${Bun.hash(safe).toString(36)}`;
     const sock = `${cfg.caDir}/term-${base}.sock`;
     if (existsSync(sock)) { try { unlinkSync(sock); } catch {} }
-    Bun.serve({
-      unix: sock,
-      tls: { cert: leaf.cert, key: leaf.key },
-      async fetch(request) {
-        const url = new URL(request.url);
-        const req: RequestView = {
-          host,
-          port,
-          method: request.method,
-          path: url.pathname + url.search,
-          headers: Object.fromEntries(request.headers),
-          body: request.method === "GET" || request.method === "HEAD" ? "" : Buffer.from(await request.arrayBuffer()).toString("latin1"),
-        };
-        const res = await runContent(contentHops, originates, req);
-        // Never let a hook throw or a bad status become Bun's default error page —
-        // that page carries the engine's source and host paths into the untrusted
-        // box. Catch everything, clamp the status, and answer with a terse 502.
-        let status = Number(res.status);
-        if (!Number.isInteger(status) || status < 200 || status > 599) status = 502;
-        const h = new Headers(res.headers);
-        h.delete("content-length");
-        h.delete("content-encoding");
-        // Serve the raw bytes: res.body is a latin1 byte-string, so re-encode it
-        // 1:1 rather than let Response() UTF-8-encode and corrupt a binary body.
-        return new Response(Buffer.from(res.body, "latin1"), { status, headers: h });
-      },
-      error(err) {
-        // A hook that threw or timed out reaches here. Leave a diagnostic in the
-        // engine log — the box gets a terse 502, but the operator can see WHY.
-        console.error(`warning: proxy hook failed for ${host}: ${err?.message ?? err}`);
-        return new Response("proxy engine error", { status: 502 });
-      },
+    const srv = tls.createServer({ cert: leaf.cert, key: leaf.key, ALPNProtocols: ["http/1.1"] }, (tlsSock) => {
+      onDecrypted(tlsSock, host, port).catch((e) => { console.error(`warning: proxy content error for ${host}: ${e?.message ?? e}`); tlsSock.destroy(); });
     });
+    // A client that PINS its cert rejects our leaf → the handshake fails here.
+    srv.on("tlsClientError", () => {
+      if (PASSTHROUGH_ON_TLS_FAILURE) pinnedHosts.add(host);
+      else console.warn(`warning: refused ${host}: cannot intercept (client pins its cert) and inspection is required — failing closed`);
+    });
+    await new Promise<void>((resolve) => srv.listen(sock, resolve));
     return sock;
   }
-
-  // A plain-HTTP forward-proxy request (`GET http://host/path HTTP/1.1`) has no
-  // TLS to terminate — the content is already plaintext, so `tls: terminate` is a
-  // no-op and the content hops run directly on the request. authorize still gates
-  // the connection; a chain with no content hops just forwards to the upstream.
-  async function handlePlainHTTP(client: net.Socket, first: Buffer, method: string, absUrl: string) {
-    let buf = first;
-    const more = () => new Promise<Buffer>((res) => client.once("data", (d) => res(d as Buffer)));
-    while (buf.indexOf("\r\n\r\n") < 0) buf = Buffer.concat([buf, await more()]);
-    const headEnd = buf.indexOf("\r\n\r\n");
-    const headers: Record<string, string> = {};
-    for (const l of buf.toString("latin1", 0, headEnd).split("\r\n").slice(1)) {
-      const i = l.indexOf(":");
-      if (i > 0) headers[l.slice(0, i).trim().toLowerCase()] = l.slice(i + 1).trim();
-    }
-    const clen = Number(headers["content-length"] ?? 0);
-    let body = buf.subarray(headEnd + 4);
-    while (body.length < clen) body = Buffer.concat([body, await more()]);
-
-    const url = new URL(absUrl);
-    const auth = await authorizeConn(moduleHops, canonicalHost(url.hostname), Number(url.port || 80));
-    if (!auth.allow) { client.end("HTTP/1.1 403 Forbidden\r\n\r\n"); return; }
-    const req: RequestView = { host: auth.host, port: auth.port, method, path: url.pathname + url.search, headers, body: body.toString("latin1") };
-    // Honor the terminate `domains` scope here too: a host we don't inspect gets
-    // no content hooks, just forwarded upstream.
-    const hooks = shouldInspect(auth.host) ? contentHops : [];
-    const res = await runContent(hooks, hooks.length ? originates : true, req, "http");
-    let status = Number(res.status);
-    if (!Number.isInteger(status) || status < 200 || status > 599) status = 502;
-    // Build the response headers through Headers(), which rejects CRLF in a value
-    // — a hook header carrying "\r\n" must not split the response and smuggle
-    // headers/body. Fail closed on an invalid header, matching the HTTPS path.
-    let hdr = "";
-    try {
-      const h = new Headers(res.headers);
-      for (const k of ["content-length", "content-encoding", "transfer-encoding"]) h.delete(k);
-      for (const [k, v] of h) hdr += `${k}: ${v}\r\n`;
-    } catch {
-      client.end("HTTP/1.1 502 Bad Gateway\r\n\r\n");
+  // onDecrypted receives a decrypted client duplex. HTTP/1.1 → the content path;
+  // the h2 preface or any other protocol → re-originate a fresh TLS to the real
+  // upstream and tunnel the decrypted bytes untouched.
+  async function onDecrypted(tlsSock: tls.TLSSocket, host: string, port: number) {
+    const first = await firstChunk(tlsSock as unknown as net.Socket);
+    if (first === null) { tlsSock.destroy(); return; }
+    const isHTTP1 = (tlsSock.alpnProtocol === "http/1.1" || tlsSock.alpnProtocol === false) && looksLikeHTTP1(first);
+    if (isHTTP1) {
+      await serveHTTP(tlsSock as unknown as net.Socket, contentHops, originates, host, port, "https", first);
       return;
     }
-    const bodyBuf = Buffer.from(res.body, "latin1");
-    const head = Buffer.from(`HTTP/1.1 ${status}\r\n${hdr}Content-Length: ${bodyBuf.length}\r\nConnection: close\r\n\r\n`, "latin1");
-    client.end(Buffer.concat([head, bodyBuf]));
+    const up = tls.connect({ host, port, servername: host }, () => {
+      up.write(first);
+      up.pipe(tlsSock);
+      tlsSock.pipe(up);
+    });
+    const done = () => { tlsSock.destroy(); up.destroy(); };
+    tlsSock.on("close", done); up.on("close", done); up.on("error", done);
   }
 
   if (existsSync(cfg.socket)) { try { unlinkSync(cfg.socket); } catch {} }
   const server = net.createServer((client) => {
     client.on("error", () => {});
-    // A hook (e.g. authorize) that throws MUST NOT crash the engine — that would
-    // kill all egress for the box after boot. Catch per connection: deny + close.
     client.once("data", async (buf) => {
       try {
         const line = buf.toString("latin1").split("\r\n")[0];
         const connect = line.match(/^CONNECT\s+([^:]+):(\d+)/i);
         if (connect) {
           const host = canonicalHost(connect[1]);
-          // Policy keys on the CONNECT host — sent in PLAINTEXT before any TLS —
-          // and the raw tunnel below dials that SAME host. So what policy inspects
-          // and where the bytes actually go are one value: a client cannot get
-          // host A approved and reach host B via a mismatched inner Host/SNI. This
-          // runs for EVERY connection, so the domain policy holds even for hosts
-          // we later pass through.
-          //
-          // Residual caveat: this does NOT re-inspect content inside a passed-
-          // through tunnel (a pinned host, or a no-terminate chain). If an
-          // allowlist ever includes a SHARED CDN front, a request fronted behind
-          // it inside the tunnel is not re-checked. Fine for the intended case
-          // (single-tenant API hosts); a real concern only for hyperscaler CDNs.
-          const auth = await authorizeConn(moduleHops, host, Number(connect[2]));
-          if (!auth.allow) { client.end("HTTP/1.1 403 Forbidden\r\n\r\n"); return; }
+          const port = Number(connect[2]);
+          // POLICY: the engine-native CONNECT gate, on the plaintext host, before
+          // any tunnel — for every protocol. A denied host never gets a tunnel.
+          if (!policyAllows(host)) { client.end("HTTP/1.1 403 Forbidden\r\n\r\n"); return; }
           client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
 
-          // Peek the client's ClientHello (buffered so we can replay it). An
-          // Encrypted Client Hello hides the real SNI from the domain policy, so
-          // reject it unless ALLOW_ECH.
           const hello = await firstChunk(client);
           if (!hello) { client.destroy(); return; }
-          if (!ALLOW_ECH && helloHasECH(hello)) { client.destroy(); return; }
+          if (!ALLOW_ECH && helloHasECH(hello)) { client.destroy(); return; } // ECH hides the SNI
 
           const passthrough = PASSTHROUGH_ON_TLS_FAILURE && pinnedHosts.has(host);
           if (shouldInspect(host) && !passthrough) {
-            // CONTENT tier: hand the client's TLS to the host's terminator (cert
-            // for the ORIGINAL host, the box's SNI). Replay the buffered hello and
-            // watch the client's first record after our ServerHello: a TLS alert
-            // (record type 0x15) means it rejected our leaf (pinning). Failing
-            // closed, we log the refusal so the operator knows why a host went
-            // dark; with PASSTHROUGH_ON_TLS_FAILURE we would instead learn the
-            // host so the NEXT connection tunnels through un-intercepted.
-            const up = net.connect(await terminatorFor(host, auth.port), () => {
-              up.write(hello);
-              up.pipe(client);
-              let firstSeen = false;
-              client.on("data", (d: Buffer) => {
-                if (!firstSeen) {
-                  firstSeen = true;
-                  if (d.length && d[0] === 0x15) {
-                    if (PASSTHROUGH_ON_TLS_FAILURE) pinnedHosts.add(host);
-                    else console.warn(`warning: refused ${host}: cannot intercept (client pins its cert) and inspection is required — failing closed`);
-                  }
-                }
-                try { up.write(d); } catch {}
-              });
+            // Pipe the client's raw TLS into the host's terminator, replaying the
+            // buffered ClientHello. The terminator decrypts and calls onDecrypted.
+            const inner = net.connect(await terminatorFor(host, port), () => {
+              inner.write(hello);
+              client.pipe(inner);
+              inner.pipe(client);
             });
-            const done = () => { client.destroy(); up.destroy(); };
-            client.on("close", done);
-            up.on("close", done);
-            up.on("error", done);
+            const done = () => { client.destroy(); inner.destroy(); };
+            client.on("close", done); inner.on("close", done); inner.on("error", done);
             return;
           }
-          // No terminate window, or a learned-pinned host: raw-tunnel the allowed
-          // connection straight to the real host so a pinning client is not broken.
-          const up = net.connect(auth.port, auth.host, () => { up.write(hello); client.pipe(up); up.pipe(client); });
+          // No terminate window (or a learned-pinned host): raw-tunnel the allowed
+          // connection straight to the real host — a pinning client is not broken,
+          // and any protocol reaches an allowed domain.
+          const up = net.connect(port, host, () => { up.write(hello); client.pipe(up); up.pipe(client); });
           up.on("error", () => client.destroy());
           return;
         }
-        const http = line.match(/^([A-Z]+)\s+(http:\/\/\S+)\s+HTTP\/1\.[01]/i);
-        if (http) { await handlePlainHTTP(client, buf, http[1], http[2]); return; }
+        const httpReq = line.match(/^([A-Z]+)\s+(http:\/\/\S+)\s+HTTP\/1\.[01]/i);
+        if (httpReq) {
+          // A plain forward-proxy request (`GET http://host/path`) — already
+          // plaintext. Gate the host, then serve it through the content hops.
+          const url = new URL(httpReq[2]);
+          const host = canonicalHost(url.hostname);
+          const port = Number(url.port || 80);
+          if (!policyAllows(host)) { client.end("HTTP/1.1 403 Forbidden\r\n\r\n"); return; }
+          const hooks = shouldInspect(host) ? contentHops : [];
+          await serveHTTP(client, hooks, hooks.length ? originates : true, host, port, "http", buf);
+          return;
+        }
         client.end("HTTP/1.1 501 Not Implemented\r\n\r\n");
       } catch (e) {
-        // Deny + close on any per-connection error, but leave a trail: a silent
-        // 403 here once hid an engine bug behind a bare "Forbidden".
         console.error(`warning: proxy connection error: ${(e as Error)?.message ?? e}`);
         try { client.end("HTTP/1.1 403 Forbidden\r\n\r\n"); } catch {}
       }
@@ -544,11 +700,21 @@ export async function start(cfg: EngineConfig): Promise<{ stop: () => void }> {
   return { stop: () => server.close() };
 }
 
+// looksLikeHTTP1 reports whether the first decrypted bytes begin an HTTP/1.x
+// request line (a method token then an HTTP/1 version) — and are NOT the HTTP/2
+// connection preface, which also starts with an uppercase token.
+function looksLikeHTTP1(buf: Buffer): boolean {
+  const head = buf.toString("latin1", 0, Math.min(buf.length, 8192));
+  if (head.startsWith("PRI * HTTP/2")) return false; // h2 preface
+  const line = head.split("\r\n")[0];
+  return /^[A-Z]+\s+\S+\s+HTTP\/1\.[01]$/.test(line);
+}
+
 // CLI entry: `bun engine.ts <config.json>`
 if (import.meta.main) {
   const path = process.argv[2];
   if (!path) { console.error("usage: bun engine.ts <config.json>"); process.exit(2); }
   const cfg = (await Bun.file(path).json()) as EngineConfig;
   await start(cfg);
-  console.log(`proxy engine → ${cfg.socket} (${cfg.chain.length} hops)`);
+  console.log(`proxy engine → ${cfg.socket} (${cfg.chain.length} hops, allow=${(cfg.allow ?? []).length} deny=${(cfg.deny ?? []).length})`);
 }

@@ -74,10 +74,10 @@ export default (config: { vault?: string }) => {
     s.split(DUMMY_ACCESS).join(realAccess).split(DUMMY_REFRESH).join(realRefresh);
 
   function persist() {
-    // The vault holds the REAL tokens: owner-only (0600 file, 0700 dir), never the
-    // umask default (0644) that would leave a live credential world-readable. The
-    // writeFileSync/mkdirSync mode only applies on CREATE, so chmod afterwards to
-    // tighten a vault or dir that already existed with looser bits.
+    // The vault holds the REAL tokens, so keep it owner-only — the umask default
+    // (0644) would leave a live credential world-readable. writeFileSync/mkdirSync
+    // apply a mode only on CREATE, so chmod after to tighten a vault or dir that
+    // already existed.
     const dir = vault.replace(/\/[^/]+$/, "");
     try { mkdirSync(dir, { recursive: true, mode: 0o700 }); } catch {}
     writeFileSync(vault, JSON.stringify({ claudeAiOauth: { accessToken: realAccess, refreshToken: realRefresh } }), { mode: 0o600 });

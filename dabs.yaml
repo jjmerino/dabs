@@ -59,12 +59,6 @@ recipes:
   # REAL token host-side on api.anthropic.com traffic and scrubs it back out of
   # every response. The real tokens live only in a host vault
   # (~/.dabs/broker/vault.json), born on the first in-box `/login`.
-  #
-  # This is a stronger guarantee than the `claude` recipe's mount ban: there, the
-  # real credential is physically in the box and only tool-access is blocked;
-  # here, the real credential is never in the box at all — the broker's inbound
-  # real→dummy pass is a by-construction backstop, and the read-only dummy mount
-  # is the second.
   confined-claude:
     description: Claude box that never holds the real credential (broker-injected)
     # The bundled claude image plus the linux forwarder proxy egress needs on the
@@ -76,17 +70,12 @@ recipes:
     env:
       CLAUDE_CONFIG_DIR: /root/.claude
     egress:
-      # Protocol-agnostic CONNECT gate: only Anthropic. Everything else is denied
-      # at CONNECT, whatever the protocol — the box cannot phone home elsewhere.
-      # A bare domain matches the apex AND every subdomain, so this covers api,
-      # console (the OAuth/refresh host), statsig, etc.
+      # A bare domain matches the apex AND every subdomain, so this reaches api,
+      # console (OAuth/refresh), statsig, etc.
       allow: "anthropic.com, claude.ai, claude.com"
-      # HTTP content chain: terminate Anthropic's TLS, run the broker, re-originate.
-      # The broker must see the REFRESH too (on console.anthropic.com), or the
-      # dummy refresh token would leak un-swapped — so terminate the whole set.
-      # A bare domain matches the apex and every subdomain (same grammar as the
-      # gate above); the whole managed set must be terminated so no token-bearing
-      # leg tunnels past the broker to the box.
+      # Terminate the WHOLE managed set, not just api: the OAuth refresh rides
+      # console.anthropic.com / claude.ai, and a leg left un-terminated would
+      # tunnel the dummy token past the broker un-swapped.
       http_proxy:
         - tls: terminate
           domains: [anthropic.com, claude.ai, claude.com]

@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as net from "node:net";
 import * as http from "node:http";
-import { start } from "../../egressforwarder/engine/engine.ts";
+import { start } from "../../../egressforwarder/engine/engine.ts";
 import { DUMMIES } from "./broker.ts";
 
 // forwardProxy speaks the plain-HTTP forward-proxy shape to the engine socket,

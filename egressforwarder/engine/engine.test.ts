@@ -220,6 +220,16 @@ test("engine gates CONNECT by allow list and streams a forward with chunk rewrit
   upstream.close();
 });
 
+// Regression: the per-host terminator listens on a unix socket in the (long,
+// on macOS) temp caDir. A descriptive socket name for a long host overflowed the
+// ~104-byte unix path cap, so the engine died at boot — but only for a long host
+// (the earlier test's "dabs.dev" fit). A 40+ char host must still terminate.
+test("terminates a long hostname without overflowing the unix socket path", async () => {
+  const res = await httpsThroughProxy("very-long-subdomain-name.api.anthropic.example", "/fake/hello");
+  expect(res.status).toBe(200);
+  expect(res.body).toBe("hello from the fake dabs.dev");
+});
+
 import { helloHasECH } from "./engine.ts";
 
 // Build a minimal TLS ClientHello carrying the given extension types, to exercise
@@ -279,4 +289,60 @@ test("helloHasECH detects the encrypted_client_hello extension (0xfe0d)", () => 
   expect(helloHasECH(buildHello([0xfe0d]))).toBe(true);
   expect(helloHasECH(Buffer.from("not a tls record"))).toBe(false);
   expect(helloHasECH(Buffer.alloc(3))).toBe(false);               // too short
+});
+
+test("connect ledger records every dialed destination and its verdict", async () => {
+  const upstream = http.createServer((_req, res) => { res.writeHead(200); res.end("ok"); });
+  await new Promise<void>((r) => upstream.listen(0, "127.0.0.1", r));
+  const uport = (upstream.address() as net.AddressInfo).port;
+
+  const work = mkdtempSync(join(tmpdir(), "dabs-ledger-"));
+  const ledger = join(work, "connect.jsonl");
+  process.env.DABS_CONNECT_LOG = ledger; // inherited by the engine (same process here)
+
+  const socket = join(work, "engine.sock");
+  const eng = await start({ socket, caDir: join(work, "ca"), allow: ["127.0.0.1"], chain: [] });
+
+  // Allowed plain-HTTP forward → a "forward" line; denied host → a "deny" line.
+  await forwardProxy(socket, `http://127.0.0.1:${uport}/x`, "GET", "");
+  await new Promise<void>((resolve) => {
+    const c = net.connect(socket, () => c.write("CONNECT evil.example.com:443 HTTP/1.1\r\n\r\n"));
+    c.once("data", () => { c.destroy(); resolve(); });
+  });
+
+  const lines = readFileSync(ledger, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  const forward = lines.find((l) => l.host === "127.0.0.1" && l.verdict === "forward");
+  const deny = lines.find((l) => l.host === "evil.example.com" && l.verdict === "deny");
+  expect(forward).toBeTruthy();
+  expect(deny).toBeTruthy();
+  expect(deny.port).toBe(443);
+
+  delete process.env.DABS_CONNECT_LOG;
+  eng.stop();
+  upstream.close();
+});
+
+import { matchHost } from "./engine.ts";
+
+// One pattern grammar backs BOTH the CONNECT gate and the terminate scope, so a
+// domain never means two things by where it is written. These cases pin the
+// grammar — and are the regression net for the bug where a bare domain matched
+// only the apex at the gate (denying api.anthropic.com) while a `*.` form
+// matched NOTHING in the terminate list (tunnelling the real token to the box).
+test("matchHost: a bare domain matches the apex AND every subdomain", () => {
+  expect(matchHost("anthropic.com", "anthropic.com")).toBe(true);
+  expect(matchHost("anthropic.com", "api.anthropic.com")).toBe(true);
+  expect(matchHost("anthropic.com", "console.anthropic.com")).toBe(true);
+  expect(matchHost("anthropic.com", "evil-anthropic.com")).toBe(false);
+  expect(matchHost("anthropic.com", "anthropic.com.evil.com")).toBe(false);
+});
+
+test("matchHost: a `*.` pattern matches subdomains only, never the apex", () => {
+  expect(matchHost("*.anthropic.com", "api.anthropic.com")).toBe(true);
+  expect(matchHost("*.anthropic.com", "anthropic.com")).toBe(false);
+});
+
+test("matchHost: `*` matches everything, case/trailing-dot are caller-canonical", () => {
+  expect(matchHost("*", "anything.example.com")).toBe(true);
+  expect(matchHost("ANTHROPIC.COM", "api.anthropic.com")).toBe(true); // pattern lowercased
 });

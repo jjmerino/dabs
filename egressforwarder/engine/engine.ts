@@ -37,7 +37,14 @@ import * as net from "node:net";
 import * as tls from "node:tls";
 import * as http from "node:http";
 import * as https from "node:https";
-import { existsSync, mkdirSync, unlinkSync, copyFileSync } from "node:fs";
+import { existsSync, mkdirSync, unlinkSync, copyFileSync, appendFileSync } from "node:fs";
+
+// logEvent appends a JSON line to the connection ledger (DABS_CONNECT_LOG). It is
+// module-level so the streaming path (serveHTTP/writeResponse) can record an
+// upstream response head or a stream error at a KNOWN path — otherwise a hung or
+// failed request leaves no trace but a warning in a temp engine.log. start() wires
+// it to the real sink; until then it is a no-op.
+let logEvent: (o: object) => void = () => {};
 
 type Json = Record<string, unknown>;
 
@@ -50,10 +57,10 @@ interface Handler {
   onResponse?(head: ResponseHead, ctx: Json): Promise<Json | void> | Json | void;
   onResponseChunk?(chunk: Buffer | null, ctx: Json): Promise<ChunkResult> | ChunkResult;
 }
-interface HopConfig { name?: string; tls?: string; domains?: string[]; module?: string; config?: Json; }
+interface HopConfig { name?: string; tls?: string; domains?: string[]; failOpen?: boolean; module?: string; config?: Json; }
 interface EngineConfig { socket: string; caDir: string; allow?: string[]; deny?: string[]; chain: HopConfig[]; }
 
-interface Hop { name: string; kind: "tls-terminate" | "tls-originate" | "module"; handler?: Handler; domains?: string[]; }
+interface Hop { name: string; kind: "tls-terminate" | "tls-originate" | "module"; handler?: Handler; domains?: string[]; failOpen?: boolean; }
 
 // --- certs: a CA (minted once) and a per-host leaf signed by it, cached. -----
 
@@ -119,21 +126,25 @@ function canonicalHost(host: string): string {
   return host.toLowerCase().replace(/\.+$/, "");
 }
 
-// matchPattern tests one canonical host against one pattern: `*` (all),
-// `*.example.com` (any subdomain, not the apex), or an exact hostname.
-function matchPattern(pattern: string, host: string): boolean {
+// matchHost tests one canonical host against one pattern, with ONE meaning of a
+// pattern shared by every policy surface (the CONNECT gate AND the terminate
+// scope), so a pattern never means two things depending on where it is written:
+//   `*`              → all
+//   `*.example.com`  → subdomains only, NOT the apex
+//   `example.com`    → the apex AND every subdomain
+export function matchHost(pattern: string, host: string): boolean {
   const p = pattern.toLowerCase();
   if (p === "*") return true;
   if (p.startsWith("*.")) return host.endsWith(p.slice(1)); // ".example.com" — subdomains only
-  return host === p;
+  return host === p || host.endsWith("." + p);              // bare — apex + subdomains
 }
 
 // compilePolicy turns allow/deny lists into a host→allowed predicate. Allow
 // default-denies the rest; deny default-allows it; neither means all allowed.
 // The recipe validator guarantees allow and deny are not both set.
 function compilePolicy(allow: string[], deny: string[]): (host: string) => boolean {
-  if (allow.length) return (host) => allow.some((p) => matchPattern(p, host));
-  if (deny.length) return (host) => !deny.some((p) => matchPattern(p, host));
+  if (allow.length) return (host) => allow.some((p) => matchHost(p, host));
+  if (deny.length) return (host) => !deny.some((p) => matchHost(p, host));
   return () => true;
 }
 
@@ -142,7 +153,7 @@ async function resolveChain(chain: HopConfig[]): Promise<Hop[]> {
   const hops: Hop[] = [];
   for (const h of chain) {
     if (h.tls === "terminate" || h.tls === "originate") {
-      hops.push({ name: "tls", kind: h.tls === "terminate" ? "tls-terminate" : "tls-originate", domains: h.domains });
+      hops.push({ name: "tls", kind: h.tls === "terminate" ? "tls-terminate" : "tls-originate", domains: h.domains, failOpen: h.failOpen });
       continue;
     }
     if (!h.module) throw new Error(`proxy hop: a chain entry must be a tls directive or a module`);
@@ -167,12 +178,16 @@ function classify(hops: Hop[]) {
   const contentHops: Hop[] = [];
   let inWindow = false, terminates = false, originates = false;
   let terminateDomains: string[] | null = null;
+  let failOpen = false;
   for (const h of hops) {
     if (h.kind === "tls-terminate") {
       inWindow = true;
       terminates = true;
       // An empty/absent list means "terminate every host"; a list scopes it.
       terminateDomains = h.domains && h.domains.length ? h.domains.map((d) => d.toLowerCase()) : null;
+      // fail_open on the terminate hop: a host in scope we cannot intercept is
+      // tunnelled instead of refused (default false = fail closed).
+      failOpen = !!h.failOpen;
       continue;
     }
     if (h.kind === "tls-originate") { inWindow = false; originates = true; continue; }
@@ -182,7 +197,7 @@ function classify(hops: Hop[]) {
       console.warn(`warning: proxy hook "${h.name}" is OUTSIDE a "tls: terminate" window — its content verbs will NOT run. Add "tls: terminate" before it to inspect content.`);
     }
   }
-  return { contentHops, terminates, originates, terminateDomains };
+  return { contentHops, terminates, originates, terminateDomains, failOpen };
 }
 
 // Hooks are user code, so bound every call: a hung hook must not stall the box's
@@ -204,14 +219,6 @@ function callHook<T>(p: Promise<T> | T): Promise<T> {
 // destination a connection actually targets — a hole in the domain policy. false
 // (the default) refuses any ClientHello carrying the ECH extension.
 const ALLOW_ECH = false;
-
-// PASSTHROUGH_ON_TLS_FAILURE: a client that PINS its cert rejects our MITM leaf.
-// A "tls: terminate" window is a declaration that the traffic MUST be inspected,
-// so a host we cannot intercept is REFUSED, not waved through: passthrough on a
-// broker would let a credential the host was meant to swap out land inside the
-// box. false (the default) fails closed. A single constant so a future
-// recipe-schema knob can wire it per box without touching this logic.
-const PASSTHROUGH_ON_TLS_FAILURE = false;
 
 // helloHasECH parses a buffered TLS ClientHello for the encrypted_client_hello
 // extension (0xfe0d). Best-effort: a malformed or non-handshake buffer is "no".
@@ -502,13 +509,22 @@ async function serveHTTP(
   } catch (e) {
     upReq.destroy();
     client.end("HTTP/1.1 502 Bad Gateway\r\n\r\n");
-    console.error(`warning: request stream failed for ${host}: ${(e as Error)?.message ?? e}`);
+    const msg = (e as Error)?.message ?? String(e);
+    logEvent({ t: "stream-error", stage: "request", host, path, msg });
+    console.error(`warning: request stream failed for ${host}: ${msg}`);
     return;
   }
 
   let upRes: http.IncomingMessage;
   try { upRes = await upResPromise; }
-  catch (e) { client.end("HTTP/1.1 502 Bad Gateway\r\n\r\n"); console.error(`warning: upstream error for ${host}: ${(e as Error)?.message ?? e}`); return; }
+  catch (e) {
+    client.end("HTTP/1.1 502 Bad Gateway\r\n\r\n");
+    const msg = (e as Error)?.message ?? String(e);
+    logEvent({ t: "stream-error", stage: "upstream", host, path, msg });
+    console.error(`warning: upstream error for ${host}: ${msg}`);
+    return;
+  }
+  logEvent({ t: "upstream", host, path, status: upRes.statusCode ?? 0 });
 
   const respHead: ResponseHead = { host, status: upRes.statusCode ?? 502, headers: {} };
   for (const [k, v] of Object.entries(upRes.headers)) respHead.headers[k] = Array.isArray(v) ? v.join(", ") : String(v ?? "");
@@ -558,7 +574,9 @@ async function writeResponse(
     client.write(Buffer.from("0\r\n\r\n", "latin1"));
     client.end();
   } catch (e) {
-    console.error(`warning: response stream failed for ${host}: ${(e as Error)?.message ?? e}`);
+    const msg = (e as Error)?.message ?? String(e);
+    logEvent({ t: "stream-error", stage: "response", host, msg });
+    console.error(`warning: response stream failed for ${host}: ${msg}`);
     client.destroy();
   }
 }
@@ -566,23 +584,46 @@ async function writeResponse(
 // --- boot -------------------------------------------------------------------
 export async function start(cfg: EngineConfig): Promise<{ stop: () => void }> {
   const hops = await resolveChain(cfg.chain);
-  const { contentHops, terminates, originates, terminateDomains } = classify(hops);
+  const { contentHops, terminates, originates, terminateDomains, failOpen } = classify(hops);
   const policyAllows = compilePolicy(cfg.allow ?? [], cfg.deny ?? []);
 
   // shouldInspect decides whether THIS host's TLS is terminated and its content
   // inspected. With no `domains` list a terminate window covers every host; a
-  // list scopes it (exact host or a subdomain), so traffic we don't care about
-  // passes through un-decrypted.
+  // list scopes it with the SAME pattern grammar as the gate (matchHost), so
+  // `*.example.com`, a bare apex, or an exact host all mean here what they mean
+  // there. Traffic we don't care about passes through un-decrypted.
   function shouldInspect(host: string): boolean {
     if (!terminates) return false;
     if (!terminateDomains) return true;
-    return terminateDomains.some((d) => host === d || host.endsWith("." + d));
+    return terminateDomains.some((d) => matchHost(d, host));
   }
+  // Connection ledger: when DABS_CONNECT_LOG is set (inherited from the host dabs
+  // process — `DABS_CONNECT_LOG=~/.dabs/broker/connect.jsonl dabs recipe …`), append
+  // one JSON line per dialed destination with its disposition. This is the ONLY
+  // record of a connection the content hooks never see — a raw tunnel, an ECH
+  // drop, or a policy DENY — so it is how you prove you caught every edge (and
+  // whether a box's traffic is proxied at all, or being denied).
+  const connLogPath = process.env.DABS_CONNECT_LOG
+    ? process.env.DABS_CONNECT_LOG.replace(/^~\//, (process.env.HOME ?? "") + "/")
+    : "";
+  logEvent = (o: object) => {
+    if (!connLogPath) return;
+    try { appendFileSync(connLogPath, JSON.stringify(o) + "\n"); } catch {}
+  };
+  const connLog = (host: string, port: number, verdict: string, proto = "connect") =>
+    logEvent({ t: "connect", proto, host, port, verdict });
+
   // Always mint the CA: dabs mounts ca.crt into every proxy box (the mount origin
   // must exist), and a chain that gains a `tls: terminate` later needs it anyway.
   ensureCA(cfg.caDir);
 
   const pinnedHosts = new Set<string>(); // clients that rejected our leaf (pinning)
+
+  // fail_open (from the `tls: terminate` hop): a host we CANNOT intercept (it pins
+  // its cert) or cannot stand a terminator up for is TUNNELED raw and recorded,
+  // instead of refused. For an OBSERVE-only proxy, which must keep the box alive
+  // and note what it could not see — never for a credential-injecting one, where
+  // failing closed is the guarantee. Off by default (fail closed).
 
   // A TLS terminator per host:port — a node:tls server bound to a unix socket,
   // presenting the host's leaf. The CONNECT handler pipes the client's raw TLS
@@ -603,19 +644,26 @@ export async function start(cfg: EngineConfig): Promise<{ stop: () => void }> {
   }
   async function makeTerminator(host: string, port: number): Promise<string> {
     const leaf = await leafFor(cfg.caDir, host);
-    const safe = `${host}_${port}`.replace(/[^a-zA-Z0-9.-]/g, "_");
-    const base = safe.length <= 40 ? safe : `${safe.slice(0, 24)}-${Bun.hash(safe).toString(36)}`;
-    const sock = `${cfg.caDir}/term-${base}.sock`;
+    // A unix socket path caps at ~104 bytes (macOS) and the temp caDir is already
+    // long, so the NAME must stay short: a descriptive `term-api.anthropic.com_443`
+    // overflows it and the listen fails. A short hash of host:port is unique enough.
+    const sock = `${cfg.caDir}/t${Bun.hash(`${host}:${port}`).toString(36).slice(0, 12)}.sock`;
     if (existsSync(sock)) { try { unlinkSync(sock); } catch {} }
     const srv = tls.createServer({ cert: leaf.cert, key: leaf.key, ALPNProtocols: ["http/1.1"] }, (tlsSock) => {
       onDecrypted(tlsSock, host, port).catch((e) => { console.error(`warning: proxy content error for ${host}: ${e?.message ?? e}`); tlsSock.destroy(); });
     });
     // A client that PINS its cert rejects our leaf → the handshake fails here.
     srv.on("tlsClientError", () => {
-      if (PASSTHROUGH_ON_TLS_FAILURE) pinnedHosts.add(host);
+      if (failOpen) pinnedHosts.add(host); // next connection to this host tunnels raw
       else console.warn(`warning: refused ${host}: cannot intercept (client pins its cert) and inspection is required — failing closed`);
     });
-    await new Promise<void>((resolve) => srv.listen(sock, resolve));
+    // Bind the per-host terminator socket. A listen failure must REJECT (not throw
+    // an unhandled 'error' that takes the whole engine down) so the CONNECT path
+    // can fall back — one host's terminator failing is not the engine's death.
+    await new Promise<void>((resolve, reject) => {
+      srv.once("error", reject);
+      srv.listen(sock, () => { srv.removeListener("error", reject); resolve(); });
+    });
     return sock;
   }
   // onDecrypted receives a decrypted client duplex. HTTP/1.1 → the content path;
@@ -650,18 +698,37 @@ export async function start(cfg: EngineConfig): Promise<{ stop: () => void }> {
           const port = Number(connect[2]);
           // POLICY: the engine-native CONNECT gate, on the plaintext host, before
           // any tunnel — for every protocol. A denied host never gets a tunnel.
-          if (!policyAllows(host)) { client.end("HTTP/1.1 403 Forbidden\r\n\r\n"); return; }
+          if (!policyAllows(host)) { connLog(host, port, "deny"); client.end("HTTP/1.1 403 Forbidden\r\n\r\n"); return; }
           client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
 
           const hello = await firstChunk(client);
-          if (!hello) { client.destroy(); return; }
-          if (!ALLOW_ECH && helloHasECH(hello)) { client.destroy(); return; } // ECH hides the SNI
+          if (!hello) { connLog(host, port, "no-hello"); client.destroy(); return; }
+          if (!ALLOW_ECH && helloHasECH(hello)) { connLog(host, port, "ech-drop"); client.destroy(); return; } // ECH hides the SNI
 
-          const passthrough = PASSTHROUGH_ON_TLS_FAILURE && pinnedHosts.has(host);
+          const passthrough = failOpen && pinnedHosts.has(host);
           if (shouldInspect(host) && !passthrough) {
+            let termSock: string;
+            try {
+              termSock = await terminatorFor(host, port);
+            } catch (e) {
+              // The terminator could not be stood up (e.g. a socket bind failure).
+              // Best-effort tunnels raw and records it; strict inspection refuses
+              // cleanly. Either way the engine stays up.
+              if (failOpen) {
+                connLog(host, port, "tunnel-noterminator");
+                const up = net.connect(port, host, () => { up.write(hello); client.pipe(up); up.pipe(client); });
+                up.on("error", () => client.destroy());
+                return;
+              }
+              connLog(host, port, "refused-noterminator");
+              console.warn(`warning: refused ${host}: no terminator (${(e as Error)?.message ?? e}) and inspection is required — failing closed`);
+              client.destroy();
+              return;
+            }
+            connLog(host, port, "inspect");
             // Pipe the client's raw TLS into the host's terminator, replaying the
             // buffered ClientHello. The terminator decrypts and calls onDecrypted.
-            const inner = net.connect(await terminatorFor(host, port), () => {
+            const inner = net.connect(termSock, () => {
               inner.write(hello);
               client.pipe(inner);
               inner.pipe(client);
@@ -673,6 +740,7 @@ export async function start(cfg: EngineConfig): Promise<{ stop: () => void }> {
           // No terminate window (or a learned-pinned host): raw-tunnel the allowed
           // connection straight to the real host — a pinning client is not broken,
           // and any protocol reaches an allowed domain.
+          connLog(host, port, passthrough ? "tunnel-pinned" : "tunnel");
           const up = net.connect(port, host, () => { up.write(hello); client.pipe(up); up.pipe(client); });
           up.on("error", () => client.destroy());
           return;
@@ -684,11 +752,13 @@ export async function start(cfg: EngineConfig): Promise<{ stop: () => void }> {
           const url = new URL(httpReq[2]);
           const host = canonicalHost(url.hostname);
           const port = Number(url.port || 80);
-          if (!policyAllows(host)) { client.end("HTTP/1.1 403 Forbidden\r\n\r\n"); return; }
+          if (!policyAllows(host)) { connLog(host, port, "deny", "http"); client.end("HTTP/1.1 403 Forbidden\r\n\r\n"); return; }
+          connLog(host, port, shouldInspect(host) ? "inspect" : "forward", "http");
           const hooks = shouldInspect(host) ? contentHops : [];
           await serveHTTP(client, hooks, hooks.length ? originates : true, host, port, "http", buf);
           return;
         }
+        connLog(line.split(/\s+/)[0] || "?", 0, "unhandled");
         client.end("HTTP/1.1 501 Not Implemented\r\n\r\n");
       } catch (e) {
         console.error(`warning: proxy connection error: ${(e as Error)?.message ?? e}`);

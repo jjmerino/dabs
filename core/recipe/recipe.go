@@ -212,10 +212,15 @@ func toPatternList(field string, v interface{}) ([]string, error) {
 // a terminate…originate window inspects decrypted content; outside one it acts
 // on the connection (host/port) for allow/deny/route.
 type ProxyHop struct {
-	TLS     string                 `json:"tls,omitempty" yaml:"-"`     // "terminate" | "originate"; empty if a module hop
-	Domains []string               `json:"domains,omitempty" yaml:"-"` // on `tls: terminate`: only these hosts are decrypted; others pass through
-	Module  string                 `json:"module,omitempty" yaml:"-"`  // module path; empty if a tls hop
-	Config  map[string]interface{} `json:"config,omitempty" yaml:"-"`  // a module hop's extra config (excludes `module`)
+	TLS     string   `json:"tls,omitempty" yaml:"-"`     // "terminate" | "originate"; empty if a module hop
+	Domains []string `json:"domains,omitempty" yaml:"-"` // on `tls: terminate`: only these hosts are decrypted; others pass through
+	// FailOpen, on `tls: terminate`: a host in scope that CANNOT be intercepted
+	// (it pins its cert, or its terminator will not bind) is tunnelled through
+	// un-inspected instead of refused. Default false = fail closed (refuse). For
+	// an OBSERVE-only proxy; never for a credential-injecting one.
+	FailOpen bool                   `json:"fail_open,omitempty" yaml:"-"`
+	Module   string                 `json:"module,omitempty" yaml:"-"` // module path; empty if a tls hop
+	Config   map[string]interface{} `json:"config,omitempty" yaml:"-"` // a module hop's extra config (excludes `module`)
 }
 
 // TLS boundary directives.
@@ -279,7 +284,8 @@ func (h *ProxyHop) set(m map[string]interface{}) error {
 		}
 		h.TLS = s
 		// A `tls: terminate` may scope interception to a `domains` list — only
-		// those hosts are decrypted; everything else passes through untouched.
+		// those hosts are decrypted; everything else passes through untouched — and
+		// may set `fail_open` for what to do with a host it cannot intercept.
 		for k, v := range m {
 			switch k {
 			case proxyTLS:
@@ -289,12 +295,18 @@ func (h *ProxyHop) set(m map[string]interface{}) error {
 					return fmt.Errorf("proxy hop: `domains` must be a list of hostnames: %w", err)
 				}
 				h.Domains = ds
+			case proxyFailOpen:
+				b, ok := v.(bool)
+				if !ok {
+					return fmt.Errorf("proxy hop: `fail_open` must be true or false")
+				}
+				h.FailOpen = b
 			default:
-				return fmt.Errorf("proxy hop: a `tls` directive takes only an optional `domains` list, not %q", k)
+				return fmt.Errorf("proxy hop: a `tls` directive takes only an optional `domains` list and `fail_open`, not %q", k)
 			}
 		}
-		if len(h.Domains) > 0 && s != tlsTerminate {
-			return errors.New("proxy hop: `domains` only applies to `tls: terminate`")
+		if s != tlsTerminate && (len(h.Domains) > 0 || h.FailOpen) {
+			return errors.New("proxy hop: `domains` and `fail_open` only apply to `tls: terminate`")
 		}
 		return nil
 	}
@@ -325,9 +337,10 @@ func (h *ProxyHop) set(m map[string]interface{}) error {
 // The chain vocabulary: a hop is keyed by `tls` (a boundary directive) or
 // `module` (a hook to load). Anything else is a typo, not a hop.
 const (
-	proxyTLS     = "tls"
-	proxyModule  = "module"
-	proxyDomains = "domains"
+	proxyTLS      = "tls"
+	proxyModule   = "module"
+	proxyDomains  = "domains"
+	proxyFailOpen = "fail_open"
 )
 
 // toStringList coerces a normalized YAML/JSON value into a []string, rejecting a

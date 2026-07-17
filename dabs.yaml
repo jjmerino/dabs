@@ -67,7 +67,10 @@ recipes:
   # is the second.
   confined-claude:
     description: Claude box that never holds the real credential (broker-injected)
-    image: claude
+    # The bundled claude image plus the linux forwarder proxy egress needs on the
+    # apple driver (built from this checkout — see the Dockerfile). Bases on the
+    # already-built dabs-claude image: run `dabs recipe claude` once first.
+    image: { dockerfile: contrib/recipes/confined-claude.Dockerfile, context: . }
     command: [claude]
     keep: true
     env:
@@ -75,28 +78,37 @@ recipes:
     egress:
       # Protocol-agnostic CONNECT gate: only Anthropic. Everything else is denied
       # at CONNECT, whatever the protocol — the box cannot phone home elsewhere.
-      allow: api.anthropic.com
+      # A bare domain matches the apex AND every subdomain, so this covers api,
+      # console (the OAuth/refresh host), statsig, etc.
+      allow: "anthropic.com, claude.ai, claude.com"
       # HTTP content chain: terminate Anthropic's TLS, run the broker, re-originate.
+      # The broker must see the REFRESH too (on console.anthropic.com), or the
+      # dummy refresh token would leak un-swapped — so terminate the whole set.
+      # A bare domain matches the apex and every subdomain (same grammar as the
+      # gate above); the whole managed set must be terminated so no token-bearing
+      # leg tunnels past the broker to the box.
       http_proxy:
         - tls: terminate
-          domains: [api.anthropic.com]
-        - module: contrib/broker/broker.ts
+          domains: [anthropic.com, claude.ai, claude.com]
+        - module: contrib/proxy/creds-inject-anthropic/broker.ts
           # vault: ~/.dabs/broker/vault.json   # default; the real tokens' only home
-          # debug: ~/.dabs/broker/trace.jsonl  # uncomment to trace the exchange
         - tls: originate
     sources:
-      # Config + sessions persist across boxes (as the `claude` recipe), but the
-      # real credential is deliberately NOT mounted here.
-      - mkmount: $PARENT_VOLUME/confined-claude/config
+      # The WHOLE config dir, persistent and shared by every confined box — its
+      # OWN dir, never your real ~/.dabs/shared/claude. This is what carries
+      # settings.json, onboarding state, theme AND the DUMMY creds across boxes,
+      # so a box onboards once, not every time. It only ever holds dummies: the
+      # broker's inbound real→dummy scrub guarantees the real token never lands
+      # here (it lives only in the host vault). Seed it once with the dummy creds
+      # (util/reinstall.sh, or copy contrib/proxy/creds-inject-anthropic/dummy-credentials.json in) so
+      # the first box needs no login either; an EMPTY dir just means one /login.
+      - mkmount: ~/.dabs/shared/confined-claude
         path: /root/.claude
+      # Per-place session transcripts, nested over the shared config dir — they
+      # live in $PARENT_VOLUME so they survive this box's reaping and reload for
+      # the next box on the same code (same as the `claude` recipe).
       - mkmount: $PARENT_VOLUME/claude/projects
         path: /root/.claude/projects
-      # The DUMMY credentials the box authenticates with — read-only. The broker
-      # maps these sentinels to the real tokens on the wire; the box only ever
-      # sees the dummies, and cannot overwrite them.
-      - mount: contrib/broker/dummy-credentials.json
-        path: /root/.claude/.credentials.json
-        ro: true
       - mount: .
         path: /work
 

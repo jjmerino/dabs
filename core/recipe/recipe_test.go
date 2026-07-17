@@ -389,6 +389,7 @@ func TestEgressModeValidation(t *testing.T) {
 		// friendly key diagnostic, not a raw decoder error.
 		{"bogus key scalar value", "    egress:\n      foo: bar\n", "unknown key"},
 		{"extra key alongside proxy", "    egress:\n      http_proxy:\n        - module: h.ts\n      extra: 1\n", "unknown key"},
+		{"fail_open is a hop key, not an egress key", "    egress:\n      http_proxy:\n        - module: h.ts\n      fail_open: true\n", "unknown key"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -431,6 +432,34 @@ func TestEgressAllowDenyParse(t *testing.T) {
 	}
 }
 
+// fail_open is a `tls: terminate` hop key: it parses onto the hop, defaults to
+// false (fail closed), rejects a non-bool, and only applies to terminate.
+func TestEgressFailOpenParse(t *testing.T) {
+	reg, err := recipe.Parse([]byte("recipes:\n  r:\n    image: x\n    egress:\n      http_proxy:\n        - tls: terminate\n          fail_open: true\n        - module: h.ts\n        - tls: originate\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reg.Recipes["r"].Egress.HTTPProxy[0].FailOpen {
+		t.Errorf("fail_open: true did not set the terminate hop's field")
+	}
+	// Default: a terminate hop with no fail_open → false (fail closed).
+	reg, err = recipe.Parse([]byte("recipes:\n  r:\n    image: x\n    egress:\n      http_proxy:\n        - tls: terminate\n        - module: h.ts\n        - tls: originate\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reg.Recipes["r"].Egress.HTTPProxy[0].FailOpen {
+		t.Errorf("fail_open defaulted to true, want false (fail closed)")
+	}
+	// fail_open on `tls: originate` is a clear error.
+	if _, err := recipe.Parse([]byte("recipes:\n  r:\n    image: x\n    egress:\n      http_proxy:\n        - tls: terminate\n        - module: h.ts\n        - tls: originate\n          fail_open: true\n")); err == nil || !strings.Contains(err.Error(), "only apply to") {
+		t.Errorf("want error for fail_open on originate, got %v", err)
+	}
+	// A non-bool fail_open is rejected.
+	if _, err := recipe.Parse([]byte("recipes:\n  r:\n    image: x\n    egress:\n      http_proxy:\n        - tls: terminate\n          fail_open: yes-please\n")); err == nil || !strings.Contains(err.Error(), "true or false") {
+		t.Errorf("want error for non-bool fail_open, got %v", err)
+	}
+}
+
 // A `tls: terminate` may carry a `domains` list scoping which hosts are
 // decrypted. The list parses onto the hop; `domains` on `originate` or a
 // non-list value is a clear error.
@@ -443,7 +472,7 @@ func TestEgressTerminateDomainsParse(t *testing.T) {
 	if len(hops[0].Domains) != 2 || hops[0].Domains[0] != "api.example.com" || hops[0].Domains[1] != "example.org" {
 		t.Errorf("domains not parsed: %+v", hops[0])
 	}
-	if _, err := recipe.Parse([]byte("recipes:\n  r:\n    image: x\n    egress:\n      http_proxy:\n        - tls: terminate\n        - module: h.ts\n        - tls: originate\n          domains: [x.com]\n")); err == nil || !strings.Contains(err.Error(), "only applies to") {
+	if _, err := recipe.Parse([]byte("recipes:\n  r:\n    image: x\n    egress:\n      http_proxy:\n        - tls: terminate\n        - module: h.ts\n        - tls: originate\n          domains: [x.com]\n")); err == nil || !strings.Contains(err.Error(), "only apply to") {
 		t.Errorf("want error for domains on originate, got %v", err)
 	}
 	if _, err := recipe.Parse([]byte("recipes:\n  r:\n    image: x\n    egress:\n      http_proxy:\n        - tls: terminate\n          domains: nope\n")); err == nil || !strings.Contains(err.Error(), "list of hostnames") {

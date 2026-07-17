@@ -1,4 +1,8 @@
-// dabs credential broker — a streaming egress content hook.
+// dabs Anthropic credential broker — a streaming egress content hook.
+//
+// This is Anthropic-specific by construction: it recognizes ONLY Anthropic OAuth
+// tokens (the sk-ant-oat01-/sk-ant-ort01- formats) and the Claude Code login and
+// refresh shapes. It is not a generic OAuth broker.
 //
 // The box runs normal Claude Code with a FULLY DUMMY, read-only credentials
 // file; the REAL tokens live only in a host-side vault, born on the first in-box
@@ -25,10 +29,9 @@
 //         domains: [api.anthropic.com]
 //       - module: ./broker.ts
 //         vault: ~/.dabs/broker/vault.json   # optional; this is the default
-//         debug: /tmp/broker-trace.jsonl     # optional; a trace while shaping it
 //       - tls: originate
 
-import { readFileSync, writeFileSync, mkdirSync, appendFileSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, chmodSync } from "node:fs";
 
 // The dummy sentinels: format-valid OAuth tokens (Claude Code accepts them in
 // its creds file) that are ALSO exactly what the box's read-only creds file
@@ -37,8 +40,9 @@ const pad = (p: string) => (p + "DABSBROKERDUMMY" + "0".repeat(108)).slice(0, 10
 const DUMMY_ACCESS = pad("sk-ant-oat01-");
 const DUMMY_REFRESH = pad("sk-ant-ort01-");
 
-// Any real OAuth token in a response is captured (bootstrapping the vault on the
-// first login, tracking rotation on refresh) and rewritten to its dummy.
+// Any real Anthropic OAuth token (sk-ant-oat01-/sk-ant-ort01-) in a response is
+// captured (bootstrapping the vault on the first login, tracking rotation on
+// refresh) and rewritten to its dummy. Non-Anthropic tokens are not recognized.
 const OAT = /sk-ant-oat01-[A-Za-z0-9_-]+/g;
 const ORT = /sk-ant-ort01-[A-Za-z0-9_-]+/g;
 
@@ -49,9 +53,8 @@ function expandHome(p: string): string {
   return p.startsWith("~/") ? `${process.env.HOME}/${p.slice(2)}` : p;
 }
 
-export default (config: { vault?: string; debug?: string }) => {
+export default (config: { vault?: string }) => {
   const vault = expandHome(config.vault ?? `${process.env.HOME}/.dabs/broker/vault.json`);
-  const debug = config.debug ? expandHome(config.debug) : "";
 
   // The real values live only here (and in the vault file). The vault may start
   // EMPTY: a new user's box has no credential, logs in, and the login's token
@@ -67,14 +70,19 @@ export default (config: { vault?: string; debug?: string }) => {
     // No vault yet — the first in-box login writes it.
   }
 
-  const trace = (o: unknown) => { if (debug) { try { appendFileSync(debug, JSON.stringify(o) + "\n"); } catch {} } };
-
   const dummyToReal = (s: string) =>
     s.split(DUMMY_ACCESS).join(realAccess).split(DUMMY_REFRESH).join(realRefresh);
 
   function persist() {
-    try { mkdirSync(vault.replace(/\/[^/]+$/, ""), { recursive: true }); } catch {}
-    writeFileSync(vault, JSON.stringify({ claudeAiOauth: { accessToken: realAccess, refreshToken: realRefresh } }));
+    // The vault holds the REAL tokens: owner-only (0600 file, 0700 dir), never the
+    // umask default (0644) that would leave a live credential world-readable. The
+    // writeFileSync/mkdirSync mode only applies on CREATE, so chmod afterwards to
+    // tighten a vault or dir that already existed with looser bits.
+    const dir = vault.replace(/\/[^/]+$/, "");
+    try { mkdirSync(dir, { recursive: true, mode: 0o700 }); } catch {}
+    writeFileSync(vault, JSON.stringify({ claudeAiOauth: { accessToken: realAccess, refreshToken: realRefresh } }), { mode: 0o600 });
+    try { chmodSync(dir, 0o700); } catch {}
+    try { chmodSync(vault, 0o600); } catch {}
   }
 
   // scrub rewrites any real token back to its dummy, capturing the real value to
@@ -85,7 +93,6 @@ export default (config: { vault?: string; debug?: string }) => {
       .replace(OAT, (m) => (m === DUMMY_ACCESS ? m : ((realAccess = m), (captured = true), DUMMY_ACCESS)))
       .replace(ORT, (m) => (m === DUMMY_REFRESH ? m : ((realRefresh = m), (captured = true), DUMMY_REFRESH)));
     if (captured) persist();
-    trace({ t: "scrub", captured });
     return out;
   }
 
@@ -97,30 +104,30 @@ export default (config: { vault?: string; debug?: string }) => {
       const auth = head.headers["authorization"];
       if (auth) head.headers["authorization"] = dummyToReal(auth);
       delete head.headers["accept-encoding"];
-      trace({ t: "req", method: head.method, path: head.path, hasAuth: !!auth });
       return { headers: head.headers };
     },
     onRequestChunk(chunk: Buffer | null) {
       // The refresh request carries the dummy refresh token in its JSON body.
-      // Swap only when a dummy is actually present, else pass the chunk through.
       if (chunk === null) return;
       const s = chunk.toString("latin1");
-      if (!s.includes(DUMMY_REFRESH) && !s.includes(DUMMY_ACCESS)) return;
+      if (!s.includes(DUMMY_REFRESH) && !s.includes(DUMMY_ACCESS)) return; // pass non-token chunks through unchanged
       return Buffer.from(dummyToReal(s), "latin1");
     },
-    onResponse(head: { headers: Record<string, string> }, ctx: Ctx) {
+    onResponse(head: { status?: number; headers: Record<string, string> }, ctx: Ctx) {
       // A streaming message response (SSE) carries NO tokens — pass it through
       // live, never accumulate. Everything else (the login/refresh JSON) is
       // small; the broker accumulates it ITSELF and scrubs at EOF, so the engine
       // never buffers on its behalf.
-      ctx.sse = (head.headers["content-type"] ?? "").includes("text/event-stream");
+      const ct = head.headers["content-type"] ?? "";
+      ctx.sse = ct.includes("text/event-stream");
     },
     onResponseChunk(chunk: Buffer | null, ctx: Ctx) {
       if (ctx.sse) return; // live passthrough, no tokens
       if (chunk === null) {
         const body = ctx.buf ?? "";
         ctx.buf = "";
-        return body ? Buffer.from(scrub(body), "latin1") : null;
+        const scrubbed = scrub(body);
+        return scrubbed ? Buffer.from(scrubbed, "latin1") : null;
       }
       ctx.buf = (ctx.buf ?? "") + chunk.toString("latin1");
       return Buffer.alloc(0); // hold until EOF, then emit the scrubbed body

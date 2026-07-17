@@ -119,7 +119,7 @@ func buildChain(recipeName string, hops []recipe.ProxyHop, expandPath func(strin
 	chain := make([]engine.HopConfig, 0, len(hops))
 	for _, h := range hops {
 		if h.IsTLS() {
-			chain = append(chain, engine.HopConfig{TLS: h.TLS, Domains: h.Domains})
+			chain = append(chain, engine.HopConfig{TLS: h.TLS, Domains: h.Domains, FailOpen: h.FailOpen})
 			continue
 		}
 		// A module hop: its engine identity is its Label (name or basename); the

@@ -25,11 +25,12 @@ var engineTS []byte
 // HopConfig is one resolved chain entry handed to the engine: a built-in
 // directive (tls/egress) or a custom executor with an absolute module path.
 type HopConfig struct {
-	Name    string                 `json:"name,omitempty"`    // a module hop's label
-	TLS     string                 `json:"tls,omitempty"`     // "terminate" | "originate" for a tls hop
-	Domains []string               `json:"domains,omitempty"` // on terminate: only these hosts are decrypted
-	Module  string                 `json:"module,omitempty"`  // a module hop's path
-	Config  map[string]interface{} `json:"config,omitempty"`
+	Name     string                 `json:"name,omitempty"`     // a module hop's label
+	TLS      string                 `json:"tls,omitempty"`      // "terminate" | "originate" for a tls hop
+	Domains  []string               `json:"domains,omitempty"`  // on terminate: only these hosts are decrypted
+	FailOpen bool                   `json:"failOpen,omitempty"` // on terminate: tunnel a host we cannot intercept, don't refuse
+	Module   string                 `json:"module,omitempty"`   // a module hop's path
+	Config   map[string]interface{} `json:"config,omitempty"`
 }
 
 // Policy is the engine-enforced CONNECT gate: domain patterns checked on the

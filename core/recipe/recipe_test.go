@@ -283,8 +283,8 @@ recipes:
 	if !p[1].IsModule() || p[1].Module != "$RECIPE_DIR/recorder.ts" || p[1].Label() != "recorder" {
 		t.Errorf("hop 1 module/label = %q/%q", p[1].Module, p[1].Label())
 	}
-	if reg.Recipes["claude"].EgressMode() != recipe.EgressProxy {
-		t.Errorf("egress mode should be proxy")
+	if got := reg.Recipes["claude"].EgressMode(); got != recipe.EgressProxy {
+		t.Errorf("EgressMode() = %q, want %q", got, recipe.EgressProxy)
 	}
 }
 

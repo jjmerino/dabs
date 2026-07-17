@@ -554,6 +554,101 @@ func TestProxyFailedBootLeavesNoTempDir(t *testing.T) {
 	}
 }
 
+// TestProxyDoesNotFollowRedirects is the regression for a domain-policy bypass:
+// the engine must NOT follow a 30x server-side on the forwarded leg. authorize
+// gates only the CONNECT host, so following a redirect could bounce the box to a
+// host the policy never saw. The box must receive the 3xx itself (and re-request,
+// which re-runs authorize). http://github.com issues a permanent 301; if the
+// engine followed it, the box would see the 200 of the https target instead.
+func TestProxyDoesNotFollowRedirects(t *testing.T) {
+	clean(t)
+	dir, err := os.MkdirTemp(home, "proxyredir-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "fwd.ts"),
+		[]byte(`export default () => ({ onRequest() { return { action: "forward" }; } });`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outDir := filepath.Join(dir, "out")
+	os.MkdirAll(outDir, 0o755)
+	yaml := fmt.Sprintf("default: r\nrecipes:\n  r:\n    image: dabs-e2e\n    keep: true\n    egress:\n      proxy:\n        - tls: terminate\n        - module: %s/fwd.ts\n        - tls: originate\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
+	os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644)
+	// No -L: the box must see the redirect status itself, not the followed page.
+	os.WriteFile(filepath.Join(outDir, "run.sh"), []byte("#!/bin/sh\ncurl -s -o /dev/null -w 'code=%{http_code}\\n' -m 12 http://github.com/ > /out/resp.txt 2>&1\n"), 0o755)
+	out, code := run("dabs recipe " + dir + " --detach")
+	if code != 0 {
+		t.Fatalf("boot failed (%d):\n%s", code, out)
+	}
+	inst := instanceLine(t, out)
+	run("dabs exec " + inst + " -- sh /out/run.sh")
+	resp := readFile(t, filepath.Join(outDir, "resp.txt"))
+	if !strings.Contains(resp, "code=301") {
+		t.Errorf("the engine must not follow the redirect (want the box to see 301), got:\n%s", resp)
+	}
+}
+
+// TestProxyReapsEngineWhenBoxEntryFails is the regression for the engine leak on
+// a boot that fails AFTER the engine started: the module exists and the engine
+// boots, but the box's workdir does not exist so the entry (smoke check) fails.
+// No box node is written to carry the engine's PID, so buildBox must reap it on
+// the failed return — otherwise the engine and its temp dir leak forever.
+func TestProxyReapsEngineWhenBoxEntryFails(t *testing.T) {
+	clean(t)
+	dir, err := os.MkdirTemp(home, "proxyentry-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "gate.ts"),
+		[]byte(`export default () => ({ authorize() { return "allow"; } });`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A valid engine chain, but a workdir that does not exist in the box → the
+	// post-boot entry fails after Provision already started the engine.
+	yaml := fmt.Sprintf("default: g\nrecipes:\n  g:\n    image: dabs-e2e\n    workdir: /does/not/exist\n    egress:\n      proxy:\n        - module: %s/gate.ts\n", dir)
+	os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644)
+	before, _ := filepath.Glob("/tmp/dabs-proxy-*")
+	out, code := run("dabs recipe " + dir + " --detach")
+	if code == 0 {
+		t.Fatalf("expected a boot failure for a missing workdir, got success:\n%s", out)
+	}
+	after, _ := filepath.Glob("/tmp/dabs-proxy-*")
+	if len(after) > len(before) {
+		t.Errorf("a failed box entry leaked the proxy engine's temp dir: before=%v after=%v", before, after)
+	}
+}
+
+// TestProxyCarriesNonStandardPort is the regression for the dropped upstream
+// port: a box connecting to a host on a non-standard port through a terminate
+// window must have that port on the request the engine sees (and re-originates
+// to), not be silently rewritten to 443. The hook echoes the port it observed.
+func TestProxyCarriesNonStandardPort(t *testing.T) {
+	clean(t)
+	dir, err := os.MkdirTemp(home, "proxyport-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "hook.ts"),
+		[]byte(`export default () => ({ onRequest(req) { return { action: "respond", status: 200, body: "port=" + req.port }; } });`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outDir := filepath.Join(dir, "out")
+	os.MkdirAll(outDir, 0o755)
+	yaml := fmt.Sprintf("default: p\nrecipes:\n  p:\n    image: dabs-e2e\n    keep: true\n    egress:\n      proxy:\n        - tls: terminate\n        - module: %s/hook.ts\n        - tls: originate\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
+	os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644)
+	os.WriteFile(filepath.Join(outDir, "run.sh"), []byte("#!/bin/sh\ncurl -s -m 8 https://mock.test:8443/ > /out/resp.txt 2>&1\n"), 0o755)
+	out, code := run("dabs recipe " + dir + " --detach")
+	if code != 0 {
+		t.Fatalf("boot failed (%d):\n%s", code, out)
+	}
+	inst := instanceLine(t, out)
+	run("dabs exec " + inst + " -- sh /out/run.sh")
+	resp := readFile(t, filepath.Join(outDir, "resp.txt"))
+	if !strings.Contains(resp, "port=8443") {
+		t.Errorf("the non-standard port must reach the engine's request, got:\n%s", resp)
+	}
+}
+
 // TestProxyOutsideWindowWarns is the regression for the invisible-warning bug: a
 // content hook placed outside a tls window boots but prints a warning to dabs's
 // stderr (relayed from the engine), not just the buried engine log.

@@ -49,7 +49,7 @@ func TestForwardRoundTrips(t *testing.T) {
 		t.Fatal(err)
 	}
 	if reply != "got hello\n" {
-		t.Fatalf("reply = %q", reply)
+		t.Fatalf("reply = %q, want %q", reply, "got hello\n")
 	}
 }
 

@@ -8,6 +8,7 @@ package apple
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -75,13 +76,7 @@ func (d Driver) Up(spec sandbox.Spec) (string, error) {
 		args = append(args, "-e", fmt.Sprintf("%s=%s", k, v))
 	}
 	// Live host mounts: writes pass through to the host and outlive the box.
-	// A unix socket is the exception — the micro-VM relays it only through
-	// --volume, so a --mount bind of a socket lands dead in the guest.
 	for _, m := range spec.Mounts {
-		if m.Socket {
-			args = append(args, "--volume", m.Host+":"+m.Path)
-			continue
-		}
 		args = append(args, "--mount", clidriver.MountArg(m))
 	}
 	keepAlive := []string{"sleep", "infinity"}
@@ -121,7 +116,7 @@ func checkImageCarriesForwarder(name string) error {
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 	detail := lines[len(lines)-1]
 	if err == nil {
-		err = fmt.Errorf("unexpected probe output")
+		err = errors.New("unexpected probe output")
 	}
 	return fmt.Errorf("apple: proxy egress needs the image to carry a linux forwarder at %s (it bridges HTTP_PROXY to the proxy socket; a host binary cannot run in the micro-VM) — add to the image's Dockerfile:\n\n"+
 		"  FROM golang:alpine AS fwd\n"+
@@ -302,8 +297,9 @@ func remove(ctn string) {
 // Kind identifies this driver.
 func (Driver) Kind() string { return "apple" }
 
-// CheckEgress: none and proxy both map to `container run --network none`;
-// proxy additionally needs the IMAGE to carry a linux forwarder, which Up
+// CheckEgress reports nil for every mode: none and proxy both map to
+// `container run --network none`, and proxy's extra requirement — the IMAGE must
+// carry a linux forwarder — is an image question that Up
 // probes for (an image question, not a mode question — the answer comes with
 // Dockerfile instructions).
 func (Driver) CheckEgress(mode string) error {

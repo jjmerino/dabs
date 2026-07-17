@@ -638,6 +638,15 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID, tip string, rec re
 		mounts = append(mounts, p.Mounts...)
 		egressMode, proxySock, forwarderBin = sandbox.EgressProxy, p.Socket, p.ForwarderBin
 		proxyPID, proxyDir = p.PID, p.Dir
+		// The engine is live now but the box node that carries its PID/dir is not
+		// written until the box is up. If any step between here and writeNode fails
+		// (drv.Up, the smoke check, writeNode itself), nothing else can reap the
+		// engine — no node records it. Reap it on a failed return.
+		defer func() {
+			if err != nil {
+				proxy.Reap(proxyPID, proxyDir)
+			}
+		}()
 	case recipe.EgressNone:
 		egressMode = sandbox.EgressNone // driver cuts the box's network
 	case recipe.EgressOpen:

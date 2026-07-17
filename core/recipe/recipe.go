@@ -11,6 +11,7 @@ package recipe
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"reflect"
@@ -57,8 +58,8 @@ const (
 	EgressProxy = "proxy"
 )
 
-// EgressMode resolves an unset mode to Open (full outbound).
-func (e Egress) EgressMode() string {
+// resolvedMode resolves an unset mode to Open (full outbound).
+func (e Egress) resolvedMode() string {
 	if e.Mode == "" {
 		return EgressOpen
 	}
@@ -66,7 +67,7 @@ func (e Egress) EgressMode() string {
 }
 
 // EgressMode is the recipe's resolved egress mode.
-func (r Recipe) EgressMode() string { return r.Egress.EgressMode() }
+func (r Recipe) EgressMode() string { return r.Egress.resolvedMode() }
 
 // UnmarshalYAML accepts the scalar forms (`egress: open`) or the proxy mapping
 // (`egress: {proxy: [ ... ]}`).
@@ -122,10 +123,11 @@ func (e *Egress) UnmarshalJSON(b []byte) error {
 // message whatever the value's shape.
 func checkEgressMapKeys(keys map[string]interface{}) error {
 	if len(keys) != 1 {
-		return fmt.Errorf("egress: a mapping must hold exactly the `proxy` key")
+		return errors.New("egress: a mapping must hold exactly the `proxy` key")
 	}
-	if _, ok := keys[EgressProxy]; !ok {
-		for k := range keys {
+	// Exactly one key here (len checked above); if it is not `proxy`, name it.
+	for k := range keys {
+		if k != EgressProxy {
 			return fmt.Errorf("egress: unknown key %q — a mapping egress is `{proxy: [ ... ]}`", k)
 		}
 	}
@@ -222,7 +224,7 @@ func (h *ProxyHop) set(m map[string]interface{}) error {
 			}
 		}
 		if len(h.Domains) > 0 && s != tlsTerminate {
-			return fmt.Errorf("proxy hop: `domains` only applies to `tls: terminate`")
+			return errors.New("proxy hop: `domains` only applies to `tls: terminate`")
 		}
 		return nil
 	}
@@ -243,10 +245,11 @@ func (h *ProxyHop) set(m map[string]interface{}) error {
 		}
 		return nil
 	}
+	// Neither `tls` nor `module`: report one of the unrecognized keys as the typo.
 	for k := range m {
 		return fmt.Errorf("proxy hop: unknown key %q — a chain entry is `tls: terminate|originate` or `module: <path>`", k)
 	}
-	return fmt.Errorf("proxy hop: empty entry — use `tls` or `module`")
+	return errors.New("proxy hop: empty entry — use `tls` or `module`")
 }
 
 // The chain vocabulary: a hop is keyed by `tls` (a boundary directive) or

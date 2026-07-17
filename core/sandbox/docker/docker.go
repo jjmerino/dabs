@@ -183,8 +183,9 @@ func (Driver) HasImage(name string) (bool, error) {
 
 func (Driver) Kind() string { return "docker" }
 
-// CheckEgress: none is a stock docker flag; proxy mounts a forwarder binary and
-// a host unix socket into the container. It needs a linux host — Docker
+// CheckEgress reports whether this driver can enforce the mode. None is a stock
+// docker flag; proxy mounts a forwarder binary and a host unix socket into the
+// container. Proxy needs a linux host — Docker
 // Desktop's VM makes the cross-boundary socket FILE mount the proxy depends on
 // unreliable. The forwarder itself is a linux binary dabs materialized from its
 // embedded copy, so the binary is never the limiting factor.

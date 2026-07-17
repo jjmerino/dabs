@@ -41,7 +41,7 @@ import { existsSync, mkdirSync, unlinkSync, copyFileSync } from "node:fs";
 
 type Json = Record<string, unknown>;
 
-interface RequestView { host: string; method: string; path: string; headers: Record<string, string>; body: string; }
+interface RequestView { host: string; port: number; method: string; path: string; headers: Record<string, string>; body: string; }
 interface ResponseView { host: string; status: number; headers: Record<string, string>; body: string; }
 interface Handler {
   authorize?(conn: { host: string; port: number }): Promise<Json | string | void> | Json | string | void;
@@ -165,7 +165,11 @@ function classify(hops: Hop[]) {
 // Hooks are user code, so bound every call: a hung or slow hook must not stall
 // the box's egress forever. On timeout the promise rejects and the caller turns
 // it into a clean refusal (deny / 502), never a hang. The timer is cleared when
-// the hook settles, so a fast hook leaves nothing dangling.
+// the hook settles, so a fast hook leaves nothing dangling. The budget assumes a
+// LOCAL hook (a lookup, a string swap): a hook that does its own network I/O
+// (e.g. fetching a token) will not fit and should not be written against this
+// contract. A single async event-loop block is caught; a synchronous CPU spin is
+// not (it starves the timer) — hooks must not block the loop.
 const HOOK_TIMEOUT_MS = 100;
 function callHook<T>(p: Promise<T> | T): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -312,14 +316,23 @@ async function runContent(hops: Hop[], forwardToUpstream: boolean, req: RequestV
 }
 
 async function fetchUpstream(req: RequestView, scheme: "http" | "https"): Promise<ResponseView> {
+  // Carry a non-default port to the upstream — the box may have connected to
+  // host:8443, and re-originating to :443 would reach the wrong service. The Host
+  // header carries it too, as a real client would for a non-standard port.
+  const isDefaultPort = (scheme === "https" && req.port === 443) || (scheme === "http" && req.port === 80);
+  const authority = isDefaultPort ? req.host : `${req.host}:${req.port}`;
   const headers = new Headers();
   for (const [k, v] of Object.entries(req.headers)) if (k.toLowerCase() !== "host") headers.set(k, v);
-  headers.set("host", req.host);
+  headers.set("host", authority);
   // Bodies flow as latin1 byte-strings (1 char = 1 byte, lossless) so a hook can
   // inspect/rewrite text without corrupting a binary payload (images, gzip, wasm)
   // that merely passes through. .text() would UTF-8-decode and mangle those bytes.
   const reqBody = req.method === "GET" || req.method === "HEAD" ? undefined : Buffer.from(req.body, "latin1");
-  const up = await fetch(`${scheme}://${req.host}${req.path}`, { method: req.method, headers, body: reqBody });
+  // redirect: "manual" — do NOT let fetch follow 30x server-side. authorize gates
+  // the CONNECT host only; if we followed a redirect here, an allowed host could
+  // bounce the box to a DENIED host and we'd fetch it, bypassing the policy. Pass
+  // the 3xx back so the box re-CONNECTs and authorize re-checks the new host.
+  const up = await fetch(`${scheme}://${authority}${req.path}`, { method: req.method, headers, body: reqBody, redirect: "manual" });
   return { host: req.host, status: up.status, headers: Object.fromEntries(up.headers), body: Buffer.from(await up.arrayBuffer()).toString("latin1") };
 }
 
@@ -345,23 +358,24 @@ export async function start(cfg: EngineConfig): Promise<{ stop: () => void }> {
   const pinnedHosts = new Set<string>();
 
   const terminators = new Map<string, Promise<string>>();
-  function terminatorFor(host: string): Promise<string> {
-    const existing = terminators.get(host);
+  function terminatorFor(host: string, port: number): Promise<string> {
+    const key = `${host}:${port}`;
+    const existing = terminators.get(key);
     if (existing) return existing;
     // Single-flight like leafFor: memoize the in-flight Promise so two concurrent
     // first-contacts don't both Bun.serve the same socket.
-    const p = makeTerminator(host);
-    p.catch(() => terminators.delete(host));
-    terminators.set(host, p);
+    const p = makeTerminator(host, port);
+    p.catch(() => terminators.delete(key));
+    terminators.set(key, p);
     return p;
   }
-  async function makeTerminator(host: string): Promise<string> {
-    const leaf = await leafFor(cfg.caDir, host);
+  async function makeTerminator(host: string, port: number): Promise<string> {
+    const leaf = await leafFor(cfg.caDir, host); // the leaf is by host (SNI); the port does not affect it
     // A unix socket path is capped (~108 bytes); a long hostname would overflow it
     // and fail opaquely. Keep the basename bounded — a readable prefix plus a hash
     // for uniqueness when the host is long.
-    const safe = host.replace(/[^a-zA-Z0-9.-]/g, "_");
-    const base = safe.length <= 40 ? safe : `${safe.slice(0, 24)}-${Bun.hash(host).toString(36)}`;
+    const safe = `${host}_${port}`.replace(/[^a-zA-Z0-9.-]/g, "_");
+    const base = safe.length <= 40 ? safe : `${safe.slice(0, 24)}-${Bun.hash(safe).toString(36)}`;
     const sock = `${cfg.caDir}/term-${base}.sock`;
     if (existsSync(sock)) { try { unlinkSync(sock); } catch {} }
     Bun.serve({
@@ -371,6 +385,7 @@ export async function start(cfg: EngineConfig): Promise<{ stop: () => void }> {
         const url = new URL(request.url);
         const req: RequestView = {
           host,
+          port,
           method: request.method,
           path: url.pathname + url.search,
           headers: Object.fromEntries(request.headers),
@@ -420,7 +435,7 @@ export async function start(cfg: EngineConfig): Promise<{ stop: () => void }> {
     const url = new URL(absUrl);
     const auth = await authorizeConn(moduleHops, canonicalHost(url.hostname), Number(url.port || 80));
     if (!auth.allow) { client.end("HTTP/1.1 403 Forbidden\r\n\r\n"); return; }
-    const req: RequestView = { host: auth.host, method, path: url.pathname + url.search, headers, body: body.toString("latin1") };
+    const req: RequestView = { host: auth.host, port: auth.port, method, path: url.pathname + url.search, headers, body: body.toString("latin1") };
     // Honor the terminate `domains` scope here too: a host we don't inspect gets
     // no content hooks, just forwarded upstream.
     const hooks = shouldInspect(auth.host) ? contentHops : [];
@@ -487,7 +502,7 @@ export async function start(cfg: EngineConfig): Promise<{ stop: () => void }> {
             // closed, we log the refusal so the operator knows why a host went
             // dark; with PASSTHROUGH_ON_TLS_FAILURE we would instead learn the
             // host so the NEXT connection tunnels through un-intercepted.
-            const up = net.connect(await terminatorFor(host), () => {
+            const up = net.connect(await terminatorFor(host, auth.port), () => {
               up.write(hello);
               up.pipe(client);
               let firstSeen = false;

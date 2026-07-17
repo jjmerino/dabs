@@ -79,7 +79,8 @@ func Start(dir string, chain []HopConfig) (*Engine, error) {
 	// Its stdio must NOT inherit dabs's — a detached child holding dabs's stderr
 	// keeps that pipe open, hanging any caller that reads dabs's output. Log to a
 	// file (a debugging trail) and start a new session so it fully detaches.
-	logFile, err := os.Create(filepath.Join(dir, "engine.log"))
+	logPath := filepath.Join(dir, "engine.log")
+	logFile, err := os.Create(logPath)
 	if err != nil {
 		return nil, err
 	}
@@ -90,7 +91,6 @@ func Start(dir string, chain []HopConfig) (*Engine, error) {
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start proxy engine (bun must be on PATH): %w", err)
 	}
-	logPath := filepath.Join(dir, "engine.log")
 	for i := 0; i < 200; i++ { // up to ~10s for the socket to appear
 		if _, e := os.Stat(socket); e == nil {
 			relayWarnings(logPath) // surface boot warnings (e.g. a hook outside a tls window)

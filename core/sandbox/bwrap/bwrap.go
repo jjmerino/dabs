@@ -402,10 +402,10 @@ func (d Driver) HasImage(name string) (bool, error) {
 // Kind identifies this driver.
 func (Driver) Kind() string { return "bwrap" }
 
-// CheckEgress: none is one namespace flag; proxy additionally mounts a
-// forwarder binary into the box, which dabs materializes from its embedded
-// copy — the linux host makes it directly runnable in the box. bwrap can
-// always enforce both.
+// CheckEgress reports nil for both modes. None is one namespace flag; proxy
+// additionally mounts a forwarder binary into the box, which dabs materializes
+// from its embedded copy — the linux host makes it directly runnable in the box.
+// bwrap can always enforce both.
 func (Driver) CheckEgress(mode string) error { return nil }
 
 // Images lists the built image rootfs trees under <root>/images. Each is a

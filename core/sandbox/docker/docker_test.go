@@ -113,24 +113,28 @@ func captureDocker(t *testing.T) *[][]string {
 // CONTRACT: egress none runs the container with no network; open egress puts
 // no --network flag on the argv at all.
 func TestUpEgressNone(t *testing.T) {
-	calls := captureDocker(t)
-	if _, err := (Driver{}).Up(sandbox.Spec{Name: "img", Workdir: "/work", Egress: sandbox.EgressNone}); err != nil {
-		t.Fatal(err)
-	}
-	run := strings.Join((*calls)[0], " ")
-	if !strings.Contains(run, "--network none") {
-		t.Fatalf("egress none argv missing --network none: %s", run)
-	}
-
-	calls2 := captureDocker(t)
-	if _, err := (Driver{}).Up(sandbox.Spec{Name: "img", Workdir: "/work"}); err != nil {
-		t.Fatal(err)
-	}
-	for _, a := range (*calls2)[0] {
-		if a == "--network" {
-			t.Fatalf("open egress must not set --network: %v", (*calls2)[0])
+	t.Run("none sets --network none", func(t *testing.T) {
+		calls := captureDocker(t)
+		if _, err := (Driver{}).Up(sandbox.Spec{Name: "img", Workdir: "/work", Egress: sandbox.EgressNone}); err != nil {
+			t.Fatal(err)
 		}
-	}
+		run := strings.Join((*calls)[0], " ")
+		if !strings.Contains(run, "--network none") {
+			t.Fatalf("egress none argv missing --network none: %s", run)
+		}
+	})
+
+	t.Run("open sets no --network", func(t *testing.T) {
+		calls := captureDocker(t)
+		if _, err := (Driver{}).Up(sandbox.Spec{Name: "img", Workdir: "/work"}); err != nil {
+			t.Fatal(err)
+		}
+		for _, a := range (*calls)[0] {
+			if a == "--network" {
+				t.Fatalf("open egress must not set --network: %v", (*calls)[0])
+			}
+		}
+	})
 }
 
 // CONTRACT: egress proxy = no network + the socket and dabs binary mounted

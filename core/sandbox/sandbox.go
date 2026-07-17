@@ -27,10 +27,6 @@ type Mount struct {
 	Host string // absolute host path (the source of truth, outlives the box)
 	Path string // absolute path inside the box
 	RO   bool   // mount read-only (box can read but not write back)
-	// Socket marks Host as a unix SOCKET, which some drivers must attach
-	// differently than a file or directory (the apple micro-VM relays a
-	// socket only through --volume). A socket mount is always read-only.
-	Socket bool
 }
 
 // Egress modes a Spec may request. Open is the default; None cuts all outbound
@@ -40,12 +36,6 @@ const (
 	EgressNone  = "none"
 	EgressProxy = "proxy"
 )
-
-// EgressUnixScheme prefixes a proxy addr that names a host unix socket — the
-// one transport a proxy addr may use: a unix socket crosses a network
-// namespace as filesystem, which is exactly the wall-with-one-door the proxy
-// mode is.
-const EgressUnixScheme = "unix://"
 
 // Spec describes the sandbox a driver should provide. It is vendor-neutral:
 // drivers translate it into their own vocabulary.

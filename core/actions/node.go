@@ -39,6 +39,12 @@ type Node struct {
 	// are distinct and the node records the link.
 	Instance string        `json:"instance,omitempty"`
 	Worktree *NodeWorktree `json:"worktree,omitempty"` // kind-specific fields
+	// ProxyPID and ProxyDir track a box's proxy engine — a host-side sidecar
+	// started when the recipe has a `proxies:` chain. They let any later dabs
+	// process (a `dabs rm` that never held the Engine object) reap the engine
+	// and its temp files when the box comes down. Zero when the box has no proxy.
+	ProxyPID int    `json:"proxyPid,omitempty"`
+	ProxyDir string `json:"proxyDir,omitempty"`
 }
 
 // NodeKind is what a node marks. The chain a recipe builds is constrained to
@@ -191,6 +197,22 @@ func (r Real) resolveHeldSpace(id string) (string, error) {
 func (r Real) dataExists(path string) bool {
 	_, err := r.data.Stat(path)
 	return err == nil
+}
+
+// boxProxy returns the proxy engine PID/dir recorded on the box node named by
+// instance, or 0,"" if the box has none — the pair proxy.Reap needs to stop the
+// engine when the box comes down.
+func (r Real) boxProxy(instance string) (int, string) {
+	nodes, err := r.listNodes()
+	if err != nil {
+		return 0, ""
+	}
+	for _, n := range nodes {
+		if n.Kind == KindBox && n.Instance == instance {
+			return n.ProxyPID, n.ProxyDir
+		}
+	}
+	return 0, ""
 }
 
 // writeNode persists a node's record.

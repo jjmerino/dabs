@@ -27,7 +27,25 @@ type Mount struct {
 	Host string // absolute host path (the source of truth, outlives the box)
 	Path string // absolute path inside the box
 	RO   bool   // mount read-only (box can read but not write back)
+	// Socket marks Host as a unix SOCKET, which some drivers must attach
+	// differently than a file or directory (the apple micro-VM relays a
+	// socket only through --volume). A socket mount is always read-only.
+	Socket bool
 }
+
+// Egress modes a Spec may request. Open is the default; None cuts all outbound
+// network; Proxy makes a host proxy the box's only way out.
+const (
+	EgressOpen  = "open"
+	EgressNone  = "none"
+	EgressProxy = "proxy"
+)
+
+// EgressUnixScheme prefixes a proxy addr that names a host unix socket — the
+// one transport a proxy addr may use: a unix socket crosses a network
+// namespace as filesystem, which is exactly the wall-with-one-door the proxy
+// mode is.
+const EgressUnixScheme = "unix://"
 
 // Spec describes the sandbox a driver should provide. It is vendor-neutral:
 // drivers translate it into their own vocabulary.
@@ -36,6 +54,20 @@ type Spec struct {
 	Workdir string            // working directory inside the sandbox
 	Env     map[string]string // environment inside the sandbox
 	Mounts  []Mount           // live host paths attached into the box
+	// Egress is the box's outbound network: "" or EgressOpen (unrestricted),
+	// EgressNone, or EgressProxy. The caller has already confirmed the driver
+	// enforces it (EgressEnforcer); a driver never degrades a mode it was given.
+	Egress string
+	// ProxySock is the host proxy's unix socket for EgressProxy, an absolute
+	// path with all resolution done — a driver mounts it exactly. Empty
+	// otherwise.
+	ProxySock string
+	// ForwarderBin is the host path of the single-purpose forwarder binary to
+	// mount into the box at forwarder.ForwardPath for EgressProxy. The caller
+	// materializes it (from dabs's embedded copy); a driver mounts it exactly.
+	// Empty otherwise, and unused by drivers whose image carries the forwarder
+	// (apple's micro-VM).
+	ForwarderBin string
 }
 
 // Info is one existing sandbox instance as reported by a driver.
@@ -82,6 +114,19 @@ type Driver interface {
 	// Kind is the driver's identity ("apple", "bwrap", "ssh", …) — the
 	// same tag it stamps on Info.Driver, reachable without any instances.
 	Kind() string
+}
+
+// EgressEnforcer is an OPTIONAL driver capability: a driver that can restrict
+// a box's outbound network implements it and states, mechanically, whether it
+// enforces a given mode — and when it cannot, why (a mechanical fact about
+// this driver: the platform, the binary, the transport). The policy sits
+// above: actions asks BEFORE Up and refuses to boot a box whose requested
+// egress the driver cannot enforce, so a mode is never silently degraded to
+// open. A driver without the interface enforces only open.
+type EgressEnforcer interface {
+	// CheckEgress reports whether this driver enforces the given egress mode
+	// (nil) or why it cannot (an error stating the mechanical reason).
+	CheckEgress(mode string) error
 }
 
 // Image is one built image in a driver's local store: its name (the recipe

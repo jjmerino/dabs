@@ -255,3 +255,184 @@ func TestSourceKind(t *testing.T) {
 		})
 	}
 }
+
+// An egress proxy chain is ordered box→internet; the ORDER is the trust order,
+// so it must survive parsing, and each hop classifies as tls or module.
+func TestProxyChainParses(t *testing.T) {
+	reg, err := recipe.Parse([]byte(`
+recipes:
+  claude:
+    image: claude
+    egress:
+      proxy:
+        - tls: terminate
+        - module: $RECIPE_DIR/recorder.ts
+        - module: $RECIPE_DIR/responder.ts
+        - tls: originate
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := reg.Recipes["claude"].Egress.Proxy
+	if len(p) != 4 {
+		t.Fatalf("got %d hops, want 4", len(p))
+	}
+	if !p[0].IsTerminate() || !p[3].IsOriginate() {
+		t.Errorf("hops 0/3 should be terminate/originate, got %q/%q", p[0].TLS, p[3].TLS)
+	}
+	if !p[1].IsModule() || p[1].Module != "$RECIPE_DIR/recorder.ts" || p[1].Label() != "recorder" {
+		t.Errorf("hop 1 module/label = %q/%q", p[1].Module, p[1].Label())
+	}
+	if reg.Recipes["claude"].EgressMode() != recipe.EgressProxy {
+		t.Errorf("egress mode should be proxy")
+	}
+}
+
+// A module hop carries its extra config; an explicit name overrides the basename.
+func TestModuleHopConfigAndName(t *testing.T) {
+	reg, err := recipe.Parse([]byte(`
+recipes:
+  r:
+    image: x
+    egress:
+      proxy:
+        - module: rec.ts
+          name: logger
+          dir: /tmp/cassettes
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := reg.Recipes["r"].Egress.Proxy[0]
+	if h.Label() != "logger" {
+		t.Errorf("label = %q, want logger (name overrides basename)", h.Label())
+	}
+	if h.Config["dir"] != "/tmp/cassettes" {
+		t.Errorf("config not carried: %#v", h.Config)
+	}
+}
+
+// A chain with NO tls is valid — its module hops act on the connection
+// (allow/deny/route), no decryption. This is the domain-policy use case.
+func TestProxyChainWithoutTLSIsValid(t *testing.T) {
+	_, err := recipe.Parse([]byte(`
+recipes:
+  r:
+    image: x
+    egress:
+      proxy:
+        - module: policy.ts
+`))
+	if err != nil {
+		t.Fatalf("a tls-less chain should be valid (allow/deny hooks), got %v", err)
+	}
+}
+
+// A hop key that is neither tls nor module is a typo, not a hop.
+func TestUnknownHopKeyRejected(t *testing.T) {
+	_, err := recipe.Parse([]byte("recipes:\n  r:\n    image: x\n    egress:\n      proxy:\n        - recorder: { module: rec.ts }\n"))
+	if err == nil || !strings.Contains(err.Error(), "tls") {
+		t.Fatalf("want unknown-key error mentioning tls/module, got %v", err)
+	}
+}
+
+// tls boundaries must nest: no terminate-inside-terminate, no originate without a
+// terminate, only terminate/originate directives. A trailing terminate (terminal
+// window) is allowed.
+func TestTLSBalanceValidation(t *testing.T) {
+	cases := []struct{ name, chain, wantErr string }{
+		{"nested terminate", "- tls: terminate\n        - tls: terminate", "already open"},
+		{"originate without terminate", "- tls: originate", "without a preceding"},
+		{"bad directive", "- tls: sideways", "terminate"},
+		{"balanced ok", "- tls: terminate\n        - tls: originate", ""},
+		{"terminal terminate ok", "- tls: terminate\n        - module: h.ts", ""},
+		{"tls-less module ok", "- module: h.ts", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := recipe.Parse([]byte("recipes:\n  r:\n    image: x\n    egress:\n      proxy:\n        " + c.chain + "\n"))
+			if c.wantErr == "" {
+				if err != nil {
+					t.Fatalf("want ok, got %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), c.wantErr) {
+				t.Fatalf("want error containing %q, got %v", c.wantErr, err)
+			}
+		})
+	}
+}
+
+// The egress mode is open|none, or a {proxy: [chain]} mapping; the default is
+// open. A proxy mapping needs a non-empty chain; a bogus scalar is rejected.
+func TestEgressModeValidation(t *testing.T) {
+	cases := []struct{ name, egress, wantErr string }{
+		{"open", "    egress: open\n", ""},
+		{"none", "    egress: none\n", ""},
+		{"unset defaults open", "", ""},
+		{"proxy chain ok", "    egress:\n      proxy:\n        - module: h.ts\n", ""},
+		{"proxy empty chain", "    egress:\n      proxy: []\n", "non-empty chain"},
+		{"bogus scalar", "    egress: sideways\n", "not one of open, none"},
+		{"bogus mapping key", "    egress:\n      tunnel: []\n", "unknown key"},
+		// A mis-keyed mapping whose value is NOT a hop list must still get the
+		// friendly key diagnostic, not a raw decoder error.
+		{"bogus key scalar value", "    egress:\n      foo: bar\n", "unknown key"},
+		{"extra key alongside proxy", "    egress:\n      proxy:\n        - module: h.ts\n      extra: 1\n", "exactly the `proxy` key"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := recipe.Parse([]byte("recipes:\n  r:\n    image: x\n" + c.egress))
+			if c.wantErr == "" {
+				if err != nil {
+					t.Fatalf("want ok, got %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), c.wantErr) {
+				t.Fatalf("want error containing %q, got %v", c.wantErr, err)
+			}
+		})
+	}
+}
+
+// A `tls: terminate` may carry a `domains` list scoping which hosts are
+// decrypted. The list parses onto the hop; `domains` on `originate` or a
+// non-list value is a clear error.
+func TestEgressTerminateDomainsParse(t *testing.T) {
+	reg, err := recipe.Parse([]byte("recipes:\n  r:\n    image: x\n    egress:\n      proxy:\n        - tls: terminate\n          domains: [api.example.com, example.org]\n        - module: h.ts\n        - tls: originate\n"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	hops := reg.Recipes["r"].Egress.Proxy
+	if len(hops[0].Domains) != 2 || hops[0].Domains[0] != "api.example.com" || hops[0].Domains[1] != "example.org" {
+		t.Errorf("domains not parsed: %+v", hops[0])
+	}
+	if _, err := recipe.Parse([]byte("recipes:\n  r:\n    image: x\n    egress:\n      proxy:\n        - tls: terminate\n        - module: h.ts\n        - tls: originate\n          domains: [x.com]\n")); err == nil || !strings.Contains(err.Error(), "only applies to") {
+		t.Errorf("want error for domains on originate, got %v", err)
+	}
+	if _, err := recipe.Parse([]byte("recipes:\n  r:\n    image: x\n    egress:\n      proxy:\n        - tls: terminate\n          domains: nope\n")); err == nil || !strings.Contains(err.Error(), "list of hostnames") {
+		t.Errorf("want error for non-list domains, got %v", err)
+	}
+}
+
+// An unset egress resolves to open (full outbound): dabs is a dev tool, a box
+// that silently reaches nowhere confuses more than it protects.
+func TestEgressDefaultsToOpen(t *testing.T) {
+	reg, err := recipe.Parse([]byte("recipes:\n  r:\n    image: x\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reg.Recipes["r"].EgressMode(); got != recipe.EgressOpen {
+		t.Errorf("unset egress = %q, want %q", got, recipe.EgressOpen)
+	}
+}
+
+// Only one tls window per chain — multiple terminate…originate windows are
+// rejected (the engine would silently merge them).
+func TestSingleTLSWindow(t *testing.T) {
+	_, err := recipe.Parse([]byte("recipes:\n  r:\n    image: x\n    egress:\n      proxy:\n        - tls: terminate\n        - tls: originate\n        - tls: terminate\n        - tls: originate\n"))
+	if err == nil || !strings.Contains(err.Error(), "only one") {
+		t.Fatalf("want single-window error, got %v", err)
+	}
+}

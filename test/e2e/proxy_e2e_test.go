@@ -91,8 +91,8 @@ func TestProxyChainStopsAndModifies(t *testing.T) {
 	}
 
 	// The recipe: reuse the staged `dabs-e2e` image (has curl), and make the two
-	// hooks the box's ONLY way out. Terminal window (no `tls: originate`) — the
-	// outer hook answers, so nothing forwards to the real internet.
+	// hooks the box's ONLY way out. The window is closed by `tls: originate`, but
+	// the outer hook answers first, so nothing forwards to the real internet.
 	yaml := fmt.Sprintf(`default: proxytest
 recipes:
   proxytest:
@@ -103,6 +103,7 @@ recipes:
         - tls: terminate
         - { module: %s/inner.ts, log: %s }
         - { module: %s/outer.ts, log: %s }
+        - tls: originate
     sources:
       - mount: %s
         path: /out
@@ -179,6 +180,7 @@ recipes:
       proxy:
         - tls: terminate
         - { module: %s/h.ts }
+        - tls: originate
 `, dir)
 	if err := os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644); err != nil {
 		t.Fatal(err)
@@ -364,6 +366,7 @@ recipes:
       proxy:
         - tls: terminate
         - module: %s/deny.ts
+        - tls: originate
     sources:
       - mount: %s
         path: /out
@@ -408,6 +411,7 @@ recipes:
       proxy:
         - tls: terminate
         - module: /nope/does-not-exist.ts
+        - tls: originate
 `
 	if err := os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644); err != nil {
 		t.Fatal(err)
@@ -468,7 +472,7 @@ func TestProxyHostCanonicalizationHolds(t *testing.T) {
 	}
 	outDir := filepath.Join(dir, "out")
 	os.MkdirAll(outDir, 0o755)
-	yaml := fmt.Sprintf("default: c\nrecipes:\n  c:\n    image: dabs-e2e\n    keep: true\n    egress:\n      proxy:\n        - tls: terminate\n        - module: %s/gate.ts\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
+	yaml := fmt.Sprintf("default: c\nrecipes:\n  c:\n    image: dabs-e2e\n    keep: true\n    egress:\n      proxy:\n        - tls: terminate\n        - module: %s/gate.ts\n        - tls: originate\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
 	os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644)
 	os.WriteFile(filepath.Join(outDir, "run.sh"), []byte(`#!/bin/sh
 out=/out/out.txt
@@ -640,7 +644,7 @@ func TestProxyHookExceptionNoLeak(t *testing.T) {
 	}
 	outDir := filepath.Join(dir, "out")
 	os.MkdirAll(outDir, 0o755)
-	yaml := fmt.Sprintf("default: b\nrecipes:\n  b:\n    image: dabs-e2e\n    keep: true\n    egress:\n      proxy:\n        - tls: terminate\n        - module: %s/boom.ts\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
+	yaml := fmt.Sprintf("default: b\nrecipes:\n  b:\n    image: dabs-e2e\n    keep: true\n    egress:\n      proxy:\n        - tls: terminate\n        - module: %s/boom.ts\n        - tls: originate\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
 	os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644)
 	os.WriteFile(filepath.Join(outDir, "run.sh"), []byte("#!/bin/sh\ncurl -s -m 8 https://x.test/ -w '\\ncode=%{http_code}\\n' > /out/resp.txt 2>&1\n"), 0o755)
 	out, code := run("dabs recipe " + dir + " --detach")
@@ -771,7 +775,7 @@ func TestProxyBinaryBodyPreserved(t *testing.T) {
 	}
 	outDir := filepath.Join(dir, "out")
 	os.MkdirAll(outDir, 0o755)
-	yaml := fmt.Sprintf("default: b\nrecipes:\n  b:\n    image: dabs-e2e\n    keep: true\n    egress:\n      proxy:\n        - tls: terminate\n        - module: %s/bin.ts\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
+	yaml := fmt.Sprintf("default: b\nrecipes:\n  b:\n    image: dabs-e2e\n    keep: true\n    egress:\n      proxy:\n        - tls: terminate\n        - module: %s/bin.ts\n        - tls: originate\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
 	os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644)
 	os.WriteFile(filepath.Join(outDir, "run.sh"), []byte("#!/bin/sh\ncurl -s -m 12 https://any.test/ | wc -c | tr -d ' \\n' > /out/size.txt\n"), 0o755)
 	out, code := run("dabs recipe " + dir + " --detach")
@@ -834,7 +838,7 @@ func TestProxyTerminateDomainsScopeInterception(t *testing.T) {
 	}
 	outDir := filepath.Join(dir, "out")
 	os.MkdirAll(outDir, 0o755)
-	yaml := fmt.Sprintf("default: d\nrecipes:\n  d:\n    image: dabs-e2e\n    keep: true\n    egress:\n      proxy:\n        - tls: terminate\n          domains: [mock.test]\n        - module: %s/hook.ts\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
+	yaml := fmt.Sprintf("default: d\nrecipes:\n  d:\n    image: dabs-e2e\n    keep: true\n    egress:\n      proxy:\n        - tls: terminate\n          domains: [mock.test]\n        - module: %s/hook.ts\n        - tls: originate\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
 	os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644)
 	os.WriteFile(filepath.Join(outDir, "run.sh"), []byte(`#!/bin/sh
 out=/out/out.txt
@@ -884,7 +888,7 @@ func TestProxyBrokerHeaderRoundTrip(t *testing.T) {
 	outDir := filepath.Join(dir, "out")
 	os.MkdirAll(outDir, 0o755)
 	// Chain box→internet: broker (nearest box) then api (nearest internet).
-	yaml := fmt.Sprintf("default: br\nrecipes:\n  br:\n    image: dabs-e2e\n    keep: true\n    egress:\n      proxy:\n        - tls: terminate\n        - module: %s/broker.ts\n        - module: %s/api.ts\n    sources:\n      - mount: %s\n        path: /out\n", dir, dir, outDir)
+	yaml := fmt.Sprintf("default: br\nrecipes:\n  br:\n    image: dabs-e2e\n    keep: true\n    egress:\n      proxy:\n        - tls: terminate\n        - module: %s/broker.ts\n        - module: %s/api.ts\n        - tls: originate\n    sources:\n      - mount: %s\n        path: /out\n", dir, dir, outDir)
 	os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644)
 	os.WriteFile(filepath.Join(outDir, "run.sh"), []byte("#!/bin/sh\ncurl -s -m 8 -H 'Authorization: Bearer dummy' https://api.test/ > /out/body.txt 2>&1\n"), 0o755)
 	out, code := run("dabs recipe " + dir + " --detach")
@@ -920,7 +924,7 @@ func TestProxySingleHookSwapBack(t *testing.T) {
 	}
 	outDir := filepath.Join(dir, "out")
 	os.MkdirAll(outDir, 0o755)
-	yaml := fmt.Sprintf("default: b\nrecipes:\n  b:\n    image: dabs-e2e\n    keep: true\n    egress:\n      proxy:\n        - tls: terminate\n        - module: %s/broker.ts\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
+	yaml := fmt.Sprintf("default: b\nrecipes:\n  b:\n    image: dabs-e2e\n    keep: true\n    egress:\n      proxy:\n        - tls: terminate\n        - module: %s/broker.ts\n        - tls: originate\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
 	os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644)
 	os.WriteFile(filepath.Join(outDir, "run.sh"), []byte("#!/bin/sh\ncurl -s -m 8 https://api.test/ > /out/body.txt 2>&1\n"), 0o755)
 	out, code := run("dabs recipe " + dir + " --detach")
@@ -996,7 +1000,7 @@ func TestProxyPinnedCertFailsClosed(t *testing.T) {
 	}
 	outDir := filepath.Join(dir, "out")
 	os.MkdirAll(outDir, 0o755)
-	yaml := fmt.Sprintf("default: p\nrecipes:\n  p:\n    image: dabs-e2e\n    keep: true\n    egress:\n      proxy:\n        - module: %s/gate.ts\n        - tls: terminate\n        - module: %s/hook.ts\n    sources:\n      - mount: %s\n        path: /out\n", dir, dir, outDir)
+	yaml := fmt.Sprintf("default: p\nrecipes:\n  p:\n    image: dabs-e2e\n    keep: true\n    egress:\n      proxy:\n        - module: %s/gate.ts\n        - tls: terminate\n        - module: %s/hook.ts\n        - tls: originate\n    sources:\n      - mount: %s\n        path: /out\n", dir, dir, outDir)
 	os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644)
 	// SYS is the box's system CA bundle — it does NOT include our MITM CA, so
 	// `--cacert $SYS` makes curl reject our leaf (a stand-in for cert pinning).
@@ -1050,7 +1054,7 @@ func TestProxyAuthorizeOnContentHook(t *testing.T) {
 	}
 	outDir := filepath.Join(dir, "out")
 	os.MkdirAll(outDir, 0o755)
-	yaml := fmt.Sprintf("default: a\nrecipes:\n  a:\n    image: dabs-e2e\n    keep: true\n    egress:\n      proxy:\n        - tls: terminate\n        - module: %s/hook.ts\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
+	yaml := fmt.Sprintf("default: a\nrecipes:\n  a:\n    image: dabs-e2e\n    keep: true\n    egress:\n      proxy:\n        - tls: terminate\n        - module: %s/hook.ts\n        - tls: originate\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
 	os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644)
 	os.WriteFile(filepath.Join(outDir, "run.sh"), []byte(`#!/bin/sh
 out=/out/out.txt

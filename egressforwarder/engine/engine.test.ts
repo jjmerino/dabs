@@ -62,7 +62,7 @@ beforeAll(async () => {
       { tls: "terminate" },
       { name: "recorder", module: recorderMod, config: { dir: cassettes } },
       { name: "responder", module: responderMod, config: {} },
-      // no tls:originate — the responder is terminal, nothing reaches the internet
+      { tls: "originate" }, // closes the window; the responder answers first so this never forwards
     ],
   });
 });

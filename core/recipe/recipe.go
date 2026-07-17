@@ -338,13 +338,17 @@ func validateEgress(name string, e Egress) error {
 
 // validateProxies checks an egress proxy chain: a hop is a tls directive or a
 // module hook. tls boundaries must nest — no terminate-inside-terminate, no
-// originate without a terminate, only terminate/originate directives. A trailing
-// terminate with no originate is allowed (a terminal window: hooks answer,
-// nothing is forwarded upstream). A module hop needs NO tls window: inside one
-// it inspects decrypted content, outside one it acts on the connection
-// (host/port) for allow/deny/route.
+// originate without a terminate, only terminate/originate directives. A
+// `tls: terminate` MUST be closed by a `tls: originate`: an unclosed window is a
+// decrypt-with-no-re-encrypt, and allowing it lets a recipe express a TLS→
+// plaintext downgrade. A hook that answers locally (`respond`) breaks the chain
+// before the close is reached, so the close is a no-op for a pure responder — but
+// it keeps the boundary explicit and forwarding always re-encrypts. A module hop
+// needs NO tls window: inside one it inspects decrypted content, outside one it
+// acts on the connection (host/port) for allow/deny.
 func validateProxies(name string, hops []ProxyHop) error {
 	terminated := false
+	terminateAt := 0
 	tlsWindows := 0
 	for i, h := range hops {
 		switch {
@@ -359,6 +363,7 @@ func validateProxies(name string, hops []ProxyHop) error {
 					return fmt.Errorf("recipe %q proxy #%d: only one `tls: terminate` window per chain", name, i+1)
 				}
 				terminated = true
+				terminateAt = i + 1
 			case tlsOriginate:
 				if !terminated {
 					return fmt.Errorf("recipe %q proxy #%d: `tls: originate` without a preceding `tls: terminate`", name, i+1)
@@ -374,6 +379,9 @@ func validateProxies(name string, hops []ProxyHop) error {
 		default:
 			return fmt.Errorf("recipe %q proxy #%d: a chain entry is `tls: terminate|originate` or `module: <path>`", name, i+1)
 		}
+	}
+	if terminated {
+		return fmt.Errorf("recipe %q proxy #%d: `tls: terminate` must be closed by a `tls: originate` — an unclosed window decrypts without re-encrypting", name, terminateAt)
 	}
 	return nil
 }

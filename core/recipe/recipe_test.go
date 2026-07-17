@@ -345,7 +345,8 @@ func TestTLSBalanceValidation(t *testing.T) {
 		{"originate without terminate", "- tls: originate", "without a preceding"},
 		{"bad directive", "- tls: sideways", "terminate"},
 		{"balanced ok", "- tls: terminate\n        - tls: originate", ""},
-		{"terminal terminate ok", "- tls: terminate\n        - module: h.ts", ""},
+		{"terminate with hooks ok", "- tls: terminate\n        - module: h.ts\n        - tls: originate", ""},
+		{"unclosed terminate rejected", "- tls: terminate\n        - module: h.ts", "must be closed by a `tls: originate`"},
 		{"tls-less module ok", "- module: h.ts", ""},
 	}
 	for _, c := range cases {

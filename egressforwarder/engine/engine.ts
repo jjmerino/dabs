@@ -14,8 +14,10 @@
 //     so only its `authorize` runs.
 //
 // A chain with no `tls: terminate` needs no CA: allowed connections raw-tunnel to
-// the real host. A chain that terminates but never originates is terminal — a
-// hook must answer, nothing is forwarded upstream. A client that PINS its cert
+// the real host. A `tls: terminate` is always closed by a `tls: originate` (the
+// recipe validator requires it), so decrypted traffic that is forwarded is always
+// re-encrypted — never downgraded to plaintext. A hook that `respond`s answers
+// locally and breaks the chain before the close. A client that PINS its cert
 // (rejects our leaf) is learned and passed through un-intercepted; its content
 // hooks are skipped (no plaintext), but authorize still gated the connection.
 // ECH (encrypted SNI) is refused: it would hide the destination from authorize.

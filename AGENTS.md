@@ -433,3 +433,23 @@ core/sandbox/<kind>/   one driver per kind (apple, bwrap, server). Drivers
 
 - Never commit or push unless explicitly told to. Make and verify the
   changes; leave committing and pushing to the human.
+
+**Cutting a release**
+
+A release is a CHANGELOG cut plus a `v*` tag — pushing the tag drives
+`.github/workflows/release.yml` to build the four binaries
+(darwin/linux × amd64/arm64) and attach them to the tag's GitHub release,
+which is what the install script downloads. No version is embedded in the Go
+source. Release changes go through a PR like any other change — never straight
+to `main`.
+
+1. On a branch, move the `## [Unreleased]` block in `CHANGELOG.md` into a dated
+   `## [X.Y.Z] - <date>` section, leave a fresh empty `## [Unreleased]`, and add
+   the `[X.Y.Z]: …/compare/vPREV...vX.Y.Z` link at the bottom. Pick the version
+   by semver (pre-1.0, breaking changes ride a minor bump).
+2. `gofmt -l .`, `go build ./...` **and** `GOOS=linux go build ./...`,
+   `go test ./...` — all green.
+3. Commit, push the branch, open a PR, and let it merge to `main`.
+4. **After the PR is merged**, tag the merge commit on `main` and push the tag:
+   `git tag -a vX.Y.Z -m "dabs vX.Y.Z" && git push origin vX.Y.Z`. The tag —
+   not the PR — is what triggers the release build.

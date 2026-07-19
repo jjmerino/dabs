@@ -29,22 +29,32 @@ var Commands = map[string]Command{
 
 // cmdDoc is a command's human-facing help: Help is the one-line description
 // shown in the top-level menu (`dabs --help`); Args is the argument shape
-// shown (with the command's own flags, if any) by `dabs <cmd> --help`. This
-// is pure data — kept separate from Commands so the runner map has no static
-// reference back to itself (an initialization cycle) through the help path.
-type cmdDoc struct{ Help, Args string }
+// shown (with the command's own flags, if any) by `dabs <cmd> --help`. Notes,
+// when non-empty, is an extra multi-line block rendered after the flags under
+// its own heading, NotesTitle — so the title travels with the notes rather than
+// being fixed by the renderer. This is pure data — kept separate from Commands
+// so the runner map has no static reference back to itself (an initialization
+// cycle) through the help path.
+type cmdDoc struct{ Help, Args, NotesTitle, Notes string }
 
 var commandDocs = map[string]cmdDoc{
-	"build":     {"build a recipe's box image: build [recipe|path] (no name → dabs.yaml default). A boot rebuilds automatically when the Dockerfile or a bundled image's files change; a change only to build-context files a `COPY .` pulls in is not detected — run `dabs prune` then build to pick it up", "build [recipe|path]"},
-	"recipe":    {"run a recipe box: recipe [name] [cmd…] (unknown/omitted name → the default recipe, else sh, with the cmd appended); --worktree <wt> binds an existing worktree (git works in-box); --name <n> names the node the boot creates (unique; an inactive holder is reaped); --no-command boots a NEW box and runs no command (--detach: unstable alias — may later mean a true background detach)", "recipe [name] [cmd… | --no-command] [--worktree <wt>] [--name <n>]"},
-	"recipes":   {"list the known recipes, one line each: name, description, and origin (bundled | global ~/.dabs/recipes.yaml | project ./dabs.yaml). --print dumps the full merged registry as YAML, sources and all, marking each recipe's origin; --print <name> dumps just that recipe", "recipes [--print [name]]"},
-	"worktrees": {"inspect worktree nodes (reap with `dabs rm <name>` or `dabs rm --clean-worktrees`): worktrees [ls | diff <name>]", "worktrees [ls | diff <name>]"},
-	"cd":        {"print a node's working place as a bare path, resolved per kind — a project to its source repo, a worktree to its checkout, a box to its node dir (~/.dabs/nodes/<id>); shells cannot be moved by a child process, so: cd \"$(dabs cd <node>)\". A box's node dir holds the three spaces as subdirectories: volume/ survives `rm --keep`, held/ carries work you would miss (a worktree's checkout, a workdir's copy — `rm` asks before reaping), tmp/ is scratch `rm` reaps quietly", "cd <node>"},
-	"exec":      {"run a command inside a box: exec <node> -- <cmd…> for an exact argv, or exec <node> <shell…> for a `sh -c` line (pipes/globs/&&)", "exec <node> [--] <cmd…>"},
-	"ls":        {"list the active subtrees dabs owns, as a tree (--inactive: show only the inactive ones instead)", "ls [--inactive]"},
-	"rm":        {"stop a box and remove its node and what it holds (--keep keeps the record instead; --clean-worktrees sweeps every worktree with no unreviewed work; --inactive sweeps every inactive subtree): rm <node> [-y] [--keep] [--volume] [--multiple] [--dry] [--force] | rm --clean-worktrees [--force] [--dry] | rm --inactive [--dry]", "rm <node> [-y] [--keep] [--volume] [--multiple] [--dry] [--force] | rm --clean-worktrees [--force] [--dry] | rm --inactive [--dry]"},
-	"prune":     {"reclaim built box images (they rebuild on the next build); --dry lists what exists, --force removes even images a live box uses", "prune [--dry] [--force]"},
-	"servers":   {"manage registered servers: servers [ls] | add <name> [host] | rm <name>", "servers [ls | add <name> [host] | rm <name>]"},
+	"build":     {Help: "build a recipe's box image: build [recipe|path] (no name → dabs.yaml default). A boot rebuilds automatically when the Dockerfile or a bundled image's files change; a change only to build-context files a `COPY .` pulls in is not detected — run `dabs prune` then build to pick it up", Args: "build [recipe|path]"},
+	"recipe":    {Help: "run a recipe box: recipe [name] [cmd…] (unknown/omitted name → the default recipe, else sh, with the cmd appended); --worktree <wt> binds an existing worktree (git works in-box); --name <n> names the node the boot creates (unique; an inactive holder is reaped); --no-command boots a NEW box and runs no command (--detach: unstable alias — may later mean a true background detach)", Args: "recipe [name] [cmd… | --no-command] [--worktree <wt>] [--name <n>]"},
+	"recipes":   {Help: "list the known recipes, one line each: name, description, and origin (bundled | global ~/.dabs/recipes.yaml | project ./dabs.yaml). --print dumps the full merged registry as YAML, sources and all, marking each recipe's origin; --print <name> dumps just that recipe", Args: "recipes [--print [name]]"},
+	"worktrees": {Help: "inspect worktree nodes (reap with `dabs rm <name>` or `dabs rm --clean-worktrees`): worktrees [ls | diff <name>]", Args: "worktrees [ls | diff <name>]"},
+	"cd":        {Help: "print a node's working place as a bare path, resolved per kind — a project to its source repo, a worktree to its checkout, a box to its node dir (~/.dabs/nodes/<id>); shells cannot be moved by a child process, so: cd \"$(dabs cd <node>)\". A box's node dir holds the three spaces as subdirectories: volume/ survives `rm --keep`, held/ carries work you would miss (a worktree's checkout, a workdir's copy — `rm` asks before reaping), tmp/ is scratch `rm` reaps quietly", Args: "cd <node>"},
+	"exec":      {Help: "run a command inside a box: exec <node> -- <cmd…> for an exact argv, or exec <node> <shell…> for a `sh -c` line (pipes/globs/&&)", Args: "exec <node> [--] <cmd…>"},
+	"ls": {
+		Help:       "list the active subtrees dabs owns, as a tree (--inactive: show only the inactive ones instead)",
+		Args:       "ls [--inactive]",
+		NotesTitle: "location git signal:",
+		Notes: "" +
+			"+  staged   *  unstaged   %  untracked\n" +
+			"⇡N ahead    ⇣N behind    (clean = branch name only)",
+	},
+	"rm":      {Help: "stop a box and remove its node and what it holds (--keep keeps the record instead; --clean-worktrees sweeps every worktree with no unreviewed work; --inactive sweeps every inactive subtree): rm <node> [-y] [--keep] [--volume] [--multiple] [--dry] [--force] | rm --clean-worktrees [--force] [--dry] | rm --inactive [--dry]", Args: "rm <node> [-y] [--keep] [--volume] [--multiple] [--dry] [--force] | rm --clean-worktrees [--force] [--dry] | rm --inactive [--dry]"},
+	"prune":   {Help: "reclaim built box images (they rebuild on the next build); --dry lists what exists, --force removes even images a live box uses", Args: "prune [--dry] [--force]"},
+	"servers": {Help: "manage registered servers: servers [ls] | add <name> [host] | rm <name>", Args: "servers [ls | add <name> [host] | rm <name>]"},
 }
 
 func (c *CLI) runRecipe(args []string) error {

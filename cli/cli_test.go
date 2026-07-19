@@ -306,6 +306,7 @@ func TestCommandHelpShowsOwnUsage(t *testing.T) {
 		{"recipe", []string{"dabs recipe", "--detach", "--worktree"}},
 		{"worktrees", []string{"dabs worktrees", "diff <name>"}},
 		{"recipes", []string{"dabs recipes", "--print"}},
+		{"ls", []string{"dabs ls", "--inactive", "location git signal:", "staged", "unstaged", "untracked"}},
 	}
 	for _, tt := range tests {
 		for _, flag := range []string{"--help", "-h"} {

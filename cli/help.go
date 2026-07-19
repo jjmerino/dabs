@@ -41,6 +41,10 @@ func helpText(name string, fs *flag.FlagSet) string {
 		b.WriteString("\n" + tui.Heading("flags:") + "\n")
 		b.WriteString(tui.Indent(tui.Rows(nil, rows), 2) + "\n")
 	}
+	if doc.Notes != "" {
+		b.WriteString("\n" + tui.Heading(doc.NotesTitle) + "\n")
+		b.WriteString(tui.Indent(doc.Notes, 2) + "\n")
+	}
 	return b.String()
 }
 

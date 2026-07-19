@@ -185,7 +185,11 @@ recipes:
     image: &dabseption_image { dockerfile: contrib/recipes/dabseption.Dockerfile, context: . }
     target: &dabseption_target INTERNAL-docker-privileged-for-nested-sandboxing
     keep: true                            # keep the box alive after the build shell exits — exec in to test
-    command: &dabseption_command [sh, -c, "cd /work && go build -o /usr/local/bin/dabs . && dabs --help 2>&1 | head -1; exec sh"]
+    env: &dabseption_env { TERM: xterm-256color }  # a real terminal for the interactive shell (colors, line editing)
+    # The build runs under `sh -c` (POSIX, non-interactive); the tail drops you
+    # into bash — the image ships it, and it gives history/completion/a prompt
+    # that `sh` (dash on Debian) does not.
+    command: &dabseption_command [sh, -c, "cd /work && go build -o /usr/local/bin/dabs . && dabs --help 2>&1 | head -1; exec bash"]
     sources:
       - mount: .                          # the cwd, live — build and test the code you have now
         path: /work
@@ -200,6 +204,7 @@ recipes:
     image: *dabseption_image
     target: *dabseption_target
     keep: true
+    env: *dabseption_env
     command: *dabseption_command
     sources:
       - worktree: .                       # --worktree rewrites this: attach <wt> live + mount its parent .git

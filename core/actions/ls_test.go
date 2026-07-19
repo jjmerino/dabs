@@ -38,9 +38,6 @@ func TestLsStarsWorktreesHoldingWork(t *testing.T) {
 	})
 
 	for _, line := range strings.Split(out, "\n") {
-		if strings.Contains(line, "(location)") {
-			continue // the muted location pseudo-row carries a git signal, not the STATE judgment
-		}
 		switch {
 		case strings.Contains(line, dirtyID) && !strings.Contains(line, "has work"):
 			t.Errorf("worktree holding uncommitted work is not marked `has work`:\n%s", line)
@@ -226,8 +223,8 @@ func TestLsForeignWorktreesDedupeAcrossProjectsOfOneRepo(t *testing.T) {
 		t.Fatalf("want each of the two dirty worktrees exactly once, got %d rows:\n%s", got, out)
 	}
 	// Count the checkout paths only in the (unmanaged) enumeration rows: projwt,
-	// a project node whose dir IS /repo-wt, also carries a (location) row for it,
-	// and that legitimate second mention must not read as a dedupe failure.
+	// a project node whose dir IS /repo-wt, folds that path into its own INFO
+	// cell, and that legitimate second mention must not read as a dedupe failure.
 	unmanagedMentions := func(path string) int {
 		n := 0
 		for _, line := range strings.Split(out, "\n") {
@@ -245,12 +242,11 @@ func TestLsForeignWorktreesDedupeAcrossProjectsOfOneRepo(t *testing.T) {
 	}
 	// The rows hang under the MAIN-checkout project: in the rendered tree
 	// children directly follow their parent, so each (unmanaged) line follows
-	// projmain's line, projmain's own (location) continuation line, or a sibling
-	// (unmanaged) line.
+	// projmain's line or a sibling (unmanaged) line.
 	lines := strings.Split(out, "\n")
 	for i, line := range lines {
 		if strings.Contains(line, "(unmanaged)") {
-			if i == 0 || (!strings.Contains(lines[i-1], "projmain") && !strings.Contains(lines[i-1], "(location)") && !strings.Contains(lines[i-1], "(unmanaged)")) {
+			if i == 0 || (!strings.Contains(lines[i-1], "projmain") && !strings.Contains(lines[i-1], "(unmanaged)")) {
 				t.Fatalf("rows must hang under projmain (the main checkout), got:\n%s", out)
 			}
 		}
@@ -294,11 +290,11 @@ func TestLsForeignWorktreesGroupAcrossSymlinkedPaths(t *testing.T) {
 		t.Fatalf("symlinked spellings of one repo must group — want one row, got %d:\n%s", got, out)
 	}
 	// The row hangs under the main-checkout project (canonically /vol/repo),
-	// directly after projreal's line or its (location) continuation line.
+	// directly after projreal's line.
 	lines := strings.Split(out, "\n")
 	for i, line := range lines {
 		if strings.Contains(line, "(unmanaged)") {
-			if i == 0 || (!strings.Contains(lines[i-1], "projreal") && !strings.Contains(lines[i-1], "(location)")) {
+			if i == 0 || !strings.Contains(lines[i-1], "projreal") {
 				t.Fatalf("the row must hang under the canonical main-checkout project, got:\n%s", out)
 			}
 		}

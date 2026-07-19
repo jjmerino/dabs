@@ -16,14 +16,6 @@ import (
 // flat, heading-less tree at the top of `dabs ls`.
 const localSection = "local"
 
-// locationID and locationKind mark a (location) pseudo-row — the real working
-// place of a project or worktree, shown muted under the node's own row. Like
-// the (unmanaged) marker it is display-only: nothing resolves it.
-const (
-	locationID   = "(location)"
-	locationKind = "(location)"
-)
-
 // Ls renders what dabs owns as the tree it is: each node under the one it stacks
 // on, with its kind and the place it marks.
 //
@@ -196,15 +188,13 @@ func (r Real) Ls(p params.Ls) error {
 	}
 
 	// draw renders one section's forest: the box driver tags, the git-state
-	// degradation, the foreign-worktree rows, and the (location) rows all hang
-	// on the same view trees.
+	// degradation, and the foreign-worktree rows all hang on the same view trees.
 	draw := func(key string, indent int) {
 		views := r.viewNodes(sections[key], state)
 		if !complete {
 			markStateUnknown(views)
 		}
 		attachForeignWorktrees(views, foreign)
-		r.attachLocationRows(views, byID)
 		fmt.Fprint(os.Stdout, renderForest(views, lsColumns, indent))
 	}
 
@@ -475,8 +465,9 @@ func (r Real) boxStates() driversAnswer {
 }
 
 // lsColumns are the columns `ls` draws for every node: the tree, its kind, the
-// three space cells, its live/gone or merged/unmerged state, and where it is.
-var lsColumns = []Column{ColNode, ColKind, ColVol, ColHeld, ColTmp, ColState, ColWhere}
+// three space cells, its state (live/gone, or a worktree's judgment and git
+// signal), and the INFO cell folding its working location or shell-in command.
+var lsColumns = []Column{ColNode, ColKind, ColVol, ColHeld, ColTmp, ColState, ColInfo}
 
 // tilde shortens a path under the home directory, so a tree of them reads at a
 // glance.
@@ -566,7 +557,7 @@ func (r Real) foreignWorktrees(all []Node) map[string][]*NodeView {
 			out[g.rep.ID] = append(out[g.rep.ID], &NodeView{
 				ID:    unmanagedID,
 				Kind:  KindWorktree,
-				Where: tilde(p),
+				Info:  tilde(p),
 				State: st,
 			})
 		}
@@ -606,39 +597,6 @@ func (r Real) workingDir(n Node) string {
 		return n.Dir
 	default:
 		return ""
-	}
-}
-
-// attachLocationRows hangs a muted (location) row under every project or
-// worktree whose real working place differs from its record dir. The row's
-// WHERE is that place; its STATE is the place's git-prompt signal (blank when
-// the place is not a git repo). It renders only the split — a node whose
-// working place IS its node dir gets no row.
-func (r Real) attachLocationRows(views []*NodeView, byID map[string]Node) {
-	var walk func(v *NodeView)
-	walk = func(v *NodeView) {
-		for _, c := range v.Children {
-			walk(c)
-		}
-		n, ok := byID[v.ID]
-		if !ok {
-			return
-		}
-		real := r.workingDir(n)
-		if real == "" || real == r.nodeDir(n) {
-			return
-		}
-		v.Children = append(v.Children, &NodeView{
-			ID:        locationID,
-			KindText:  locationKind,
-			Where:     tilde(real),
-			State:     CellNA,
-			StateText: r.gitSignal(real),
-			Secondary: true,
-		})
-	}
-	for _, v := range views {
-		walk(v)
 	}
 }
 

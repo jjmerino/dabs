@@ -125,10 +125,10 @@ func TestViewNodesBoxStateFromMapOnly(t *testing.T) {
 	if got := byID["box-gone"].State; got != CellGone {
 		t.Errorf("gone box State = %v, want CellGone", got)
 	}
-	// WHERE points at the box's node dir on disk AND still carries the instance
-	// name, so a box's bytes are locatable while rm/exec still resolve it.
-	if w := byID["box-live"].Where; !strings.Contains(w, ".dabs/nodes/box-live") || !strings.Contains(w, "inst-live") {
-		t.Errorf("box Where = %q, want the node dir and the instance name", w)
+	// INFO is a box's copy-pasteable shell-in command, keyed on its NODE id — the
+	// handle `dabs exec` resolves — not on a filesystem path.
+	if w := byID["box-live"].Info; w != "dabs exec box-live bash" {
+		t.Errorf("box Info = %q, want the shell-in command", w)
 	}
 }
 
@@ -171,9 +171,11 @@ func TestViewNodesSpaceCells(t *testing.T) {
 	}
 }
 
-// A worktree's State is its local git state, in `worktrees`'s vocabulary:
-// commits ahead are unmerged; dirty-only (uncommitted/untracked, nothing
-// ahead) is work in progress, not an unmerged branch; clean is merged.
+// A worktree's STATE (carried in StateText, so it can hold the git signal in
+// parens) is its local git judgment, in `worktrees`'s vocabulary: commits ahead
+// are unmerged; dirty-only (uncommitted/untracked, nothing ahead) is work in
+// progress, not an unmerged branch; clean is no-diff. No git prompt here, so the
+// StateText is the judgment alone — no empty parens.
 func TestViewNodesWorktreeState(t *testing.T) {
 	dirtyWT := vBase + "wt-dirty/held/worktree"
 	cleanWT := vBase + "wt-clean/held/worktree"
@@ -194,24 +196,23 @@ func TestViewNodesWorktreeState(t *testing.T) {
 	for _, v := range roots {
 		byID[v.ID] = v
 	}
-	if byID["wt-dirty"].State != CellHasWork {
-		t.Errorf("dirty worktree State = %v, want CellHasWork", byID["wt-dirty"].State)
+	if byID["wt-dirty"].StateText != "has work" {
+		t.Errorf("dirty worktree StateText = %q, want %q", byID["wt-dirty"].StateText, "has work")
 	}
-	if byID["wt-ahead"].State != CellUnmerged {
-		t.Errorf("ahead worktree State = %v, want CellUnmerged", byID["wt-ahead"].State)
+	if byID["wt-ahead"].StateText != "unmerged" {
+		t.Errorf("ahead worktree StateText = %q, want %q", byID["wt-ahead"].StateText, "unmerged")
 	}
 	// Ahead but landed (a squash merge): the content is in the base, so the
 	// judgment is no-diff — commit count is not the question.
-	if byID["wt-landed"].State != CellNoDiff {
-		t.Errorf("landed worktree State = %v, want CellNoDiff", byID["wt-landed"].State)
+	if byID["wt-landed"].StateText != "no-diff" {
+		t.Errorf("landed worktree StateText = %q, want %q", byID["wt-landed"].StateText, "no-diff")
 	}
-	if byID["wt-clean"].State != CellNoDiff {
-		t.Errorf("clean worktree State = %v, want CellNoDiff", byID["wt-clean"].State)
+	if byID["wt-clean"].StateText != "no-diff" {
+		t.Errorf("clean worktree StateText = %q, want %q", byID["wt-clean"].StateText, "no-diff")
 	}
-	// Where is the node's own dir — one uniform path per node; the checkout
-	// sits inside it (held/worktree) — a literal subdirectory of the printed path.
-	if w := byID["wt-dirty"].Where; !strings.Contains(w, ".dabs/nodes/wt-dirty") || strings.Contains(w, "held/worktree") {
-		t.Errorf("worktree Where = %q, want the node dir itself", w)
+	// INFO is the worktree's checkout — its working location folded into the row.
+	if w := byID["wt-dirty"].Info; !strings.Contains(w, ".dabs/nodes/wt-dirty/held/worktree") {
+		t.Errorf("worktree Info = %q, want the checkout path", w)
 	}
 }
 
@@ -219,8 +220,8 @@ func TestViewNodesWorktreeState(t *testing.T) {
 // nested nodes. A space cell that holds files is the ● glyph; an empty one is
 // BLANK — no glyph, no legend, nothing but the columns asked for.
 func TestRenderForestColumnsAndGlyphs(t *testing.T) {
-	proj := &NodeView{ID: "proj", Kind: KindProject, State: CellNA, Where: "/repo"}
-	box := &NodeView{ID: "box", Kind: KindBox, State: CellLive, Where: "inst",
+	proj := &NodeView{ID: "proj", Kind: KindProject, State: CellNA, Info: "/repo"}
+	box := &NodeView{ID: "box", Kind: KindBox, State: CellLive, Info: "inst",
 		Volume: CellHolds, Held: CellEmpty, Tmp: CellEmpty}
 	proj.Children = []*NodeView{box}
 
@@ -237,65 +238,12 @@ func TestRenderForestColumnsAndGlyphs(t *testing.T) {
 		}
 	}
 	// A column not asked for is not drawn.
-	if strings.Contains(out, "WHERE") {
-		t.Errorf("WHERE drawn though not requested:\n%s", out)
+	if strings.Contains(out, "INFO") {
+		t.Errorf("INFO drawn though not requested:\n%s", out)
 	}
 }
 
-// CONTRACT: a Secondary child is a continuation line of its parent, not a
-// sibling. renderForest draws it immediately after the parent and BEFORE the
-// real children, prefixed with a straight │ (no ├─/└─ branch glyph), and the
-// last REAL child still closes the group with └─.
-func TestRenderForestSecondaryRowIsParentContinuation(t *testing.T) {
-	proj := &NodeView{ID: "proj", Kind: KindProject, State: CellNA}
-	loc := &NodeView{ID: "(location)", KindText: "(location)", State: CellNA, Secondary: true}
-	c1 := &NodeView{ID: "child1", Kind: KindWorkdir, State: CellNA}
-	c2 := &NodeView{ID: "child2", Kind: KindWorkdir, State: CellNA}
-	proj.Children = []*NodeView{loc, c1, c2}
-
-	out := renderForest([]*NodeView{proj}, []Column{ColNode, ColKind}, 0)
-	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
-
-	idx := func(sub string) int {
-		for i, l := range lines {
-			if strings.Contains(l, sub) {
-				return i
-			}
-		}
-		return -1
-	}
-	pProj, pLoc, p1, p2 := idx("proj"), idx("(location)"), idx("child1"), idx("child2")
-	if pProj < 0 || pLoc < 0 || p1 < 0 || p2 < 0 {
-		t.Fatalf("a row went missing:\n%s", out)
-	}
-
-	// Ordering: secondary row right after the parent, before any real child.
-	if pLoc != pProj+1 {
-		t.Errorf("secondary row must sit immediately after its parent, got parent=%d loc=%d:\n%s", pProj, pLoc, out)
-	}
-	if !(pLoc < p1 && pLoc < p2) {
-		t.Errorf("secondary row must precede the real children, got loc=%d child1=%d child2=%d:\n%s", pLoc, p1, p2, out)
-	}
-
-	// Prefix: a straight │, never a branch glyph.
-	locLine := lines[pLoc]
-	if !strings.Contains(locLine, "│  (location)") {
-		t.Errorf("secondary row must carry the straight │ continuation prefix:\n%s", locLine)
-	}
-	if strings.Contains(locLine, "├─") || strings.Contains(locLine, "└─") {
-		t.Errorf("secondary row must not carry a branch glyph:\n%s", locLine)
-	}
-
-	// The last REAL child still closes the group with └─.
-	if !strings.Contains(lines[p2], "└─ child2") {
-		t.Errorf("last real child must close with └─:\n%s", lines[p2])
-	}
-	if !strings.Contains(lines[p1], "├─ child1") {
-		t.Errorf("a non-last real child must carry ├─:\n%s", lines[p1])
-	}
-}
-
-// CONTRACT: a node id or a WHERE path is untrusted display data — it can carry a
+// CONTRACT: a node id or an INFO path is untrusted display data — it can carry a
 // newline (splitting one row into phantom tree lines) or an ANSI escape (moving
 // the cursor / spoofing the terminal). renderForest must neutralize both before
 // drawing: no raw ESC (0x1b) or newline survives from the value, and the row
@@ -305,10 +253,10 @@ func TestRenderForestSanitizesUntrustedFields(t *testing.T) {
 		ID:    "ev\x1b[31mil\nid",
 		Kind:  KindProject,
 		State: CellNA,
-		Where: "/re\x1b[2Jpo\nboom",
+		Info:  "/re\x1b[2Jpo\nboom",
 	}
 
-	out := renderForest([]*NodeView{proj}, []Column{ColNode, ColWhere}, 0)
+	out := renderForest([]*NodeView{proj}, []Column{ColNode, ColInfo}, 0)
 
 	if strings.ContainsRune(out, 0x1b) {
 		t.Errorf("raw ESC (0x1b) survived into rendered output:\n%q", out)
@@ -324,20 +272,20 @@ func TestRenderForestSanitizesUntrustedFields(t *testing.T) {
 	}
 }
 
-// A workdir's Where is its own NODE dir — the uniform rule — never a recorded
-// source path, which for a workdir is the parent project's directory. The copy
-// sits inside the node dir (held/work) — a literal subdirectory of the printed path.
-func TestViewNodesWorkdirWhereIsItsNodeDir(t *testing.T) {
+// A workdir's INFO is its own NODE dir — a workdir has no working place of its
+// own, so its INFO must not leak the recorded source path (the parent project's
+// directory). The copy sits inside the node dir (held/work).
+func TestViewNodesWorkdirInfoIsItsNodeDir(t *testing.T) {
 	work := vBase + "wd/held/work"
 	fd := &vFakeData{statOK: map[string]bool{work: true}}
 	nodes := []Node{{ID: "wd", Kind: KindWorkdir, Dir: "/some/repo", Created: "1"}}
 
 	v := newViewReal(fd).viewNodes(nodes, nil)[0]
-	if !strings.Contains(v.Where, ".dabs/nodes/wd") || strings.Contains(v.Where, "held/work") {
-		t.Errorf("workdir Where = %q, want its node dir", v.Where)
+	if !strings.Contains(v.Info, ".dabs/nodes/wd") || strings.Contains(v.Info, "held/work") {
+		t.Errorf("workdir Info = %q, want its node dir", v.Info)
 	}
-	if strings.Contains(v.Where, "/some/repo") {
-		t.Errorf("workdir Where leaked the source path: %q", v.Where)
+	if strings.Contains(v.Info, "/some/repo") {
+		t.Errorf("workdir Info leaked the source path: %q", v.Info)
 	}
 }
 

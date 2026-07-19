@@ -121,15 +121,16 @@ type fakeData struct {
 	noCommits map[string]bool   // GitHasCommits false for these tops
 	worktrees []string          // recorded GitAddWorktree dests
 	mkdirs    []string
-	made      []string            // exclusive Mkdir creations
-	dirs      map[string][]string // ReadDir results
-	states    map[string]wtState  // GitState by worktree path
-	removed   []string            // recorded GitRemoveWorktree
-	rmAll     []string            // recorded RemoveAll
-	copies    []string            // recorded CopyDir
-	commondir map[string]string   // GitCommonDir: worktree path -> parent .git (present => a worktree)
-	foreign   map[string][]string // GitListWorktrees: repo top -> linked worktree paths; an absent top errors (no git / not a repo)
-	symlinks  map[string]string   // EvalSymlinks: path -> canonical form; an absent path errors, like an unresolvable one
+	made      []string                  // exclusive Mkdir creations
+	dirs      map[string][]string       // ReadDir results
+	states    map[string]wtState        // GitState by worktree path
+	removed   []string                  // recorded GitRemoveWorktree
+	rmAll     []string                  // recorded RemoveAll
+	copies    []string                  // recorded CopyDir
+	commondir map[string]string         // GitCommonDir: worktree path -> parent .git (present => a worktree)
+	foreign   map[string][]string       // GitListWorktrees: repo top -> linked worktree paths; an absent top errors (no git / not a repo)
+	symlinks  map[string]string         // EvalSymlinks: path -> canonical form; an absent path errors, like an unresolvable one
+	prompts   map[string]data.GitPrompt // GitPromptStatus: dir -> prompt state; an absent dir errors (not a git repo)
 }
 
 type wtState struct {
@@ -313,6 +314,12 @@ func (f *fakeData) GitListWorktrees(top string) ([]string, error) {
 		return wts, nil
 	}
 	return nil, errors.New("git worktree list: exec: \"git\": executable file not found in $PATH")
+}
+func (f *fakeData) GitPromptStatus(dir string) (data.GitPrompt, error) {
+	if p, ok := f.prompts[dir]; ok {
+		return p, nil
+	}
+	return data.GitPrompt{}, errors.New("not a git repository")
 }
 func (f *fakeData) GitCommonDir(wt string) (string, error) {
 	if g, ok := f.commondir[wt]; ok {

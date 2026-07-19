@@ -61,14 +61,16 @@ func (c Cell) String() string { return c.Symbol() }
 // NodeView is a display-ready snapshot of a node and its subtree — a TRUE tree,
 // computed once, so any renderer consumes it with no further fs/driver call.
 type NodeView struct {
-	ID       string
-	Kind     NodeKind
-	Where    string // the node's own dir (~/.dabs/nodes/<id>); a box appends its instance name
-	Volume   Cell   // CellEmpty / CellHolds
-	Held     Cell
-	Tmp      Cell
-	State    Cell // box: live/gone · worktree: no-diff/has work/unmerged · else CellNA
-	Children []*NodeView
+	ID        string
+	Kind      NodeKind
+	KindText  string // overrides the KIND cell when set: a box's driver tag, or a pseudo-row's label
+	Where     string // the node's own dir (~/.dabs/nodes/<id>); a box appends its instance name
+	Volume    Cell   // CellEmpty / CellHolds
+	Held      Cell
+	Tmp       Cell
+	State     Cell   // box: live/gone · worktree: no-diff/has work/unmerged · else CellNA
+	StateText string // overrides the STATE cell when set: a git-prompt signal on a (location) row
+	Children  []*NodeView
 }
 
 // viewNodes turns a SET of nodes into view trees. It is the ONE place node
@@ -151,6 +153,13 @@ func (r Real) viewNode(n Node, state map[string]boxState) *NodeView {
 		// users still see it and rm/exec still resolve it.
 		if n.Instance != "" {
 			v.Where += "  (" + n.Instance + ")"
+		}
+		// A box carries its driver in the KIND column — `box (apple)`,
+		// `box (docker)` — so one flat local tree still says where each box
+		// runs. A box under a server's own section needs no tag: the heading
+		// already names the server.
+		if st, ok := state[n.Instance]; ok && st.kind != "" && !isServer(st.kind) {
+			v.KindText = "box (" + st.kind + ")"
 		}
 		if _, live := state[n.Instance]; live {
 			v.State = CellLive
@@ -350,7 +359,10 @@ func renderForest(roots []*NodeView, cols []Column, indent int) string {
 		case ColNode:
 			return tui.Accent(sanitizeCell(r.label))
 		case ColKind:
-			return tui.Muted(string(r.v.Kind))
+			if r.v.KindText != "" {
+				return tui.Muted("%s", sanitizeCell(r.v.KindText))
+			}
+			return tui.Muted("%s", string(r.v.Kind))
 		case ColVol:
 			return styleCell(r.v.Volume)
 		case ColHeld:
@@ -358,9 +370,12 @@ func renderForest(roots []*NodeView, cols []Column, indent int) string {
 		case ColTmp:
 			return styleCell(r.v.Tmp)
 		case ColState:
+			if r.v.StateText != "" {
+				return tui.Muted("%s", sanitizeCell(r.v.StateText))
+			}
 			return styleState(r.v.State)
 		case ColWhere:
-			return tui.Muted(sanitizeCell(r.v.Where))
+			return tui.Muted("%s", sanitizeCell(r.v.Where))
 		default:
 			return ""
 		}

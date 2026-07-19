@@ -83,4 +83,21 @@ type Data interface {
 	// parent repo's .git) backing a linked worktree — what `--worktree` must also
 	// mount so git resolves inside the box.
 	GitCommonDir(worktree string) (string, error)
+	// GitPromptStatus reports a working directory's git state as a shell prompt
+	// reads it: the branch, whether there are staged/unstaged/untracked changes,
+	// and how far ahead/behind its upstream it is. It errors when dir is not a
+	// git repository.
+	GitPromptStatus(dir string) (GitPrompt, error)
+}
+
+// GitPrompt is a working directory's git state, in the vocabulary a compact
+// prompt draws: a branch (or "(detached)"), the three change classes, and the
+// ahead/behind counts against the branch's upstream (0 when there is none).
+type GitPrompt struct {
+	Branch    string
+	Staged    bool
+	Unstaged  bool
+	Untracked bool
+	Ahead     int
+	Behind    int
 }

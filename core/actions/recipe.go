@@ -674,13 +674,15 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID, tip string, rec re
 	// Mark the box: the node was named before the box came up (its spaces had to
 	// exist to be mounted), so record which sandbox it turned out to be. A proxy
 	// engine's PID/dir ride along so the box's down path can reap it.
+	spec := rec
 	box := Node{
-		ID:       boxID,
-		Kind:     KindBox,
-		Parent:   tip,
-		Recipe:   recipeName,
-		Created:  stampNow(),
-		Instance: instance,
+		ID:         boxID,
+		Kind:       KindBox,
+		Parent:     tip,
+		Recipe:     recipeName,
+		RecipeSpec: &spec,
+		Created:    stampNow(),
+		Instance:   instance,
 	}
 	box.ProxyPID, box.ProxyDir = proxyPID, proxyDir
 	if err := r.writeNode(box); err != nil {

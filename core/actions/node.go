@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"path/filepath"
 	"time"
+
+	"github.com/jjmerino/dabs/core/recipe"
 )
 
 // A NODE is one thing dabs provisioned and owns. It lives at
@@ -24,11 +26,17 @@ const nodeFile = "dabs-node.json"
 // worktree. Listing, reaping and worktree-binding all read this record rather than
 // sniffing the filesystem, so dabs only ever sees what it actually made.
 type Node struct {
-	ID      string   `json:"id"`
-	Kind    NodeKind `json:"kind"`
-	Parent  string   `json:"parent,omitempty"` // the node below this one in the chain
-	Recipe  string   `json:"recipe"`           // the recipe that provisioned it — provenance
-	Created string   `json:"created"`          // RFC3339
+	ID     string   `json:"id"`
+	Kind   NodeKind `json:"kind"`
+	Parent string   `json:"parent,omitempty"` // the node below this one in the chain
+	Recipe string   `json:"recipe"`           // the recipe that provisioned it — provenance
+	// RecipeSpec is a SNAPSHOT of the fully-resolved recipe captured when this node
+	// was provisioned: the image, command, env, and sources as they stood at
+	// creation. `dabs info` renders THIS, not a fresh registry lookup of Recipe,
+	// which may have drifted since. Nil on nodes written before snapshots existed,
+	// and on nodes no recipe made; info falls back to the registry by Recipe name.
+	RecipeSpec *recipe.Recipe `json:"recipeSpec,omitempty"`
+	Created    string         `json:"created"` // RFC3339
 	// Dir is the place this node marks. For a project it is the cwd the command
 	// ran from; for a workdir the host directory `.` resolved to. Empty for a box
 	// (a box marks a sandbox, not a directory) and for a worktree dabs cut (its

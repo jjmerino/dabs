@@ -7,7 +7,7 @@ toolchain go1.23.4
 require (
 	github.com/charmbracelet/huh v1.0.0
 	github.com/charmbracelet/lipgloss v1.1.0
-	github.com/mattn/go-isatty v0.0.20
+	github.com/mattn/go-isatty v0.0.23
 	go.yaml.in/yaml/v2 v2.4.4
 )
 

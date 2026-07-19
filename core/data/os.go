@@ -161,6 +161,42 @@ func (OS) GitLanded(worktree string) (bool, error) {
 	return strings.TrimSpace(string(merged)) == strings.TrimSpace(string(baseTree)), nil
 }
 
+// GitPromptStatus reads `git status --porcelain=v2 --branch`, whose header
+// lines carry the branch and ahead/behind counts and whose entry lines carry a
+// two-letter XY staging code (X the index, Y the worktree) plus `?` untracked
+// markers — everything a prompt needs in one call.
+func (OS) GitPromptStatus(dir string) (GitPrompt, error) {
+	out, err := exec.Command("git", "-C", dir, "status", "--porcelain=v2", "--branch").Output()
+	if err != nil {
+		return GitPrompt{}, fmt.Errorf("git status: %v", err)
+	}
+	var p GitPrompt
+	for _, line := range strings.Split(string(out), "\n") {
+		switch {
+		case strings.HasPrefix(line, "# branch.head "):
+			p.Branch = strings.TrimSpace(strings.TrimPrefix(line, "# branch.head "))
+		case strings.HasPrefix(line, "# branch.ab "):
+			fmt.Sscanf(strings.TrimPrefix(line, "# branch.ab "), "+%d -%d", &p.Ahead, &p.Behind)
+		case strings.HasPrefix(line, "1 "), strings.HasPrefix(line, "2 "):
+			// "1 XY ..." (changed) or "2 XY ..." (renamed): X is the index state,
+			// Y the worktree state; a '.' means unchanged in that half.
+			if fields := strings.Fields(line); len(fields) >= 2 && len(fields[1]) == 2 {
+				if fields[1][0] != '.' {
+					p.Staged = true
+				}
+				if fields[1][1] != '.' {
+					p.Unstaged = true
+				}
+			}
+		case strings.HasPrefix(line, "u "):
+			p.Unstaged = true // an unmerged path is work in the tree
+		case strings.HasPrefix(line, "? "):
+			p.Untracked = true
+		}
+	}
+	return p, nil
+}
+
 func (OS) GitDiff(worktree string) (string, error) {
 	var b strings.Builder
 	if base := baseRef(worktree); base != "" {

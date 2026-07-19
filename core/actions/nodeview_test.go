@@ -12,6 +12,7 @@ import (
 	"testing"
 	"testing/fstest"
 
+	"github.com/jjmerino/dabs/core/data"
 	"github.com/jjmerino/dabs/core/sandbox"
 )
 
@@ -78,6 +79,9 @@ func (f *vFakeData) GitLanded(wt string) (bool, error) {
 }
 func (f *vFakeData) GitRemoveWorktree(string) error      { return nil }
 func (f *vFakeData) GitCommonDir(string) (string, error) { return "", fs.ErrNotExist }
+func (f *vFakeData) GitPromptStatus(string) (data.GitPrompt, error) {
+	return data.GitPrompt{}, fs.ErrNotExist
+}
 
 // panicDriver proves laziness: viewNodes must never reach a driver, so any call
 // that would (Ls above all) blows up the test loudly.

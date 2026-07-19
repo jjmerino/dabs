@@ -38,6 +38,9 @@ func TestLsStarsWorktreesHoldingWork(t *testing.T) {
 	})
 
 	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "(location)") {
+			continue // the muted location pseudo-row carries a git signal, not the STATE judgment
+		}
 		switch {
 		case strings.Contains(line, dirtyID) && !strings.Contains(line, "has work"):
 			t.Errorf("worktree holding uncommitted work is not marked `has work`:\n%s", line)
@@ -222,11 +225,23 @@ func TestLsForeignWorktreesDedupeAcrossProjectsOfOneRepo(t *testing.T) {
 	if got := strings.Count(out, "(unmanaged)"); got != 2 {
 		t.Fatalf("want each of the two dirty worktrees exactly once, got %d rows:\n%s", got, out)
 	}
-	if strings.Count(out, "/repo-wt") != 1 {
-		t.Fatalf("the dirty worktree projwt stands on must render exactly once:\n%s", out)
+	// Count the checkout paths only in the (unmanaged) enumeration rows: projwt,
+	// a project node whose dir IS /repo-wt, also carries a (location) row for it,
+	// and that legitimate second mention must not read as a dedupe failure.
+	unmanagedMentions := func(path string) int {
+		n := 0
+		for _, line := range strings.Split(out, "\n") {
+			if strings.Contains(line, "(unmanaged)") && strings.Contains(line, path) {
+				n++
+			}
+		}
+		return n
 	}
-	if strings.Count(out, "/elsewhere/foreign-wt") != 1 {
-		t.Fatalf("the no-project foreign worktree must render exactly once:\n%s", out)
+	if unmanagedMentions("/repo-wt") != 1 {
+		t.Fatalf("the dirty worktree projwt stands on must enumerate exactly once:\n%s", out)
+	}
+	if unmanagedMentions("/elsewhere/foreign-wt") != 1 {
+		t.Fatalf("the no-project foreign worktree must enumerate exactly once:\n%s", out)
 	}
 	// The rows hang under the MAIN-checkout project: in the rendered tree
 	// children directly follow their parent, so each (unmanaged) line follows

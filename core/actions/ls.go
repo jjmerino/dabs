@@ -7,8 +7,21 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/jjmerino/dabs/core/data"
 	"github.com/jjmerino/dabs/core/params"
 	"github.com/jjmerino/dabs/core/tui"
+)
+
+// localSection is the one bucket every local driver's nodes render in — the
+// flat, heading-less tree at the top of `dabs ls`.
+const localSection = "local"
+
+// locationID and locationKind mark a (location) pseudo-row — the real working
+// place of a project or worktree, shown muted under the node's own row. Like
+// the (unmanaged) marker it is display-only: nothing resolves it.
+const (
+	locationID   = "(location)"
+	locationKind = "(location)"
 )
 
 // Ls renders what dabs owns as the tree it is: each node under the one it stacks
@@ -58,7 +71,7 @@ func (r Real) Ls(p params.Ls) error {
 			continue
 		}
 		for _, in := range infos {
-			state[in.Name] = boxState{status: in.Status, where: key}
+			state[in.Name] = boxState{status: in.Status, where: key, kind: drv.Kind()}
 		}
 	}
 
@@ -103,17 +116,28 @@ func (r Real) Ls(p params.Ls) error {
 		}
 	}()
 
-	// A box says where it runs, so its whole chain belongs under that heading —
-	// the tree says WHAT, the heading says WHERE. A chain with a box on two
-	// drivers appears under both: that is the fact, not a duplicate.
+	// A box says where it runs. Every LOCAL driver (apple, docker) collapses
+	// into ONE flat tree — the section keyed localSection, drawn with no
+	// heading — because a place is on THIS machine whichever local driver a box
+	// on it uses. A remote server keeps its own section, keyed by its name. A
+	// chain with a box locally AND on a server appears in both: that is the
+	// fact, not a duplicate.
 	byID := map[string]Node{}
 	for _, n := range nodes {
 		byID[n.ID] = n
 	}
-	sections := map[string][]Node{}  // driver key -> the nodes under its heading
+	// sectionKey folds every local driver into one flat section and leaves each
+	// server on its own.
+	sectionKey := func(where string) string {
+		if isServer(kinds[where]) {
+			return where
+		}
+		return localSection
+	}
+	sections := map[string][]Node{}  // section key -> the nodes it renders
 	placed := map[string]bool{}      // section+id, so one section never repeats a node
-	shown := map[string]bool{}       // node id -> shown under some heading
-	sectionOf := map[string]string{} // node id -> the first heading showing it
+	shown := map[string]bool{}       // node id -> shown in some section
+	sectionOf := map[string]string{} // node id -> the first section showing it
 	add := func(key string, n Node) {
 		if placed[key+"\x00"+n.ID] {
 			return
@@ -134,21 +158,21 @@ func (r Real) Ls(p params.Ls) error {
 			continue
 		}
 		for _, a := range chainOf(n, byID) {
-			add(st.where, a)
+			add(sectionKey(st.where), a)
 		}
 	}
 
 	// A place with nothing running on it is still ON this machine — its path is
-	// real here — so it belongs under the machine's own heading, chain and all,
-	// not an error-looking bucket. A worktree there may hold an agent's
-	// afternoon; a volume, what a box left behind.
+	// real here — so it belongs in the flat local tree, chain and all, not an
+	// error-looking bucket. A worktree there may hold an agent's afternoon; a
+	// volume, what a box left behind.
 	for _, n := range nodes {
 		if n.Kind == KindBox || shown[n.ID] {
 			continue
 		}
 		for _, a := range chainOf(n, byID) {
 			if a.Kind != KindBox && !shown[a.ID] {
-				add("local", a)
+				add(localSection, a)
 			}
 		}
 	}
@@ -171,10 +195,29 @@ func (r Real) Ls(p params.Ls) error {
 		}
 	}
 
-	// Local drivers only earn a heading when something stands on this machine. A
-	// server always gets one — knowing a server is there and empty is the point.
+	// draw renders one section's forest: the box driver tags, the git-state
+	// degradation, the foreign-worktree rows, and the (location) rows all hang
+	// on the same view trees.
+	draw := func(key string, indent int) {
+		views := r.viewNodes(sections[key], state)
+		if !complete {
+			markStateUnknown(views)
+		}
+		attachForeignWorktrees(views, foreign)
+		r.attachLocationRows(views, byID)
+		fmt.Fprint(os.Stdout, renderForest(views, lsColumns, indent))
+	}
+
+	// The flat local tree draws first, with NO heading — every local driver's
+	// boxes and every on-machine place live here as one tree.
+	if len(sections[localSection]) > 0 {
+		draw(localSection, 2)
+	}
+
+	// A server always earns a heading — knowing a server is there and empty is
+	// the point — with its own section drawn beneath it.
 	for _, key := range r.order {
-		if len(sections[key]) == 0 && !isServer(kinds[key]) {
+		if !isServer(kinds[key]) {
 			continue
 		}
 		fmt.Fprintln(os.Stdout, tui.Heading(header(key, kinds[key])))
@@ -182,12 +225,7 @@ func (r Real) Ls(p params.Ls) error {
 			fmt.Fprintln(os.Stdout, tui.Indent(tui.Muted("(nothing running)"), 2))
 			continue
 		}
-		views := r.viewNodes(sections[key], state)
-		if !complete {
-			markStateUnknown(views)
-		}
-		attachForeignWorktrees(views, foreign)
-		fmt.Fprint(os.Stdout, renderForest(views, lsColumns, 2))
+		draw(key, 2)
 	}
 
 	// Gone boxes with no living parent context — their place record is gone —
@@ -402,10 +440,11 @@ func (r Real) nodeSpaceDirs(n Node) []string {
 	return dirs
 }
 
-// boxState is what a driver says about a box right now, and which driver said it.
-// A box booted through a recipe `target:` lives on another driver, so where it is
-// is part of what it is.
-type boxState struct{ status, where string }
+// boxState is what a driver says about a box right now, which driver said it
+// (the registry key), and that driver's kind (apple/docker/ssh). A box booted
+// through a recipe `target:` lives on another driver, so where it is is part of
+// what it is; the kind is what the KIND column tags a box with.
+type boxState struct{ status, where, kind string }
 
 // driversAnswer is one query of every driver: which instances they hold, and
 // whether every driver actually answered. An instance absent from a COMPLETE
@@ -429,7 +468,7 @@ func (r Real) boxStates() driversAnswer {
 			continue
 		}
 		for _, in := range infos {
-			ans.state[in.Name] = boxState{status: in.Status, where: key}
+			ans.state[in.Name] = boxState{status: in.Status, where: key, kind: r.drivers[key].Kind()}
 		}
 	}
 	return ans
@@ -548,6 +587,101 @@ func attachForeignWorktrees(views []*NodeView, foreign map[string][]*NodeView) {
 	for _, v := range views {
 		walk(v)
 	}
+}
+
+// workingDir is the real place a node marks, as `dabs cd` resolves it: a
+// project's source repo, a worktree's checkout. A box (or anything with no
+// working place of its own) returns "" — its place IS its node dir.
+func (r Real) workingDir(n Node) string {
+	switch n.Kind {
+	case KindProject:
+		return n.Dir
+	case KindWorktree:
+		if n.Worktree != nil {
+			if d, err := r.resolveNodeData(n.ID); err == nil {
+				return d
+			}
+			return ""
+		}
+		return n.Dir
+	default:
+		return ""
+	}
+}
+
+// attachLocationRows hangs a muted (location) row under every project or
+// worktree whose real working place differs from its record dir. The row's
+// WHERE is that place; its STATE is the place's git-prompt signal (blank when
+// the place is not a git repo). It renders only the split — a node whose
+// working place IS its node dir gets no row.
+func (r Real) attachLocationRows(views []*NodeView, byID map[string]Node) {
+	var walk func(v *NodeView)
+	walk = func(v *NodeView) {
+		for _, c := range v.Children {
+			walk(c)
+		}
+		n, ok := byID[v.ID]
+		if !ok {
+			return
+		}
+		real := r.workingDir(n)
+		if real == "" || real == r.nodeDir(n) {
+			return
+		}
+		v.Children = append(v.Children, &NodeView{
+			ID:        locationID,
+			KindText:  locationKind,
+			Where:     tilde(real),
+			State:     CellNA,
+			StateText: r.gitSignal(real),
+		})
+	}
+	for _, v := range views {
+		walk(v)
+	}
+}
+
+// gitSignal renders a directory's git state as a compact prompt string, or ""
+// when the directory is not a git repository. It routes through the data seam,
+// so it is exercised against the fake.
+func (r Real) gitSignal(dir string) string {
+	if dir == "" {
+		return ""
+	}
+	p, err := r.data.GitPromptStatus(dir)
+	if err != nil {
+		return ""
+	}
+	return formatGitSignal(p)
+}
+
+// formatGitSignal draws a GitPrompt like a zsh git prompt: the branch, then
+// `+` staged, `*` unstaged, `%` untracked, and ⇡N/⇣N ahead/behind. A clean
+// branch with no divergence is just its name.
+func formatGitSignal(p data.GitPrompt) string {
+	if p.Branch == "" {
+		return ""
+	}
+	var flags strings.Builder
+	if p.Staged {
+		flags.WriteString("+")
+	}
+	if p.Unstaged {
+		flags.WriteString("*")
+	}
+	if p.Untracked {
+		flags.WriteString("%")
+	}
+	if p.Ahead > 0 {
+		fmt.Fprintf(&flags, "⇡%d", p.Ahead)
+	}
+	if p.Behind > 0 {
+		fmt.Fprintf(&flags, "⇣%d", p.Behind)
+	}
+	if flags.Len() == 0 {
+		return p.Branch
+	}
+	return p.Branch + " " + flags.String()
 }
 
 // canonPath resolves a path's symlinks for identity comparison, falling back

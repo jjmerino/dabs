@@ -453,3 +453,9 @@ to `main`.
 4. **After the PR is merged**, tag the merge commit on `main` and push the tag:
    `git tag -a vX.Y.Z -m "dabs vX.Y.Z" && git push origin vX.Y.Z`. The tag —
    not the PR — is what triggers the release build.
+5. **Once the release has published**, re-verify the manual against it: the docs
+   quote screens the released binary prints, and the `scribe` box installs
+   `releases/latest`. Follow the **`verify-manual`** skill
+   (`skills/verify-manual/SKILL.md`) — drive the `walkthroughs/` suite in the
+   box, re-bless any screens the release changed, update the matching docs, and
+   open a docs PR. Skip only if the release changed nothing the CLI prints.

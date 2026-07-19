@@ -5,12 +5,15 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   unit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
       - run: go vet ./...
@@ -28,8 +31,8 @@ jobs:
   e2e-linux:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
 
@@ -40,6 +43,8 @@ jobs:
           # box image does (non-setuid, overlay-enabled).
           sudo apt-get update
           sudo apt-get install -y meson ninja-build libcap-dev pkg-config
+          # Unpinned supply-chain surface: the tarball is fetched over the network
+          # without checksum verification. Harden with a sha256 check.
           curl -fsSL https://github.com/containers/bubblewrap/releases/download/v0.11.0/bubblewrap-0.11.0.tar.xz -o /tmp/bw.tar.xz
           cd /tmp && tar xf bw.tar.xz && cd bubblewrap-0.11.0
           meson setup _build --prefix=/usr/local -Dtests=false -Dman=disabled
@@ -54,6 +59,9 @@ jobs:
         # the runner itself, so bun must be on the runner's PATH. openssl (leaf
         # cert minting) ships with the ubuntu image.
         run: |
+          # Unpinned supply-chain surface: piping the install script straight to
+          # bash runs unverified remote code. Harden with a pinned installer and
+          # checksum verification.
           curl -fsSL https://bun.sh/install | bash
           echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
 

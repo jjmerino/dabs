@@ -1,0 +1,6 @@
+[38;5;145mimage shell: no build record — rebuilding[0m
+image shell: no builder here to refresh it — serving it as-is
+[39mdabs: recipe "broken": mount source ~/myproj/does-not-exist does not exist (use mkmount: to create it)[0m
+exit=1
+:done
+#

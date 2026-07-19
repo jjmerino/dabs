@@ -7,7 +7,7 @@ Every node offers three directories, and the one a recipe mounts **declares
 the data's lifetime**. `rm` reads the space, not the recipe: convention with
 teeth.
 
-<Info>Screens verified by `tests/test_spaces.py`.</Info>
+<Info>Screens verified by `walkthroughs/test_spaces.py`.</Info>
 
 ## The three spaces
 
@@ -51,7 +51,7 @@ files:
 ```text
 local (bwrap, this machine)
   NODE                KIND     VOL  HELD  TMP  STATE  WHERE
-  myproj-________     project  ●                      ~/myproj
+  myproj-________     project  ●                      ~/.dabs/nodes/myproj-________
   └─ spacey-________  box      ●    ●     ●    live   ~/.dabs/nodes/spacey-________  (shell-____________)
 ```
 
@@ -77,7 +77,7 @@ mean it:
 
 ```text
 ✓ shell-____________ stopped
-⚠ volume kept: …/.dabs/nodes/spacey-________/volume   (dabs rm spacey-________ -y --volume to reap it)
+⚠ volume kept: ~/.dabs/nodes/spacey-________/volume   (dabs rm spacey-________ -y --volume to reap it)
 ```
 
 A box whose volume still holds files stays listed (STATE `gone`) so the data

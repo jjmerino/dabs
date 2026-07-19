@@ -27,7 +27,7 @@ change — but **not** when only `COPY .` context files changed; run
 ## recipe
 
 ```text
-dabs recipe [name] [cmd… | --no-command] [--worktree <wt>]
+dabs recipe [name] [cmd… | --no-command] [--worktree <wt>] [--name <n>]
 ```
 
 Boot a box from a recipe and run its command, then tear the box down (unless
@@ -39,6 +39,8 @@ command.
   unstable alias (it may later mean a true background detach).
 - `--worktree <wt>` — bind an existing worktree to the recipe's `.` source and
   mount its parent `.git`, so git works in-box.
+- `--name <n>` — name the node the boot creates instead of a generated id; the
+  name resolves everywhere an id does. See [Named nodes](/guides/names).
 - `dabs recipe -- <cmd…>` — the default recipe with your command appended.
 
 ## exec
@@ -83,14 +85,27 @@ Inspect worktree nodes: state (`no-diff` / `has work` / `unmerged`), branch,
 recipe, box-liveness; `diff` shows a review diff that surfaces untracked
 files. Reaping is `dabs rm`.
 
+## cd
+
+```text
+dabs cd <node>
+```
+
+Print a node's own directory (`~/.dabs/nodes/<id>`, the WHERE `ls` shows) as a
+bare path. A shell can't be moved by a child process, so wrap it:
+`cd "$(dabs cd <node>)"`. Accepts names and unambiguous prefixes. The node's
+three spaces are its `volume/`, `held/`, `tmp/` subdirectories. See
+[Named nodes](/guides/names).
+
 ## recipes
 
 ```text
 dabs recipes [--print]
 ```
 
-List the known recipes one line each; `--print` dumps the bundled registry
-YAML in full.
+List the known recipes one line each — name, description, and origin
+(`bundled` / global / `project`); `--print` dumps the merged registry as YAML,
+each recipe marked with its origin.
 
 ## prune
 

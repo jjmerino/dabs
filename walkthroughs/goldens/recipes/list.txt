@@ -1,0 +1,8 @@
+[38;5;141mhello[0m[38;5;141m[39m       [0m[38;5;141m[39m[38;5;145mdemo box for the recipes walkthrough[0m[38;5;141m[39m[38;5;145m[39m [0m[38;5;141m[39m[38;5;145m[39m[48;5;141m [0m[38;5;141m[39m[38;5;145m[39m[48;5;141m[1m[30mdefault[0m[39m[48;5;141m [0m[39m[48;5;141m[49m         [0m[39m[48;5;141m[49m[38;5;145mproject[0m
+[38;5;141mscratch[0m[38;5;141m[39m     [0m[38;5;141m[39m[38;5;145mcopy the cwd into a directory node, no box[0m[38;5;141m[39m[38;5;145m[39m             [0m[38;5;141m[39m[38;5;145m[39m[38;5;145mbundled[0m
+[38;5;141mscratchbox[0m[38;5;141m[39m  [0m[38;5;141m[39m[38;5;145mshell in a clean box over a throwaway copy of the cwd[0m[38;5;141m[39m[38;5;145m[39m  [0m[38;5;141m[39m[38;5;145m[39m[38;5;145mbundled[0m
+[38;5;141msh[0m[38;5;141m[39m          [0m[38;5;141m[39m[38;5;145mshell in a clean box over your current directory[0m[38;5;141m[39m[38;5;145m[39m       [0m[38;5;141m[39m[38;5;145m[39m[38;5;145mbundled[0m
+[38;5;141mwt[0m[38;5;141m[39m          [0m[38;5;141m[39m[38;5;145mcut a worktree, no box[0m[38;5;141m[39m[38;5;145m[39m                                 [0m[38;5;141m[39m[38;5;145m[39m[38;5;145mbundled[0m
+[38;5;141mwtbox[0m[38;5;141m[39m       [0m[38;5;141m[39m[38;5;145mshell in a clean box over a fresh git worktree[0m[38;5;141m[39m[38;5;145m[39m         [0m[38;5;141m[39m[38;5;145m[39m[38;5;145mbundled[0m
+[39m:done[0m
+#

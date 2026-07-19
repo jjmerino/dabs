@@ -8,9 +8,8 @@ with your current directory live-mounted at `/work`. Run everything from your
 project directory.
 
 <Info>
-Screens below are verified by `tests/test_quickstart.py`. Generated names
-(like `sh-a3f9c21d`) are blanked to `________` — yours will differ. The
-`:done` line is the test harness's end marker, kept for fidelity.
+Screens below are verified by `walkthroughs/test_quickstart.py`. Generated names
+(like `sh-a3f9c21d`) are blanked to `________` — yours will differ.
 </Info>
 
 ## 0. Install dabs
@@ -82,7 +81,7 @@ dabs ls
 ```text
 local (bwrap, this machine)
   NODE             KIND     VOL  HELD  TMP  STATE  WHERE
-  myproj-________  project                         ~/myproj
+  myproj-________  project                         ~/.dabs/nodes/myproj-________
   └─ sh-________   box                      live   ~/.dabs/nodes/sh-________  (shell-____________)
 ```
 

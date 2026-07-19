@@ -1,0 +1,5 @@
+[38;5;214m⚠ sh matches 2 nodes: sh-________, sh-________[0m
+[39mdabs: "sh" matches 2 nodes; pass --multiple to rm all of them[0m
+exit=1
+:done
+#

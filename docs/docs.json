@@ -32,6 +32,8 @@
           "guides/worktrees",
           "guides/spaces",
           "guides/exec",
+          "guides/names",
+          "guides/egress",
           "guides/cleanup"
         ]
       },

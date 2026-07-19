@@ -5,19 +5,21 @@ description: "One verb, two forms — a shell line or an exact argv"
 
 `dabs exec` is the single reach-in verb. The `--` separator picks the form.
 
-<Info>Screens verified by `tests/test_exec.py`.</Info>
+<Info>Screens verified by `walkthroughs/test_exec.py`.</Info>
 
 ## Shell form (no `--`)
 
 Tokens are joined into one `sh -c` line **inside the box** — pipes, globs, and
 `&&` work:
 
+With two files at `/work`, the shell expands the glob:
+
 ```bash
 dabs exec sh-________ 'cd /work && echo *'
 ```
 
 ```text
-dabs.yaml  data
+app.py notes.md
 ```
 
 ## Exact-argv form (`--`)

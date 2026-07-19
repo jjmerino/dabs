@@ -1,0 +1,4 @@
+[38;5;78m✓ [0m[38;5;78m[38;5;141mshell-____________[0m[38;5;78m[38;5;141m[39m stopped[0m
+[38;5;214m⚠ volume kept: ~/.dabs/nodes/spacey-________/volume[0m[38;5;214m[38;5;145m   (dabs rm spacey-________ -y --volume to reap it)[0m
+[39m:done[0m
+#

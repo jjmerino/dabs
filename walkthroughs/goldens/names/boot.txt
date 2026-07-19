@@ -1,0 +1,10 @@
+[38;5;145mimage shell: no build record — rebuilding[0m
+image shell: no builder here to refresh it — serving it as-is
+[38;5;78m✓ [0m[38;5;78m[39mrecipe booted: [0m[38;5;78m[39m[38;5;141msh[0m
+[38;5;145mid:[0m[38;5;145m[39m [0m[38;5;145m[39m[38;5;141mdev[0m
+[38;5;145minstance:[0m[38;5;145m[39m shell-____________[0m
+[38;5;145m(no command was run — the recipe's command is not started by `--no-command`)[0m
+reap:[39m dabs rm dev[0m
+[38;5;145mrun recipe command:[0m[38;5;145m[39m dabs exec dev -- sh[0m
+:done
+#

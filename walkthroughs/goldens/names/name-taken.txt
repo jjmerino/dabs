@@ -1,0 +1,4 @@
+dabs: --name "login-fix": an active node holds that name (see dabs ls) — pick another, or reap it first
+exit=1
+:done
+#

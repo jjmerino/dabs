@@ -1,0 +1,3 @@
+dabs: repo-________ has unreviewed work (uncommitted=false, 1 commit(s) ahead) — review with `dabs worktrees diff repo-________`, then rm --force to discard
+:done
+#

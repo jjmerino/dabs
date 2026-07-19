@@ -1,0 +1,113 @@
+---
+title: "Egress"
+description: "Confine a box's outbound network: cut it, gate it by host, or route it through a hook you write"
+---
+
+A box is isolated in filesystem and process, but by default its **network is
+open** — it can reach anything your host can. `egress` on a recipe changes that.
+As a scalar it is `open` (the default) or `none`; as a map it routes **all** of
+the box's egress through the dabs proxy engine, which enforces a host
+`allow`/`deny` gate and an optional chain of hooks.
+
+<Info>Screens verified by `walkthroughs/test_egress.py`. The proxy engine runs on
+`bun` (host-side); `egress: none` needs nothing extra.</Info>
+
+## Cut it off
+
+```yaml
+recipes:
+  offline:
+    image: shell
+    egress: none
+    sources:
+      - mount: .
+        path: /work
+```
+
+A box with `egress: none` has no network at all — it cannot even resolve a name:
+
+```bash
+dabs exec offline 'curl -sS https://example.com'
+```
+
+```text
+curl: (6) Could not resolve host: example.com
+```
+
+## Gate it by host
+
+An `allow` list (or `deny`) is a CONNECT gate: an allowed host reaches, anything
+else is refused before a byte leaves the box.
+
+```yaml
+recipes:
+  gated:
+    image: shell
+    egress:
+      allow: "example.com"        # a bare domain matches the apex and subdomains
+    sources:
+      - mount: .
+        path: /work
+```
+
+```bash
+# example.com is allowed; github.com is not
+dabs exec gated '...curl example.com...; ...curl github.com...'
+```
+
+```text
+example.com  reached
+github.com   blocked
+```
+
+## Route it through a hook
+
+An `http_proxy` chain hands the box's traffic to code you write. `tls: terminate`
+opens the encrypted stream, a `module:` hook sees — and may rewrite — every
+chunk, and `tls: originate` re-encrypts it to the real destination.
+
+```yaml
+recipes:
+  hooked:
+    image: shell
+    egress:
+      http_proxy:
+        - tls: terminate
+        - module: broker.ts
+        - tls: originate
+    sources:
+      - mount: .
+        path: /work
+```
+
+A hook that discards the upstream body and emits its own line — proof the box's
+fetch passed through your code:
+
+```typescript
+// broker.ts
+export default () => ({
+  onResponseChunk(chunk, ctx) {
+    if (chunk === null) return;             // end of stream
+    if (ctx.done) return Buffer.alloc(0);   // swallow the rest
+    ctx.done = true;
+    return Buffer.from("the broker rewrote this response\n");
+  },
+});
+```
+
+```bash
+dabs exec hooked 'curl -s http://example.com/'
+```
+
+```text
+the broker rewrote this response
+```
+
+<Tip>
+This is the mechanism behind a **credential broker**: instead of rewriting the
+whole body, a real hook swaps a dummy token for the real one on the way **out**
+and scrubs the real token back out of every response, so the box holds only the
+dummy. See the `confined-claude` recipe and
+`contrib/proxy/creds-inject-anthropic/broker.ts` in the dabs repo, and the
+`egress` field in the [recipe schema](/reference/recipe-schema).
+</Tip>

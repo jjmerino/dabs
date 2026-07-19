@@ -1,0 +1,4 @@
+keep-me
+cat: can't open '/cache/f': No such file or directory
+:done
+#

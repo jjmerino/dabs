@@ -1,0 +1,96 @@
+package actions_test
+
+// Tests for `dabs info <node>`: it renders one node's full model — kind and id,
+// location, the three spaces, and the recipe that provisioned it. The recipe is
+// read from the SNAPSHOT persisted on the node at creation, so it is truthful
+// even when the current registry no longer defines that name.
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/jjmerino/dabs/core/params"
+)
+
+// CONTRACT: a node carrying a recipe SNAPSHOT renders that snapshot — image,
+// command, and mounts — INDEPENDENT of the current registry. The registry here
+// does NOT define "claude", proving info reads the persisted spec, not a fresh
+// lookup. The node's location and three spaces render too, with a held space
+// reported as holding files.
+func TestInfoRendersPersistedRecipeSnapshot(t *testing.T) {
+	base := "/home/t/.dabs/nodes/"
+	fd := baseData()
+	fd.files = map[string][]byte{
+		base + "boxy-abcd/dabs-node.json": []byte(`{"id":"boxy-abcd","kind":"box","instance":"inst-b","recipe":"claude","created":"t",` +
+			`"recipeSpec":{"image":"claude-img","command":["claude","--dangerously"],` +
+			`"env":{"CLAUDE_CONFIG_DIR":"/root/.claude"},` +
+			`"sources":[{"mkmount":"~/.dabs/shared/claude","path":"/root/.claude"},{"mount":".","path":"/work"}]}}`),
+	}
+	fd.dirs = map[string][]string{"/home/t/.dabs/nodes": {"boxy-abcd"}}
+	spaceHeld(fd, "boxy-abcd", "held") // a held space that holds files
+
+	out := captureStdout(t, func() {
+		// Empty user recipes.yaml: the bundled registry has no "claude" recipe,
+		// so a green test proves the snapshot — not the registry — was rendered.
+		if err := newReal("", fd, &fakeDriver{}).Info(params.Info{Node: "boxy-abcd"}); err != nil {
+			t.Fatalf("Info: %v", err)
+		}
+	})
+
+	for _, want := range []string{
+		"boxy-abcd", "box", // kind and id
+		"inst-b",                // the box instance
+		".dabs/nodes/boxy-abcd", // location (a box falls back to its node dir)
+		"VOL", "HELD", "TMP",    // the three spaces
+		"holds files",                     // the held space's status
+		"claude",                          // the recipe name
+		"claude-img",                      // the snapshot's image
+		"claude --dangerously",            // the snapshot's command
+		"CLAUDE_CONFIG_DIR=/root/.claude", // the snapshot's env
+		"~/.dabs/shared/claude",           // a snapshot source origin
+		"/root/.claude",                   // its box path
+		"/work",                           // the mount's box path
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("info output missing %q:\n%s", want, out)
+		}
+	}
+	// TEETH: the command must come from the SNAPSHOT. If info regressed to a
+	// registry lookup, the unknown "claude" recipe would render nothing here.
+	if !strings.Contains(out, "claude --dangerously") {
+		t.Fatalf("the snapshot's command did not render — info fell back to the registry:\n%s", out)
+	}
+}
+
+// CONTRACT: a node with a recipe NAME but no snapshot, whose name the registry
+// no longer defines, does not error — info says the spec is unavailable.
+func TestInfoMissingSnapshotUnknownRecipeIsGraceful(t *testing.T) {
+	base := "/home/t/.dabs/nodes/"
+	fd := baseData()
+	fd.files = map[string][]byte{
+		base + "old-abcd/dabs-node.json": []byte(`{"id":"old-abcd","kind":"box","instance":"inst-o","recipe":"gone-recipe","created":"t"}`),
+	}
+	fd.dirs = map[string][]string{"/home/t/.dabs/nodes": {"old-abcd"}}
+
+	out := captureStdout(t, func() {
+		if err := newReal("", fd, &fakeDriver{}).Info(params.Info{Node: "old-abcd"}); err != nil {
+			t.Fatalf("Info must not error on a missing snapshot: %v", err)
+		}
+	})
+	if !strings.Contains(out, "old-abcd") {
+		t.Fatalf("the node itself must still render:\n%s", out)
+	}
+	if !strings.Contains(out, "gone-recipe") || !strings.Contains(out, "no snapshot") {
+		t.Fatalf("info must name the recipe and say the snapshot is unavailable:\n%s", out)
+	}
+}
+
+// CONTRACT: an unknown node is a clean error naming the miss, not a panic.
+func TestInfoUnknownNodeErrors(t *testing.T) {
+	fd := baseData()
+	fd.dirs = map[string][]string{"/home/t/.dabs/nodes": {}}
+	err := newReal("", fd, &fakeDriver{}).Info(params.Info{Node: "nope"})
+	if err == nil || !strings.Contains(err.Error(), "no node") {
+		t.Fatalf("want a 'no node' error, got %v", err)
+	}
+}

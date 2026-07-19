@@ -151,6 +151,13 @@ type Cd struct {
 	Node string // node id/name (or box instance), git-style prefixes accepted
 }
 
+// Info is the input to rendering ONE node's full model: its kind and id, its
+// location, its three spaces (VOL/HELD/TMP), and the recipe that provisioned it
+// (from the snapshot captured at creation, else the current registry by name).
+type Info struct {
+	Node string // node id/name (or box instance), git-style prefixes accepted
+}
+
 // Actions is the contract every action provider satisfies: the real
 // implementations in core/actions, fakes in tests, RPC clients later.
 type Actions interface {
@@ -161,6 +168,7 @@ type Actions interface {
 	Cd(Cd) error
 	Exec(Exec) error
 	Ls(Ls) error
+	Info(Info) error
 	Rm(Rm) error
 	Prune(Prune) error
 	ServersList(ServersList) error

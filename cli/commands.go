@@ -22,6 +22,7 @@ var Commands = map[string]Command{
 	"cd":        {(*CLI).runCd},
 	"exec":      {(*CLI).runExec},
 	"ls":        {(*CLI).runLs},
+	"info":      {(*CLI).runInfo},
 	"rm":        {(*CLI).runRm},
 	"prune":     {(*CLI).runPrune},
 	"servers":   {(*CLI).runServers},
@@ -47,11 +48,12 @@ var commandDocs = map[string]cmdDoc{
 	"ls": {
 		Help:       "list the active subtrees dabs owns, as a tree (--inactive: show only the inactive ones instead)",
 		Args:       "ls [--inactive]",
-		NotesTitle: "location git signal:",
+		NotesTitle: "git signal (in STATE):",
 		Notes: "" +
 			"+  staged   *  unstaged   %  untracked\n" +
 			"⇡N ahead    ⇣N behind    (clean = branch name only)",
 	},
+	"info":    {Help: "show one node's full model: its kind and id, the place it marks, its three spaces (volume/held/tmp), and the recipe that provisioned it (from the snapshot taken at creation, else the current registry by name): info <node>", Args: "info <node>"},
 	"rm":      {Help: "stop a box and remove its node and what it holds (--keep keeps the record instead; --clean-worktrees sweeps every worktree with no unreviewed work; --inactive sweeps every inactive subtree): rm <node> [-y] [--keep] [--volume] [--multiple] [--dry] [--force] | rm --clean-worktrees [--force] [--dry] | rm --inactive [--dry]", Args: "rm <node> [-y] [--keep] [--volume] [--multiple] [--dry] [--force] | rm --clean-worktrees [--force] [--dry] | rm --inactive [--dry]"},
 	"prune":   {Help: "reclaim built box images (they rebuild on the next build); --dry lists what exists, --force removes even images a live box uses", Args: "prune [--dry] [--force]"},
 	"servers": {Help: "manage registered servers: servers [ls] | add <name> [host] | rm <name>", Args: "servers [ls | add <name> [host] | rm <name>]"},
@@ -156,6 +158,16 @@ func (c *CLI) runCd(args []string) error {
 		return BadArgsError{Cmd: "cd", Reason: "usage: cd <node>"}
 	}
 	return c.actions.Cd(params.Cd{Node: args[0]})
+}
+
+func (c *CLI) runInfo(args []string) error {
+	if wantsHelp(args) {
+		return HelpRequestedError{helpText("info", nil)}
+	}
+	if len(args) != 1 {
+		return BadArgsError{Cmd: "info", Reason: "usage: info <node>"}
+	}
+	return c.actions.Info(params.Info{Node: args[0]})
 }
 
 func (c *CLI) runRecipes(args []string) error {

@@ -29,9 +29,17 @@ jobs:
           go-version-file: go.mod
       - name: Build darwin/linux × amd64/arm64
         run: |
+          # Every dabs embeds the egress forwarder — without it proxy egress
+          # refuses at boot (egressforwarder/forwarder/embed_off.go). The
+          # forwarder always runs LINUX (boxes are linux) at the box's arch, so
+          # rebuild forward.bin for each target arch before embedding it, and
+          # build dabs with -tags withforwarder (mirrors util/reinstall.sh).
           for os in darwin linux; do for arch in amd64 arm64; do
+            GOOS=linux GOARCH=$arch CGO_ENABLED=0 \
+              go build -o egressforwarder/forwarder/forward.bin ./egressforwarder/cmd/forward
             GOOS=$os GOARCH=$arch CGO_ENABLED=0 \
-              go build -trimpath -ldflags="-s -w" -o "dist/dabs_${os}_${arch}" .
+              go build -trimpath -ldflags="-s -w" -tags withforwarder \
+                -o "dist/dabs_${os}_${arch}" .
           done; done
           (cd dist && shasum -a 256 dabs_* > SHA256SUMS)
           ls -la dist/

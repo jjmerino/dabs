@@ -145,6 +145,12 @@ func describeRecipe(name string, rec recipe.Recipe, note string) string {
 			if err != nil {
 				kind, origin = "?", ""
 			}
+			// A boxless source (a worktree/copy that only provisions a place) has no
+			// in-box target, so there is nothing to point an arrow at.
+			if s.Path == "" {
+				srcRows = append(srcRows, []string{"  " + kind, origin})
+				continue
+			}
 			srcRows = append(srcRows, []string{"  " + kind, origin, tui.Arrow(), s.Path})
 		}
 		b.WriteString(tui.Rows(nil, srcRows))

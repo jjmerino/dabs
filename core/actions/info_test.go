@@ -147,6 +147,14 @@ func TestInfoWorktreeNodeRendersProvisionedSnapshot(t *testing.T) {
 			t.Errorf("info missing snapshot detail %q:\n%s", want, out)
 		}
 	}
+	// The lone `worktree: .` source has no in-box path, so its mounts row is the
+	// kind and origin alone — no arrow, no empty target.
+	if !strings.Contains(out, "worktree  .") {
+		t.Errorf("boxless worktree source must render `worktree  .`:\n%s", out)
+	}
+	if strings.Contains(out, "→") {
+		t.Errorf("a pathless source must not render an arrow:\n%s", out)
+	}
 }
 
 // CONTRACT: an unknown node is a clean error naming the miss, not a panic.

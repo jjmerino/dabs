@@ -242,6 +242,59 @@ func TestRenderForestColumnsAndGlyphs(t *testing.T) {
 	}
 }
 
+// CONTRACT: a Secondary child is a continuation line of its parent, not a
+// sibling. renderForest draws it immediately after the parent and BEFORE the
+// real children, prefixed with a straight │ (no ├─/└─ branch glyph), and the
+// last REAL child still closes the group with └─.
+func TestRenderForestSecondaryRowIsParentContinuation(t *testing.T) {
+	proj := &NodeView{ID: "proj", Kind: KindProject, State: CellNA}
+	loc := &NodeView{ID: "(location)", KindText: "(location)", State: CellNA, Secondary: true}
+	c1 := &NodeView{ID: "child1", Kind: KindWorkdir, State: CellNA}
+	c2 := &NodeView{ID: "child2", Kind: KindWorkdir, State: CellNA}
+	proj.Children = []*NodeView{loc, c1, c2}
+
+	out := renderForest([]*NodeView{proj}, []Column{ColNode, ColKind}, 0)
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+
+	idx := func(sub string) int {
+		for i, l := range lines {
+			if strings.Contains(l, sub) {
+				return i
+			}
+		}
+		return -1
+	}
+	pProj, pLoc, p1, p2 := idx("proj"), idx("(location)"), idx("child1"), idx("child2")
+	if pProj < 0 || pLoc < 0 || p1 < 0 || p2 < 0 {
+		t.Fatalf("a row went missing:\n%s", out)
+	}
+
+	// Ordering: secondary row right after the parent, before any real child.
+	if pLoc != pProj+1 {
+		t.Errorf("secondary row must sit immediately after its parent, got parent=%d loc=%d:\n%s", pProj, pLoc, out)
+	}
+	if !(pLoc < p1 && pLoc < p2) {
+		t.Errorf("secondary row must precede the real children, got loc=%d child1=%d child2=%d:\n%s", pLoc, p1, p2, out)
+	}
+
+	// Prefix: a straight │, never a branch glyph.
+	locLine := lines[pLoc]
+	if !strings.Contains(locLine, "│  (location)") {
+		t.Errorf("secondary row must carry the straight │ continuation prefix:\n%s", locLine)
+	}
+	if strings.Contains(locLine, "├─") || strings.Contains(locLine, "└─") {
+		t.Errorf("secondary row must not carry a branch glyph:\n%s", locLine)
+	}
+
+	// The last REAL child still closes the group with └─.
+	if !strings.Contains(lines[p2], "└─ child2") {
+		t.Errorf("last real child must close with └─:\n%s", lines[p2])
+	}
+	if !strings.Contains(lines[p1], "├─ child1") {
+		t.Errorf("a non-last real child must carry ├─:\n%s", lines[p1])
+	}
+}
+
 // CONTRACT: a node id or a WHERE path is untrusted display data — it can carry a
 // newline (splitting one row into phantom tree lines) or an ANSI escape (moving
 // the cursor / spoofing the terminal). renderForest must neutralize both before

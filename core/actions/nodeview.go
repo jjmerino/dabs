@@ -70,6 +70,7 @@ type NodeView struct {
 	Tmp       Cell
 	State     Cell   // box: live/gone · worktree: no-diff/has work/unmerged · else CellNA
 	StateText string // overrides the STATE cell when set: a git-prompt signal on a (location) row
+	Secondary bool   // a continuation row of its parent (drawn as a │ second line, not a ├─/└─ child)
 	Children  []*NodeView
 }
 
@@ -345,8 +346,19 @@ func renderForest(roots []*NodeView, cols []Column, indent int) string {
 				next += "│  "
 			}
 		}
-		for i, k := range v.Children {
-			walk(k, next, i == len(v.Children)-1, depth+1)
+		// Secondary rows are continuation lines of this node, drawn right below it
+		// with a straight │ where a child's glyph would sit; real children follow
+		// and set their own last-child glyph among themselves alone.
+		var kids []*NodeView
+		for _, k := range v.Children {
+			if k.Secondary {
+				rows = append(rows, row{v: k, label: next + "│  " + k.ID})
+				continue
+			}
+			kids = append(kids, k)
+		}
+		for i, k := range kids {
+			walk(k, next, i == len(kids)-1, depth+1)
 		}
 	}
 	for _, v := range roots {

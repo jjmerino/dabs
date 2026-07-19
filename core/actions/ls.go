@@ -634,6 +634,7 @@ func (r Real) attachLocationRows(views []*NodeView, byID map[string]Node) {
 			Where:     tilde(real),
 			State:     CellNA,
 			StateText: r.gitSignal(real),
+			Secondary: true,
 		})
 	}
 	for _, v := range views {

@@ -123,7 +123,8 @@ func TestRmPreviewShowsLiveBoxAsLiveE2E(t *testing.T) {
 
 // E2-6: a project place whose only box is gone was filed under the `no place`
 // heading — an error-looking bucket — although the place has a real path on THIS
-// machine. It belongs under the machine's own section. The subtree is inactive
+// machine. Local nodes render in the flat, heading-less local tree, so the
+// project must appear there and never under `no place`. The subtree is inactive
 // once its box is gone and its spaces empty, so it surfaces under `ls --inactive`.
 func TestLsPlaceWithDownedBoxNotUnderNoBoxE2E(t *testing.T) {
 	clean(t)
@@ -142,17 +143,20 @@ func TestLsPlaceWithDownedBoxNotUnderNoBoxE2E(t *testing.T) {
 	}
 
 	// The subtree is inactive now (box gone, spaces empty), so it lists under
-	// `--inactive` — and there it must still sit under the machine's own section.
+	// `--inactive` — and there it must render in the flat local tree, never under
+	// the error-looking `no place` bucket. The flat local tree is heading-less, so
+	// the project's section is the empty string, not any heading.
 	ls, code := run("dabs ls --inactive")
 	if code != 0 {
 		t.Fatalf("ls --inactive failed (%d): %s", code, ls)
 	}
+	rowWith(t, ls, proj) // the project renders on the machine at all
 	section := sectionOf(t, ls, proj)
 	if strings.HasPrefix(section, "no place") {
 		t.Fatalf("a project with a real path on this machine is filed under %q (E2-6):\n%s", section, ls)
 	}
-	if !strings.HasPrefix(section, "local") {
-		t.Fatalf("project row not under the machine's section, got %q (E2-6):\n%s", section, ls)
+	if section != "" {
+		t.Fatalf("project row not in the flat local tree, got heading %q (E2-6):\n%s", section, ls)
 	}
 }
 

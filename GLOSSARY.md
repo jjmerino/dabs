@@ -189,11 +189,12 @@ verb (that shell-line behavior is now `exec` without `--`).
 *Where:* `Exec`, `Driver.Run`.
 
 ### ls
-List what dabs owns as a node tree, grouped by driver. It shows only the ACTIVE
-subtrees (see **active / inactive**); when any inactive subtree exists it prints a
-one-line hint below, and `dabs ls --inactive` lists ONLY those instead. A place
-with no live box lists under its machine's heading, not a separate bucket. A
-driver with nothing running prints `(nothing running)`.
+List what dabs owns as a node tree. Every local driver collapses into ONE flat,
+heading-less tree; a remote server keeps its own per-section heading. It shows
+only the ACTIVE subtrees (see **active / inactive**); when any inactive subtree
+exists it prints a one-line hint below, and `dabs ls --inactive` lists ONLY those
+instead. A place with no live box still lists in the flat local tree, not a
+separate bucket. A server with nothing running prints `(nothing running)`.
 *Where:* `Ls`, `activeSubtrees`, `renderForest`.
 
 ### rm
@@ -423,9 +424,10 @@ lock), and runs last among a boot's refusals.
 *Where:* `claimNodeName`, `validateNodeName`.
 
 ### cd
-`dabs cd <node>` prints the directory a node marks — the WHERE `ls` shows — as
-a bare absolute path, for `cd "$(dabs cd <node>)"`; a child process cannot move
-its parent shell.
+`dabs cd <node>` prints a node's WORKING place as a bare absolute path, resolved
+per kind — a project to its source repo, a worktree to its checkout, a box to its
+node dir — for `cd "$(dabs cd <node>)"`; a child process cannot move its parent
+shell.
 *Where:* `Cd`.
 
 ### the worktree states

@@ -1,0 +1,4 @@
+[1m[38;5;141mNAME[0m[39m[49m           [0m[39m[49m[1m[38;5;141mWORKTREE[0m[39m[49m                                                 [0m[39m[49m[1m[38;5;141mSTATE[0m[39m[49m     [0m[39m[49m[1m[38;5;141mDETAIL[0m
+[38;5;141m[49mrepo-________[0m[38;5;141m[49m[39m  ~/.dabs/nodes/repo-________/held/worktree  [0m[38;5;141m[49m[39m[38;5;141munmerged[0m[38;5;141m[49m[39m[38;5;141m[39m  [0m[38;5;141m[49m[39m[38;5;141m[39m[38;5;145mbranch dabs/________ · recipe wt · uncommitted=false ahead=1 · box shell-____________ live[0m
+[39m:done[0m
+#

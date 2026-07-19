@@ -6,7 +6,7 @@ description: "Declare a box once — image, mounts, env, command — and run it 
 A recipe is the whole box spec, written declaratively. dabs ships five generic
 ones; anything project- or tool-specific is yours to add.
 
-<Info>Screens verified by `tests/test_recipes.py`.</Info>
+<Info>Screens verified by `walkthroughs/test_recipes.py`.</Info>
 
 ## The bundled five
 
@@ -47,12 +47,12 @@ recipes:
 Drop that in your project and it joins the registry immediately:
 
 ```text
-hello       demo box for the recipes walkthrough  default
-scratch     copy the cwd into a directory node, no box
-scratchbox  shell in a clean box over a throwaway copy of the cwd
-sh          shell in a clean box over your current directory
-wt          cut a worktree, no box
-wtbox       shell in a clean box over a fresh git worktree
+hello       demo box for the recipes walkthrough  default          project
+scratch     copy the cwd into a directory node, no box             bundled
+scratchbox  shell in a clean box over a throwaway copy of the cwd  bundled
+sh          shell in a clean box over your current directory       bundled
+wt          cut a worktree, no box                                 bundled
+wtbox       shell in a clean box over a fresh git worktree         bundled
 ```
 
 <Warning>
@@ -81,12 +81,12 @@ Handing a box an arbitrary command always asks first, showing the recipe, its
 mounts, and the exact command:
 
 ```text
-╭────────────────────────────────────╮
-│ recipe "sh"                        │
-│   image=shell                      │
-│   mount    . → /work               │
-│ command: sh -c echo appended to sh │
-╰────────────────────────────────────╯
+╭──────────────────────────────────────╮
+│ recipe "sh"                          │
+│   image=shell                        │
+│   mount    . → /work                 │
+│ command: sh -c 'echo appended to sh' │
+╰──────────────────────────────────────╯
 ┃ Proceed?
 ┃
 ┃   Yes     No
@@ -95,7 +95,7 @@ mounts, and the exact command:
 Answer **Yes** and it runs, then removes the box when the command exits:
 
 ```text
-running: sh -c echo appended to sh
+running: sh -c 'echo appended to sh'
 
 appended to sh
 ✓ sh-________ removed

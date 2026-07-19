@@ -1,0 +1,4 @@
+reference data
+sh: can't create /ref/nope: Read-only file system
+:done
+#

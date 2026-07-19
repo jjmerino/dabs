@@ -1,0 +1,4 @@
+dabs: no box matches "nothere" (see dabs ls)
+exit=1
+:done
+#

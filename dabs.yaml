@@ -205,6 +205,27 @@ recipes:
       - worktree: .                       # --worktree rewrites this: attach <wt> live + mount its parent .git
         path: /work
 
+  # dabs recipe scribe — the machine the docs walkthrough suite (walkthroughs/) runs in.
+  # It layers tuti and a RELEASED dabs onto the dabseption image, so a nested dabs
+  # boots its own boxes while tuti photographs the TUI. Build order:
+  # `dabs build dabseption` (readies the dabs-dabseption base), then
+  # `dabs build scribe`. Kept and privileged like dabseption; drive it from the
+  # host with `dabs exec <box> 'cd /work/walkthroughs && python3 -m pytest -q'`.
+  #
+  # Unlike dabseption, this box does NOT build dabs from /work — it installs the
+  # latest RELEASED binary in the Dockerfile (see scribe.Dockerfile), because the
+  # goldens must document what a released dabs prints. /work is this repo, live,
+  # so re-blessed goldens and updated docs land back on the host.
+  scribe:
+    description: tuti + a released dabs, for driving the docs walkthrough suite
+    image: { dockerfile: contrib/recipes/scribe.Dockerfile, context: . }
+    target: INTERNAL-docker-privileged-for-nested-sandboxing
+    keep: true
+    command: [sh]
+    sources:
+      - mount: .
+        path: /work
+
   # Agents: use when you changed dabs's CLI, help text, errors, or recipes and
   # want to know whether a brand-new user can still figure it out. Drops a naive
   # Haiku on a fresh machine that has ONLY dabs (built from this tree) + Claude

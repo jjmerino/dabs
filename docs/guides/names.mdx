@@ -1,0 +1,109 @@
+---
+title: "Named nodes"
+description: "Give a box or worktree a handle of your own, then reach it by that name — and cd into it"
+---
+
+Every boot mints a node with a generated id (`sh-a3f9c21d`). `--name` lets you
+name it instead — a handle that works **everywhere an id does** (`exec`, `ls`,
+`cd`, `rm`, `--worktree`) and reads back in the NODE column. It turns a session
+of boxes and worktrees into something you address by intent, not by hash.
+
+<Info>Screens verified by `walkthroughs/test_names.py`.</Info>
+
+## Name what you cut
+
+Name a worktree and the branch is cut after it — `dabs/<name>`, not a random id:
+
+```bash
+dabs recipe wt --name login-fix
+```
+
+```text
+✓ worktree login-fix branch dabs/login-fix · ~/.dabs/nodes/login-fix/held/worktree
+```
+
+Name a box the same way. `--name` sets the id the boot line prints:
+
+```bash
+dabs recipe sh --name dev --detach
+```
+
+```text
+✓ recipe booted: sh
+id: dev
+instance: shell-____________
+(no command was run — the recipe's command is not started by `--no-command`)
+reap: dabs rm dev
+run recipe command: dabs exec dev -- sh
+```
+
+## Reach it by name
+
+The name is a handle everywhere an id is — reach into the box with it:
+
+```bash
+dabs exec dev -- echo 'reached dev by name'
+```
+
+```text
+reached dev by name
+```
+
+And the whole session reads as what you called it — names in the NODE column:
+
+```bash
+dabs ls
+```
+
+```text
+local (bwrap, this machine)
+  NODE           KIND      VOL  HELD  TMP  STATE    WHERE
+  repo-________  project                            ~/.dabs/nodes/repo-________
+  ├─ dev         box                       live     ~/.dabs/nodes/dev  (shell-____________)
+  └─ login-fix   worktree       ●          no-diff  ~/.dabs/nodes/login-fix
+```
+
+## cd into a node
+
+The WHERE column shows each node's own directory. `dabs cd <node>` prints that
+directory as a **bare path**, so a shell can step into it — a child process
+cannot move its parent's shell, so you wrap it:
+
+```bash
+cd "$(dabs cd dev)"
+```
+
+```text
+~/.dabs/nodes/dev
+```
+
+A prefix resolves the same way every handle does (`dabs cd de` → the same path),
+and an ambiguous one is refused rather than guessed. Inside that directory live
+the node's three spaces as subdirectories — `volume/`, `held/`, `tmp/` (see
+[Spaces](/guides/spaces)); a worktree's checkout is its `held/worktree`.
+
+## A name is claimed while its work is live
+
+A name held by **active** work refuses a new claim — it is never silently
+reused:
+
+```bash
+dabs recipe wt --name login-fix     # login-fix already active
+```
+
+```text
+dabs: --name "login-fix": an active node holds that name (see dabs ls) — pick another, or reap it first
+```
+
+Reap the holder first (`dabs rm login-fix`) and the name frees up; a name left
+by an *inactive* node is reclaimed on the fly. Winding a session down reads as
+plainly as it named it:
+
+```bash
+dabs rm dev -y
+```
+
+```text
+✓ shell-____________ stopped
+✓ dev removed
+```

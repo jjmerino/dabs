@@ -7,7 +7,7 @@ A worktree source cuts a fresh git branch off HEAD (`dabs/<id>`), checks it
 out into its own node, and mounts it live — the agent works on an isolated,
 reviewable copy while your working tree stays untouched.
 
-<Info>Screens verified by `tests/test_worktrees.py`.</Info>
+<Info>Screens verified by `walkthroughs/test_worktrees.py`.</Info>
 
 ## Cut one
 
@@ -18,7 +18,7 @@ dabs recipe wt        # a worktree, no box
 ```
 
 ```text
-✓ worktree repo-________ branch dabs/________ · …/.dabs/nodes/repo-________/held/worktree
+✓ worktree repo-________ branch dabs/________ · ~/.dabs/nodes/repo-________/held/worktree
 ```
 
 (`wtbox` does the same and boots a shell box over it in one step.)
@@ -28,8 +28,8 @@ dabs recipe wt        # a worktree, no box
 `dabs worktrees ls` shows every worktree with a three-value STATE:
 
 ```text
-NAME           WORKTREE                                              STATE    DETAIL
-repo-________  …/.dabs/nodes/repo-________/held/worktree             no-diff  branch dabs/________ · recipe wt · uncommitted=false ahead=0 · no box
+NAME           WORKTREE                                                 STATE    DETAIL
+repo-________  ~/.dabs/nodes/repo-________/held/worktree  no-diff  branch dabs/________ · recipe wt · uncommitted=false ahead=0 · no box
 ```
 
 | state | meaning |
@@ -63,12 +63,18 @@ parent `.git` — git is blind inside such a box. The agent edits; you commit on
 the host. Use `--worktree` when a job needs in-box git.
 </Warning>
 
-After an edit the state flips to `has work`; after an in-box commit, to
-`unmerged`:
+After an edit the state flips to `has work`:
 
 ```text
-repo-________  …  has work  branch dabs/________ · recipe wt · uncommitted=true ahead=0 · box shell-____________ live
-repo-________  …  unmerged  branch dabs/________ · recipe wt · uncommitted=false ahead=1 · box shell-____________ live
+NAME           WORKTREE                                                 STATE     DETAIL
+repo-________  ~/.dabs/nodes/repo-________/held/worktree  has work  branch dabs/________ · recipe wt · uncommitted=true ahead=0 · box shell-____________ live
+```
+
+and after an in-box commit, to `unmerged`:
+
+```text
+NAME           WORKTREE                                                 STATE     DETAIL
+repo-________  ~/.dabs/nodes/repo-________/held/worktree  unmerged  branch dabs/________ · recipe wt · uncommitted=false ahead=1 · box shell-____________ live
 ```
 
 ## Review, then reap
@@ -81,6 +87,7 @@ dabs worktrees diff repo-________
 
 ```text
 diff --git a/app.txt b/app.txt
+index _______.._______ 100644
 --- a/app.txt
 +++ b/app.txt
 @@ -1 +1,2 @@

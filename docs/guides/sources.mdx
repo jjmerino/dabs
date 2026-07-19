@@ -7,7 +7,7 @@ A recipe's `sources:` list places things into the box at a `path`. Exactly one
 of four kinds names each source's origin — and the kind decides whether the
 box's writes ever reach your disk.
 
-<Info>Screens verified by `tests/test_sources.py`.</Info>
+<Info>Screens verified by `walkthroughs/test_sources.py`.</Info>
 
 | kind | what lands in the box | your files |
 |---|---|---|
@@ -70,7 +70,7 @@ A `copy: .` source snapshots your cwd into a **workdir node** (its bytes live
 in that node's held space), and the boot says so:
 
 ```text
-✓ kept: workdir …/.dabs/nodes/myproj-________/held/work
+✓ kept: workdir ~/.dabs/nodes/myproj-________/held/work
 ```
 
 The snapshot survives the box on purpose — it may hold work the agent
@@ -100,7 +100,7 @@ box mounting that path is already logged in.
 A plain `mount:` whose origin is missing is treated as a typo and **refused**:
 
 ```text
-dabs: recipe "broken": mount source /…/does-not-exist does not exist (use mkmount: to create it)
+dabs: recipe "broken": mount source ~/myproj/does-not-exist does not exist (use mkmount: to create it)
 ```
 
 ## Where a snapshot lands: `at:`

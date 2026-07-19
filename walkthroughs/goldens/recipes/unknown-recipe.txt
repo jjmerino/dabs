@@ -1,0 +1,4 @@
+dabs: no recipe "nosuch" (known: scratch, scratchbox, sh, wt, wtbox) — or `dabs recipe -- nosuch` to run it as a command on the default recipe
+exit=1
+:done
+#

@@ -53,12 +53,13 @@ know what is in it:
    its id — shown everywhere ids are shown, resolvable everywhere ids resolve
    (`exec`, `rm`, `cd`, `--worktree`). Names are unique across known nodes; a
    name held by an INACTIVE node reaps that record on the fly, a name held by
-   active work refuses. `dabs cd <node>` prints any node's own directory —
-   `~/.dabs/nodes/<id>`, the WHERE `ls` shows, one uniform path for every
-   kind — as a bare path: `cd "$(dabs cd myfix)"`. The three spaces are its
-   subdirectories — `volume/` (survives `rm --keep`), `held/` (work you would
-   miss: a worktree's checkout, a workdir's copy; `rm` asks first), `tmp/`
-   (scratch, reaped quietly).
+   active work refuses. `dabs cd <node>` prints a node's WORKING place as a bare
+   path, resolved per kind — a project to its source repo, a worktree to its
+   checkout (`~/.dabs/nodes/<id>/held/worktree`), a box to its node dir
+   (`~/.dabs/nodes/<id>`) — for `cd "$(dabs cd myfix)"`. A box's node dir holds
+   its three spaces as subdirectories — `volume/` (survives `rm --keep`), `held/`
+   (work you would miss: a worktree's checkout, a workdir's copy; `rm` asks
+   first), `tmp/` (scratch, reaped quietly).
 
 3. **Use it directly**, or **run an agent inside it — with a recipe.** Recipes
    do the plumbing: a recipe is a fully declarative box (image, what to

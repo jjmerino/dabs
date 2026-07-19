@@ -6,6 +6,7 @@ package actions_test
 // even when the current registry no longer defines that name.
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -82,6 +83,69 @@ func TestInfoMissingSnapshotUnknownRecipeIsGraceful(t *testing.T) {
 	}
 	if !strings.Contains(out, "gone-recipe") || !strings.Contains(out, "no snapshot") {
 		t.Fatalf("info must name the recipe and say the snapshot is unavailable:\n%s", out)
+	}
+}
+
+// CONTRACT: a boxless recipe that provisions a WORKTREE node persists the
+// resolved recipe snapshot on that node too — not just on box nodes. `dabs info`
+// on the worktree then renders the creation-time snapshot (labelled so), never
+// the registry fallback. This drives the real provisioning path end to end.
+func TestInfoWorktreeNodeRendersProvisionedSnapshot(t *testing.T) {
+	y := `recipes:
+  cut:
+    description: cut a worktree, no box
+    command: [echo, hi]
+    env:
+      FOO: bar
+    sources:
+      - worktree: .
+`
+	fd := baseData()
+	fd.toplevel["/cwd"] = nil // the cwd is a git repo with commits
+	r := newRealNoDriver(y, fd)
+	captureStdout(t, func() {
+		if err := r.Recipe(params.Recipe{Name: "cut"}); err != nil {
+			t.Fatalf("boxless worktree recipe: %v", err)
+		}
+	})
+
+	// Find the worktree node the recipe cut, and assert the snapshot landed on the
+	// persisted record itself — proof the provisioning path wrote it.
+	var wtID string
+	for p, b := range fd.files {
+		if !strings.HasSuffix(p, "/dabs-node.json") {
+			continue
+		}
+		var n map[string]any
+		if err := json.Unmarshal(b, &n); err != nil {
+			continue
+		}
+		if n["kind"] == "worktree" && n["worktree"] != nil {
+			wtID, _ = n["id"].(string)
+			if n["recipeSpec"] == nil {
+				t.Fatalf("worktree node persisted no recipeSpec:\n%s", b)
+			}
+		}
+	}
+	if wtID == "" {
+		t.Fatal("the boxless recipe cut no worktree node")
+	}
+
+	out := captureStdout(t, func() {
+		if err := r.Info(params.Info{Node: wtID}); err != nil {
+			t.Fatalf("Info: %v", err)
+		}
+	})
+	// The note proves the SNAPSHOT was rendered — the registry (which still holds
+	// "cut") would otherwise supply the fallback and read "current registry
+	// definition". If the snapshot regressed, this label would flip.
+	if !strings.Contains(out, "snapshot at creation") {
+		t.Fatalf("info must render the persisted snapshot, not the registry fallback:\n%s", out)
+	}
+	for _, want := range []string{"cut", "echo hi", "FOO=bar"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("info missing snapshot detail %q:\n%s", want, out)
+		}
 	}
 }
 

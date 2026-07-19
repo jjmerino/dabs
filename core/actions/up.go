@@ -73,7 +73,7 @@ func (r Real) upDetached(arg, worktree, nodeName string) error {
 	}
 	// Cut the PLACE first: a box names its parent's spaces ($PARENT_VOLUME), and a
 	// parent must exist to be named.
-	_, tip, hosts, kept, cut, err := r.provisionPlaces(name, sources, worktree)
+	_, tip, hosts, kept, cut, err := r.provisionPlaces(name, snapshotRecipe(rec), sources, worktree)
 	if err != nil {
 		return err
 	}

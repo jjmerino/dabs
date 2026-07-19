@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -163,7 +164,7 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 
 	// Cut the PLACE first: a box names its parent's spaces ($PARENT_VOLUME), and a
 	// parent must exist to be named.
-	_, tip, hosts, kept, cut, err := r.provisionPlaces(name, sources, worktree)
+	_, tip, hosts, kept, cut, err := r.provisionPlaces(name, snapshotRecipe(rec), sources, worktree)
 	if err != nil {
 		return err
 	}
@@ -275,6 +276,10 @@ func (r Real) provisionNodes(name string, rec recipe.Recipe, worktree, nodeName 
 	if err != nil {
 		return err
 	}
+	// One resolved snapshot for whatever leaf nodes this boxless recipe makes —
+	// their creation-time provenance, so `dabs info` reads what actually
+	// provisioned them, not a registry that may have drifted since.
+	snap := snapshotRecipe(rec)
 	made := 0
 	for _, s := range rec.Sources {
 		kind, origin, err := s.Kind()
@@ -294,7 +299,7 @@ func (r Real) provisionNodes(name string, rec recipe.Recipe, worktree, nodeName 
 			if err != nil {
 				return fmt.Errorf("recipe %q: worktree %s: %w", name, origin, err)
 			}
-			wt, branch, id, err := r.addWorktree(top, name, project, nodeName)
+			wt, branch, id, err := r.addWorktree(top, name, snap, project, nodeName)
 			if err != nil {
 				return err
 			}
@@ -313,7 +318,7 @@ func (r Real) provisionNodes(name string, rec recipe.Recipe, worktree, nodeName 
 				return fmt.Errorf("recipe %q: copy %s: %w", name, host, err)
 			}
 			// Dir is the copy's own location — where it lives, not its source.
-			if err := r.writeNode(Node{ID: id, Kind: KindWorkdir, Parent: project, Recipe: name, Created: stampNow(), Dir: dir}); err != nil {
+			if err := r.writeNode(Node{ID: id, Kind: KindWorkdir, Parent: project, Recipe: name, RecipeSpec: snap, Created: stampNow(), Dir: dir}); err != nil {
 				return err
 			}
 			fmt.Fprintf(os.Stdout, "%s %s %s\n", tui.Success("workdir"), tui.Accent(id), tui.Muted(dir))
@@ -401,7 +406,7 @@ func (r Real) spaceVars(id, prefix string) (map[string]string, error) {
 // `at:` says where a provisioned place puts its bytes on the host, in the new
 // node's own spaces — so the recipe, not this function, decides what `rm` may
 // reap.
-func (r Real) provisionPlaces(recipeName string, sources []recipe.Source, boundWorktree string) (project, tip string, hosts map[int]string, kept []string, cut []wtCut, err error) {
+func (r Real) provisionPlaces(recipeName string, snap *recipe.Recipe, sources []recipe.Source, boundWorktree string) (project, tip string, hosts map[int]string, kept []string, cut []wtCut, err error) {
 	project, err = r.ensureProjectNode(recipeName)
 	if err != nil {
 		return "", "", nil, nil, nil, err
@@ -439,7 +444,7 @@ func (r Real) provisionPlaces(recipeName string, sources []recipe.Source, boundW
 				return "", "", nil, nil, nil, fmt.Errorf("recipe %q: %w", recipeName, aerr)
 			}
 			branch := "dabs/" + short
-			if err := r.cutWorktree(top, branch, at, id, recipeName, project); err != nil {
+			if err := r.cutWorktree(top, branch, at, id, recipeName, snap, project); err != nil {
 				return "", "", nil, nil, nil, err
 			}
 			tip, hosts[i] = id, at
@@ -469,7 +474,7 @@ func (r Real) provisionPlaces(recipeName string, sources []recipe.Source, boundW
 			// A workdir's own directory is where the copy LIVES, not where it was
 			// copied from — that is what `ls` shows and where a user looks. The
 			// source is the parent project's directory.
-			if err := r.writeNode(Node{ID: id, Kind: KindWorkdir, Parent: project, Recipe: recipeName, Created: stampNow(), Dir: at}); err != nil {
+			if err := r.writeNode(Node{ID: id, Kind: KindWorkdir, Parent: project, Recipe: recipeName, RecipeSpec: snap, Created: stampNow(), Dir: at}); err != nil {
 				return "", "", nil, nil, nil, err
 			}
 			tip, hosts[i] = id, at
@@ -499,7 +504,7 @@ func (r Real) placeAt(s recipe.Source, id, leaf string) (string, error) {
 }
 
 // cutWorktree checks out a new branch off HEAD into at, and records the node.
-func (r Real) cutWorktree(top, branch, at, id, recipeName, parent string) error {
+func (r Real) cutWorktree(top, branch, at, id, recipeName string, snap *recipe.Recipe, parent string) error {
 	if !r.data.GitHasCommits(top) {
 		return fmt.Errorf("recipe: repo has no commits yet — make an initial commit first")
 	}
@@ -510,13 +515,14 @@ func (r Real) cutWorktree(top, branch, at, id, recipeName, parent string) error 
 		return fmt.Errorf("recipe: %w", err)
 	}
 	return r.writeNode(Node{
-		ID:       id,
-		Kind:     KindWorktree,
-		Parent:   parent,
-		Recipe:   recipeName,
-		Created:  stampNow(),
-		Dir:      at,
-		Worktree: &NodeWorktree{Branch: branch, Repo: top},
+		ID:         id,
+		Kind:       KindWorktree,
+		Parent:     parent,
+		Recipe:     recipeName,
+		RecipeSpec: snap,
+		Created:    stampNow(),
+		Dir:        at,
+		Worktree:   &NodeWorktree{Branch: branch, Repo: top},
 	})
 }
 
@@ -674,13 +680,12 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID, tip string, rec re
 	// Mark the box: the node was named before the box came up (its spaces had to
 	// exist to be mounted), so record which sandbox it turned out to be. A proxy
 	// engine's PID/dir ride along so the box's down path can reap it.
-	spec := rec
 	box := Node{
 		ID:         boxID,
 		Kind:       KindBox,
 		Parent:     tip,
 		Recipe:     recipeName,
-		RecipeSpec: &spec,
+		RecipeSpec: snapshotRecipe(rec),
 		Created:    stampNow(),
 		Instance:   instance,
 	}
@@ -696,6 +701,26 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID, tip string, rec re
 	}
 
 	return instance, nil
+}
+
+// snapshotRecipe returns a DEEP copy of a resolved recipe, to persist on a node
+// as its creation-time provenance (Node.RecipeSpec). A plain struct copy would
+// alias the recipe's slices and maps (Command, Env, Sources, the egress chain),
+// which is safe only while the write follows immediately; a later refactor that
+// deferred or mutated could then corrupt the snapshot. A JSON round-trip — the
+// very form writeNode persists — copies every level. A marshal error (never
+// expected for a recipe dabs just resolved) degrades to the shallow copy rather
+// than failing the provision: a snapshot is provenance, not a gate.
+func snapshotRecipe(rec recipe.Recipe) *recipe.Recipe {
+	b, err := json.Marshal(rec)
+	if err != nil {
+		return &rec
+	}
+	var clone recipe.Recipe
+	if err := json.Unmarshal(b, &clone); err != nil {
+		return &rec
+	}
+	return &clone
 }
 
 // resolveRecipe picks the recipe that `dabs build`/`dabs recipe --detach` act on
@@ -1314,7 +1339,7 @@ func withinRoot(root, target string) bool {
 // it — but `rm` asks first when it holds work. It returns the checkout path
 // (what the box mounts) and the branch. Requires at least one commit (a born
 // HEAD). parent is the node this one stacks on.
-func (r Real) addWorktree(top, recipeName, parent, nodeName string) (path, branch, id string, err error) {
+func (r Real) addWorktree(top, recipeName string, snap *recipe.Recipe, parent, nodeName string) (path, branch, id string, err error) {
 	if !r.data.GitHasCommits(top) {
 		return "", "", "", fmt.Errorf("recipe: repo has no commits yet — make an initial commit first")
 	}
@@ -1344,12 +1369,13 @@ func (r Real) addWorktree(top, recipeName, parent, nodeName string) (path, branc
 		return "", "", "", fmt.Errorf("recipe: %w", err)
 	}
 	if err := r.writeNode(Node{
-		ID:       id,
-		Kind:     KindWorktree,
-		Parent:   parent,
-		Recipe:   recipeName,
-		Created:  stampNow(),
-		Worktree: &NodeWorktree{Branch: branch, Repo: top},
+		ID:         id,
+		Kind:       KindWorktree,
+		Parent:     parent,
+		Recipe:     recipeName,
+		RecipeSpec: snap,
+		Created:    stampNow(),
+		Worktree:   &NodeWorktree{Branch: branch, Repo: top},
 	}); err != nil {
 		return "", "", "", fmt.Errorf("recipe: %w", err)
 	}

@@ -29,6 +29,15 @@ Requirements inside the box (all provided by the `scribe` image): dabs on PATH,
 tmux, python3 with `tuti` and `pytest`, and `HOME` on a non-overlay filesystem
 holding a staged `~/.dabs/images/shell`.
 
+## Seeing the screens
+
+Goldens are ANSI captures — unreadable as raw `.txt`. Render them all to one
+self-contained, colour HTML gallery to eyeball what the suite asserts:
+
+```bash
+python3 walkthroughs/render_goldens.py > screendiffs.html   # stdlib only
+```
+
 ## Design notes
 
 - Each test gets a throwaway `HOME` (fresh dabs node tree), seeded with the

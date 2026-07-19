@@ -8,7 +8,7 @@ require (
 	github.com/charmbracelet/huh v1.0.0
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/mattn/go-isatty v0.0.20
-	go.yaml.in/yaml/v2 v2.4.2
+	go.yaml.in/yaml/v2 v2.4.4
 )
 
 require (

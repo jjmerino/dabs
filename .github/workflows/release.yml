@@ -35,7 +35,16 @@ jobs:
           done; done
           (cd dist && shasum -a 256 dabs_* > SHA256SUMS)
           ls -la dist/
-      - name: Attach to the release
+      - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ github.event.inputs.tag || github.ref_name }}" dist/* --clobber
+        run: |
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          # A tag push reaches here with no release object yet, so create it on
+          # first sight (notes from the annotated tag); a re-run finds it and
+          # just replaces the assets. Either way the tag alone ships a release.
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/* --clobber
+          else
+            gh release create "$tag" dist/* --title "$tag" --notes-from-tag
+          fi

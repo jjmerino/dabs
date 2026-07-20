@@ -89,14 +89,6 @@ jobs:
             > "$HOME/.dabs/images/dabs-e2e/image.json"
 
       - name: Run the e2e suite (hermetic)
-        # The whole suite; the online subset self-skips (E2E_ONLINE unset).
+        # The whole suite. Every test fakes its upstream (a terminal hook or a
+        # loopback server the suite process runs), so nothing reaches the internet.
         run: go test -tags e2e -v ./test/e2e
-
-      - name: Run the online e2e subset
-        # The tests that genuinely prove real-internet behavior, run with egress
-        # open (the runner has network). Kept in sync with the suite's online(t)
-        # calls and run_e2e.sh's ONLINE_RE.
-        run: |
-          E2E_ONLINE=1 go test -tags e2e -v \
-            -run '^(TestEgressDenyList|TestProxyTerminateDomainsScopeInterception|TestEgressAllowlistDefaultDeny|TestEgressNoneCutsNetwork|TestProxyDoesNotFollowRedirects|TestProxyDirectIPThroughWindow|TestProxyOriginateForwards)$' \
-            ./test/e2e

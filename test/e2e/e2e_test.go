@@ -262,17 +262,6 @@ func up(t *testing.T) string {
 	return ""
 }
 
-// online skips a test unless E2E_ONLINE=1. An online test proves behavior only a
-// real upstream can show (a live 200, a real redirect, a real cert), so it runs
-// in a box with open egress — not the hermetic (egress: none) box the rest of
-// the suite runs in.
-func online(t *testing.T) {
-	t.Helper()
-	if os.Getenv("E2E_ONLINE") != "1" {
-		t.Skip("online test: needs a box with open egress (set E2E_ONLINE=1)")
-	}
-}
-
 func wantExit(t *testing.T, want, got int) {
 	t.Helper()
 	if want != got {

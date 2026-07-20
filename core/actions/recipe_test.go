@@ -2319,3 +2319,151 @@ func TestProvisionFromLinkedWorktreeMintsWorktreeMarker(t *testing.T) {
 		t.Errorf("marker parent = %v, want the repo's tracked project mainrepo-aaaa", marker["parent"])
 	}
 }
+
+// boxNodeParent returns the parent recorded on the single box node dabs wrote,
+// failing the test if there is not exactly one — the parentage a box booted with.
+func boxNodeParent(t *testing.T, fd *fakeData) string {
+	t.Helper()
+	parent, found := "", 0
+	for p, b := range fd.files {
+		if !strings.HasSuffix(p, "/dabs-node.json") {
+			continue
+		}
+		var n map[string]any
+		if json.Unmarshal(b, &n) != nil {
+			continue
+		}
+		if n["kind"] == "box" {
+			found++
+			parent, _ = n["parent"].(string)
+		}
+	}
+	if found != 1 {
+		t.Fatalf("want exactly one box node, found %d (records: %v)", found, fd.files)
+	}
+	return parent
+}
+
+// CONTRACT: booting a box from inside a dabs worktree's OWN checkout (a cwd under
+// ~/.dabs/nodes/<id>/held/worktree) parents the box on that worktree — the same
+// outcome as an explicit --worktree — instead of refusing as "inside dabs's own
+// storage". The checkout is mounted at the `.` source and the parent .git rides
+// along so git works in-box.
+func TestBoxFromWorktreeCheckoutParentsOnWorktree(t *testing.T) {
+	y := `recipes:
+  m:
+    image: img
+    command: [x]
+    sources:
+      - mount: .
+        path: /work
+`
+	fd := baseData()
+	wt := seedWorktreeNode(fd, "wt1", wtState{branch: "dabs/wt1"})
+	fd.cwd = wt                    // the cwd IS the worktree's checkout
+	fd.exists["/repo/.git"] = true // the parent store exists (a real mount)
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	if err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "m"}); err != nil {
+		t.Fatalf("recipe from worktree checkout: %v", err)
+	}
+	// It must NOT fork a fresh worktree, and it must NOT refuse.
+	if len(fd.worktrees) != 0 {
+		t.Fatalf("booting from a checkout forked a worktree, want none: %v", fd.worktrees)
+	}
+	up := onlyUp(t, drv)
+	want := []sandbox.Mount{
+		{Host: wt, Path: "/work"},                // the checkout, mounted live
+		{Host: "/repo/.git", Path: "/repo/.git"}, // parent store, so git works in-box
+	}
+	if len(up.Mounts) != len(want) {
+		t.Fatalf("mounts = %+v, want %+v", up.Mounts, want)
+	}
+	for _, w := range want {
+		found := false
+		for _, got := range up.Mounts {
+			if got == w {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("missing mount %+v; got %+v", w, up.Mounts)
+		}
+	}
+	// A non-keep box is torn down (its node reaped) on exit, so the surviving proof
+	// of parentage is the worktree-up journal: the box was linked to wt1's checkout.
+	if !strings.Contains(string(fd.files[logPath]), `"worktree":"wt1"`) {
+		t.Errorf("box was not journalled against worktree wt1: %s", fd.files[logPath])
+	}
+}
+
+// CONTRACT: the same parenting holds for the `--detach` path — and the box node,
+// which `--detach` keeps, records the worktree as its parent.
+func TestDetachBoxFromWorktreeCheckoutParentsOnWorktree(t *testing.T) {
+	y := `recipes:
+  m:
+    image: img
+    command: [x]
+    sources:
+      - mount: .
+        path: /work
+`
+	fd := baseData()
+	wt := seedWorktreeNode(fd, "wt1", wtState{branch: "dabs/wt1"})
+	fd.cwd = wt
+	fd.exists["/repo/.git"] = true
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	captureStdout(t, func() {
+		if err := newReal(y, fd, drv).Recipe(params.Recipe{Detach: true, Args: []string{"m"}}); err != nil {
+			t.Fatalf("recipe --detach from worktree checkout: %v", err)
+		}
+	})
+	if len(fd.worktrees) != 0 {
+		t.Fatalf("--detach from a checkout forked a worktree: %v", fd.worktrees)
+	}
+	if got := boxNodeParent(t, fd); got != "wt1" {
+		t.Errorf("box parent = %q, want the worktree node wt1", got)
+	}
+}
+
+// CONTRACT: booting a box from a cwd under ~/.dabs that is NOT inside any known
+// worktree's checkout stays refused — there is no node to parent onto.
+func TestBoxFromDabsStoreOutsideAnyWorktreeRefused(t *testing.T) {
+	y := `recipes:
+  m:
+    image: img
+    command: [x]
+    sources:
+      - mount: .
+        path: /work
+`
+	fd := baseData()
+	fd.cwd = "/home/t/.dabs/images" // dabs's storage, but no node owns it
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "m"})
+	if err == nil || !strings.Contains(err.Error(), "dabs's own storage") {
+		t.Fatalf("want a refuse-inside-storage error, got %v", err)
+	}
+	if len(drv.ups) != 0 {
+		t.Errorf("box brought up from unowned dabs storage: %v", drv.ups)
+	}
+}
+
+// CONTRACT: cutting a WORKTREE from inside a worktree's checkout stays refused —
+// a worktree of a checkout is nonsense — and the message names what is refused.
+func TestWorktreeCreationFromCheckoutRefused(t *testing.T) {
+	y := `recipes:
+  cut:
+    sources:
+      - worktree: .
+`
+	fd := baseData()
+	wt := seedWorktreeNode(fd, "wt1", wtState{branch: "dabs/wt1"})
+	fd.cwd = wt
+	err := newRealNoDriver(y, fd).Recipe(params.Recipe{Name: "cut"})
+	if err == nil || !strings.Contains(err.Error(), "dabs's own storage") || !strings.Contains(err.Error(), "worktree") {
+		t.Fatalf("want a refusal naming worktree/storage, got %v", err)
+	}
+	if len(fd.worktrees) != 0 {
+		t.Errorf("cut a worktree from inside a checkout: %v", fd.worktrees)
+	}
+}

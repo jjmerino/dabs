@@ -15,6 +15,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   point, and a loopback TLS/HTTP server the suite process runs stands in where a
   policy needs the tunnel to actually reach an upstream and carry its bytes back.
   There is no online subset — `run_e2e.sh` and CI run the one hermetic suite.
+- **Booting a box from inside a worktree's own checkout now parents it on that
+  worktree.** Provisioning from a cwd under `~/.dabs` was refused outright
+  ("inside dabs's own storage"), on the assumption the cwd would be marked as a
+  new project. Booting a box from a worktree's checkout
+  (`~/.dabs/nodes/<id>/held/worktree`) is now the exception: dabs resolves the
+  owning worktree and attaches the box to it — mounting the checkout and its
+  parent `.git` so git works in-box — exactly as an explicit `--worktree` would.
+  The attach applies only to worktree checkouts; a cwd inside a workdir or
+  scratch node's place stays refused. Making a project, worktree, or scratch
+  node from under `~/.dabs` stays refused, and the refusal message now names
+  what it refuses.
 - **The example Anthropic credential broker swaps tokens only in credential
   positions.** The contrib broker (never shipped with dabs; an example egress
   module) previously replaced its dummy sentinel anywhere in a request body, so

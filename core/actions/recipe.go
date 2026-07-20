@@ -113,6 +113,17 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 	if len(rec.Command) == 0 {
 		return fmt.Errorf("recipe %q: no command to run", name)
 	}
+	// Booting a box from inside a dabs worktree's own checkout (a cwd under
+	// ~/.dabs/nodes/<id>/held/worktree) parents the box on that worktree, exactly
+	// as an explicit --worktree would, instead of trying to mark the checkout as a
+	// new project. An explicit --worktree wins.
+	if worktree == "" {
+		owner, oerr := r.resolveOwningWorktree()
+		if oerr != nil {
+			return oerr
+		}
+		worktree = owner
+	}
 	// A worktree argument resolves by unambiguous prefix, git-style, like every
 	// other name dabs takes — done before bindWorktree rewrites the sources.
 	if worktree != "" {
@@ -407,16 +418,18 @@ func (r Real) spaceVars(id, prefix string) (map[string]string, error) {
 // node's own spaces — so the recipe, not this function, decides what `rm` may
 // reap.
 func (r Real) provisionPlaces(recipeName string, snap *recipe.Recipe, sources []recipe.Source, boundWorktree string) (project, tip string, hosts map[int]string, kept []string, cut []wtCut, err error) {
+	if boundWorktree != "" {
+		// --worktree (given explicitly, or the cwd sitting inside a worktree's own
+		// checkout) binds an EXISTING place; bindWorktree already rewrote the `.`
+		// source to mount it, so there is nothing to provision and the tip is that
+		// node.
+		return "", boundWorktree, map[int]string{}, nil, nil, nil
+	}
 	project, err = r.ensureProjectNode(recipeName)
 	if err != nil {
 		return "", "", nil, nil, nil, err
 	}
 	tip, hosts = project, map[int]string{}
-	if boundWorktree != "" {
-		// --worktree binds an EXISTING place; bindWorktree already rewrote the `.`
-		// source to mount it, so there is nothing to provision and the tip is that node.
-		return project, boundWorktree, hosts, nil, nil, nil
-	}
 	for i, s := range sources {
 		kind, origin, kerr := s.Kind()
 		if kerr != nil {
@@ -1411,12 +1424,15 @@ func (r Real) ensureProjectNode(recipeName string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// dabs's own storage is not a project. Running from inside ~/.dabs would mark
-	// dabs's node store as a project whose chain re-renders its own tree.
+	// dabs's own storage is not a project. Marking a node store dir as a project
+	// would re-render dabs's own tree; a worktree of a worktree's checkout, or a
+	// scratch copy of dabs's storage, is nonsense. Booting a box from inside a
+	// worktree's checkout is the one allowed case, and it never reaches here — the
+	// caller resolves the owning worktree first and binds onto it.
 	if inside, err := r.insideDabsStore(cwd); err != nil {
 		return "", err
 	} else if inside {
-		return "", fmt.Errorf("refusing to provision inside dabs's own storage (%s) — run dabs from your project, not under ~/.dabs", cwd)
+		return "", fmt.Errorf("refusing to make a project, worktree, or scratch node inside dabs's own storage (%s) — run dabs from your project, not under ~/.dabs (booting a box from a worktree's checkout is the exception, and works)", cwd)
 	}
 	nodes, err := r.listNodes()
 	if err != nil {
@@ -1664,6 +1680,44 @@ func pathInside(child, parent string) bool {
 		return false
 	}
 	return rel == "." || !strings.HasPrefix(rel, "..")
+}
+
+// resolveOwningWorktree resolves the cwd to the dabs worktree node whose checkout
+// contains it, or "" when the cwd is not inside any worktree's checkout. A cwd
+// outside dabs's own storage never resolves here — it provisions places the
+// ordinary way; only a cwd under ~/.dabs (e.g. a worktree checkout at
+// ~/.dabs/nodes/<id>/held/worktree) is matched against the worktrees dabs owns.
+// It is what lets a box booted from inside a worktree's checkout parent on that
+// worktree instead of trying to mark the checkout as a new project.
+func (r Real) resolveOwningWorktree() (string, error) {
+	cwd, err := r.data.Getwd()
+	if err != nil {
+		return "", err
+	}
+	inside, err := r.insideDabsStore(cwd)
+	if err != nil {
+		return "", err
+	}
+	if !inside {
+		return "", nil
+	}
+	nodes, err := r.listWorktreeNodes()
+	if err != nil {
+		return "", err
+	}
+	best, bestLen := "", -1
+	for _, n := range nodes {
+		data, derr := r.resolveNodeData(n.ID)
+		if derr != nil {
+			continue
+		}
+		// Checkouts are siblings under nodes/, so at most one contains the cwd;
+		// the longest-match keeps the pick deterministic regardless.
+		if pathInside(cwd, data) && len(data) > bestLen {
+			best, bestLen = n.ID, len(data)
+		}
+	}
+	return best, nil
 }
 
 // insideDabsStore reports whether dir is ~/.dabs or anything under it — dabs's

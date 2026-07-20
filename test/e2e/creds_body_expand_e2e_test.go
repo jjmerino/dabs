@@ -22,7 +22,7 @@
 // `tls: originate` on loopback.
 //
 // The box's proxy env carries NO_PROXY=localhost,127.0.0.1, which would send
-// a loopback URL around the proxy; curl's --noproxy ” clears that exemption,
+// a loopback URL around the proxy; curl's --noproxy '' clears that exemption,
 // so the request goes through the chain and the engine originates to its own
 // loopback — this test's server.
 package e2e

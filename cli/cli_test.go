@@ -46,6 +46,7 @@ type fakeActions struct {
 	recipe  []params.Recipe
 	recipes []params.Recipes
 	cd      []params.Cd
+	info    []params.Info
 	err     error // returned from every action
 }
 
@@ -57,6 +58,7 @@ func (f *fakeActions) Cd(p params.Cd) error                     { f.cd = append(
 func (f *fakeActions) Exec(p params.Exec) error                 { f.exec = append(f.exec, p); return f.err }
 func (f *fakeActions) Rm(p params.Rm) error                     { f.rm = append(f.rm, p); return f.err }
 func (f *fakeActions) Ls(p params.Ls) error                     { f.ls = append(f.ls, p); return f.err }
+func (f *fakeActions) Info(p params.Info) error                 { f.info = append(f.info, p); return f.err }
 func (f *fakeActions) Prune(p params.Prune) error               { f.prune = append(f.prune, p); return f.err }
 func (f *fakeActions) ServersList(params.ServersList) error     { return f.err }
 func (f *fakeActions) ServersAdd(params.ServersAdd) error       { return f.err }
@@ -74,6 +76,15 @@ func TestRunDelegatesToActions(t *testing.T) {
 			want: func(t *testing.T, f *fakeActions) {
 				if len(f.cd) != 1 || f.cd[0] != (params.Cd{Node: "boxy"}) {
 					t.Errorf("got %+v, want one Cd{Node:boxy}", f.cd)
+				}
+			},
+		},
+		{
+			name: "info takes exactly one node",
+			args: []string{"info", "boxy"},
+			want: func(t *testing.T, f *fakeActions) {
+				if len(f.info) != 1 || f.info[0] != (params.Info{Node: "boxy"}) {
+					t.Errorf("got %+v, want one Info{Node:boxy}", f.info)
 				}
 			},
 		},
@@ -306,6 +317,7 @@ func TestCommandHelpShowsOwnUsage(t *testing.T) {
 		{"recipe", []string{"dabs recipe", "--detach", "--worktree"}},
 		{"worktrees", []string{"dabs worktrees", "diff <name>"}},
 		{"recipes", []string{"dabs recipes", "--print"}},
+		{"ls", []string{"dabs ls", "--inactive", "git signal (in STATE):", "staged", "unstaged", "untracked"}},
 	}
 	for _, tt := range tests {
 		for _, flag := range []string{"--help", "-h"} {

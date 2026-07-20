@@ -165,9 +165,11 @@ func nodeIDFrom(t *testing.T, out string) string {
 	return ""
 }
 
-// E2-5: an `ls` box row set WHERE to the instance name only, so a box's on-disk
-// location — its node dir, where volume/held bytes live — was never shown.
-// The row must carry BOTH the box's location AND (still) the instance name.
+// E2-5: a box's `ls` row carries its INSTANCE handle in the INFO column — the
+// copy-pasteable `dabs exec <instance>` shell-in command — so the running box's
+// identity stays visible and directly runnable. Its on-disk location (the node
+// dir where volume/held bytes live) is shown by `dabs info <box>`, not the ls
+// row.
 func TestLsBoxRowShowsLocationE2E(t *testing.T) {
 	clean(t)
 	inst := up(t)
@@ -179,10 +181,15 @@ func TestLsBoxRowShowsLocationE2E(t *testing.T) {
 		}
 	}
 	if boxLine == "" {
-		t.Fatalf("no box row mentioning instance %q in ls (E2-5):\n%s", inst, out)
+		t.Fatalf("no box row carrying the instance handle %q in ls (E2-5):\n%s", inst, out)
 	}
-	if !containsFold(boxLine, ".dabs/nodes/") {
-		t.Fatalf("box row shows no on-disk location (E2-5); row:\n%q\nls:\n%s", boxLine, out)
+	// The on-disk location lives in `dabs info`, which resolves the instance.
+	info, code := run("dabs info " + inst)
+	if code != 0 {
+		t.Fatalf("dabs info <box> failed (%d) (E2-5):\n%s", code, info)
+	}
+	if !containsFold(info, ".dabs/nodes/") {
+		t.Fatalf("dabs info shows no on-disk location (E2-5); info:\n%s", info)
 	}
 }
 

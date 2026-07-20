@@ -103,6 +103,29 @@ func (e Egress) MarshalYAML() (interface{}, error) {
 	return m, nil
 }
 
+// MarshalJSON renders egress symmetrically with UnmarshalJSON, so a resolved
+// recipe round-trips through JSON (it is persisted that way as a node's
+// RecipeSpec snapshot): the scalar mode string for open/none — an unset mode as
+// the `open` it resolves to — or the allow/deny/http_proxy mapping. Never a bare
+// `{}`, which UnmarshalJSON rejects; a default struct marshal would emit exactly
+// that and make the snapshot unreadable.
+func (e Egress) MarshalJSON() ([]byte, error) {
+	if len(e.Allow) == 0 && len(e.Deny) == 0 && len(e.HTTPProxy) == 0 {
+		return json.Marshal(e.resolvedMode())
+	}
+	m := map[string]interface{}{}
+	if len(e.Allow) > 0 {
+		m[egressAllow] = e.Allow
+	}
+	if len(e.Deny) > 0 {
+		m[egressDeny] = e.Deny
+	}
+	if len(e.HTTPProxy) > 0 {
+		m[egressHTTPProxy] = e.HTTPProxy
+	}
+	return json.Marshal(m)
+}
+
 // The mapping egress vocabulary.
 const (
 	egressAllow     = "allow"

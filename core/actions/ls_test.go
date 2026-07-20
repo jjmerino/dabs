@@ -38,9 +38,6 @@ func TestLsStarsWorktreesHoldingWork(t *testing.T) {
 	})
 
 	for _, line := range strings.Split(out, "\n") {
-		if strings.Contains(line, "(location)") {
-			continue // the muted location pseudo-row carries a git signal, not the STATE judgment
-		}
 		switch {
 		case strings.Contains(line, dirtyID) && !strings.Contains(line, "has work"):
 			t.Errorf("worktree holding uncommitted work is not marked `has work`:\n%s", line)
@@ -226,8 +223,8 @@ func TestLsForeignWorktreesDedupeAcrossProjectsOfOneRepo(t *testing.T) {
 		t.Fatalf("want each of the two dirty worktrees exactly once, got %d rows:\n%s", got, out)
 	}
 	// Count the checkout paths only in the (unmanaged) enumeration rows: projwt,
-	// a project node whose dir IS /repo-wt, also carries a (location) row for it,
-	// and that legitimate second mention must not read as a dedupe failure.
+	// a project node whose dir IS /repo-wt, folds that path into its own INFO
+	// cell, and that legitimate second mention must not read as a dedupe failure.
 	unmanagedMentions := func(path string) int {
 		n := 0
 		for _, line := range strings.Split(out, "\n") {
@@ -292,7 +289,8 @@ func TestLsForeignWorktreesGroupAcrossSymlinkedPaths(t *testing.T) {
 	if got := strings.Count(out, "(unmanaged)"); got != 1 {
 		t.Fatalf("symlinked spellings of one repo must group — want one row, got %d:\n%s", got, out)
 	}
-	// The row hangs under the main-checkout project (canonically /vol/repo).
+	// The row hangs under the main-checkout project (canonically /vol/repo),
+	// directly after projreal's line.
 	lines := strings.Split(out, "\n")
 	for i, line := range lines {
 		if strings.Contains(line, "(unmanaged)") {

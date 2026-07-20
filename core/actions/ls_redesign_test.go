@@ -1,8 +1,9 @@
 package actions_test
 
 // Tests for the ls redesign: one flat local tree across every local driver, a
-// driver tag on each box, and a muted (location) row under any project or
-// worktree whose real working place differs from its record dir.
+// driver tag on each box, and the working location folded into each node's own
+// INFO cell (a project/worktree's checkout, a box's shell-in command) with the
+// git signal riding the STATE column.
 
 import (
 	"strings"
@@ -123,10 +124,9 @@ func TestLsServerKeepsSectionLocalStaysFlat(t *testing.T) {
 	}
 }
 
-// CONTRACT: a project whose source repo differs from its record dir gets a
-// muted (location) row — KIND (location), WHERE the repo, STATE the repo's git
-// signal. A dirty repo shows its signal; a clean one on main shows just `main`.
-func TestLsLocationRowProject(t *testing.T) {
+// CONTRACT: a project's row folds its source repo into INFO and the repo's git
+// signal into STATE — no separate line. A dirty repo shows its signal.
+func TestLsProjectInfoAndGitSignal(t *testing.T) {
 	base := "/home/t/.dabs/nodes/"
 	fd := baseData()
 	fd.files = map[string][]byte{
@@ -142,28 +142,31 @@ func TestLsLocationRowProject(t *testing.T) {
 		}
 	})
 
-	loc := lineWith(out, "(location)")
-	if loc == "" {
-		t.Fatalf("no (location) row for a project whose repo differs from its node dir:\n%s", out)
+	if strings.Contains(out, "(location)") {
+		t.Fatalf("the (location) row must be gone — location folds into INFO:\n%s", out)
 	}
-	if !strings.Contains(loc, "/repo") {
-		t.Fatalf("(location) WHERE must be the source repo:\n%s", loc)
+	proj := lineWith(out, "proj")
+	if proj == "" {
+		t.Fatalf("the project must render:\n%s", out)
 	}
-	if !strings.Contains(loc, "main *%") {
-		t.Fatalf("(location) STATE must carry the repo's git signal:\n%s", loc)
+	if !strings.Contains(proj, "/repo") {
+		t.Fatalf("the project INFO must be the source repo:\n%s", proj)
+	}
+	if !strings.Contains(proj, "main *%") {
+		t.Fatalf("the project STATE must carry the repo's git signal:\n%s", proj)
 	}
 	// The `%` untracked glyph must reach the terminal literally, not be read as a
-	// format verb: the STATE cell renders the signal as data (`%s`), never as a
-	// format string. A `Contains("main *%")` check alone would pass a mangled
+	// format verb: STATE renders the signal as data (`%s`), never as a format
+	// string. A `Contains("main *%")` check alone would pass a mangled
 	// `main *%!(NOVERB)`, so guard the tail explicitly.
-	if strings.Contains(loc, "NOVERB") || strings.Contains(loc, "%!") {
-		t.Fatalf("git signal was rendered as a format string (%% treated as a verb):\n%s", loc)
+	if strings.Contains(proj, "NOVERB") || strings.Contains(proj, "%!") {
+		t.Fatalf("git signal was rendered as a format string (%% treated as a verb):\n%s", proj)
 	}
 }
 
 // CONTRACT: a clean repo on main with no divergence reduces to just the branch
-// name in the (location) STATE — no glyphs when there is nothing to say.
-func TestLsLocationRowCleanRepo(t *testing.T) {
+// name in the project STATE — no glyphs when there is nothing to say.
+func TestLsProjectCleanRepoStateIsBranchOnly(t *testing.T) {
 	base := "/home/t/.dabs/nodes/"
 	fd := baseData()
 	fd.files = map[string][]byte{
@@ -178,22 +181,52 @@ func TestLsLocationRowCleanRepo(t *testing.T) {
 			t.Fatalf("Ls: %v", err)
 		}
 	})
-	loc := lineWith(out, "(location)")
-	if loc == "" || !strings.Contains(loc, "main") {
-		t.Fatalf("clean repo (location) row must read just `main`:\n%s", out)
+	proj := lineWith(out, "proj")
+	if proj == "" || !strings.Contains(proj, "main") {
+		t.Fatalf("clean repo project STATE must read just `main`:\n%s", out)
 	}
-	if strings.ContainsAny(loc, "*+%") {
-		t.Fatalf("clean repo (location) must carry no dirty glyphs:\n%s", loc)
+	if strings.ContainsAny(proj, "*+%") {
+		t.Fatalf("clean repo project must carry no dirty glyphs:\n%s", proj)
 	}
 }
 
-// CONTRACT: a worktree gets a (location) row pointing at its checkout, and its
-// STATE is the checkout's git signal. A checkout that is not a git repo (no
-// prompt) leaves the STATE blank rather than guessing.
-func TestLsLocationRowWorktreeNonGit(t *testing.T) {
+// CONTRACT: a worktree's row folds its checkout into INFO, and its STATE is the
+// node judgment followed by the checkout's git signal in parens. A dirty
+// checkout on a branch shows `has work (branch *)`.
+func TestLsWorktreeInfoAndStateCarrySignal(t *testing.T) {
+	fd := baseData()
+	checkout := seedWorktreeNode(fd, "wt-abcd", wtState{branch: "dabs/wt-abcd", dirty: true})
+	spaceHeld(fd, "wt-abcd", "held") // active so it lists
+	fd.prompts = map[string]data.GitPrompt{checkout: {Branch: "dabs/wt-abcd", Unstaged: true}}
+
+	out := captureStdout(t, func() {
+		if err := newReal("", fd, &fakeDriver{}).Ls(params.Ls{}); err != nil {
+			t.Fatalf("Ls: %v", err)
+		}
+	})
+	if strings.Contains(out, "(location)") {
+		t.Fatalf("the (location) row must be gone:\n%s", out)
+	}
+	wt := lineWith(out, "wt-abcd")
+	if wt == "" {
+		t.Fatalf("the worktree must render:\n%s", out)
+	}
+	if !strings.Contains(wt, "/wt-abcd/data") {
+		t.Fatalf("the worktree INFO must be the checkout path:\n%s", wt)
+	}
+	// STATE is the judgment plus the git signal, parenthesized. Missing the
+	// parens would mean the composition regressed to state-only.
+	if !strings.Contains(wt, "has work (dabs/wt-abcd *)") {
+		t.Fatalf("the worktree STATE must be `has work (dabs/wt-abcd *)`:\n%s", wt)
+	}
+}
+
+// CONTRACT: a worktree whose checkout is not a git repo (no prompt) shows the
+// node judgment alone in STATE — no empty parens.
+func TestLsWorktreeStateNoSignalNoParens(t *testing.T) {
 	fd := baseData()
 	seedWorktreeNode(fd, "wt-abcd", wtState{branch: "dabs/wt-abcd"})
-	spaceHeld(fd, "wt-abcd", "held") // active so it lists
+	spaceHeld(fd, "wt-abcd", "held")
 	// fd.prompts is nil: GitPromptStatus errors, like a non-git checkout.
 
 	out := captureStdout(t, func() {
@@ -201,18 +234,19 @@ func TestLsLocationRowWorktreeNonGit(t *testing.T) {
 			t.Fatalf("Ls: %v", err)
 		}
 	})
-	loc := lineWith(out, "(location)")
-	if loc == "" {
-		t.Fatalf("a worktree must get a (location) row for its checkout:\n%s", out)
+	wt := lineWith(out, "wt-abcd")
+	if wt == "" || !strings.Contains(wt, "no-diff") {
+		t.Fatalf("a clean non-git worktree STATE must read `no-diff`:\n%s", out)
 	}
-	if !strings.Contains(loc, "/wt-abcd/data") {
-		t.Fatalf("(location) WHERE must be the checkout path:\n%s", loc)
+	if strings.Contains(wt, "(") {
+		t.Fatalf("no git signal means no parens in STATE:\n%s", wt)
 	}
 }
 
-// CONTRACT: a box never gets a (location) row — it has no working place of its
-// own, its place IS its node dir.
-func TestLsNoLocationRowForBox(t *testing.T) {
+// CONTRACT: a box has no (location) row and no working directory — its INFO is
+// the copy-pasteable shell-in command, keyed on its INSTANCE name (the exec
+// handle the running box answers to), while the NODE column shows its node id.
+func TestLsBoxInfoIsShellInCommand(t *testing.T) {
 	fd := baseData()
 	seedBoxNode(fd, "boxy", "inst-b")
 	drv := &fakeDriver{infos: []sandbox.Info{{Name: "inst-b", Status: "running"}}}
@@ -223,5 +257,9 @@ func TestLsNoLocationRowForBox(t *testing.T) {
 	})
 	if strings.Contains(out, "(location)") {
 		t.Fatalf("a lone box must not produce a (location) row:\n%s", out)
+	}
+	box := lineWith(out, "boxy")
+	if !strings.Contains(box, "dabs exec inst-b bash") {
+		t.Fatalf("a box INFO must be the shell-in command carrying the instance:\n%s", box)
 	}
 }

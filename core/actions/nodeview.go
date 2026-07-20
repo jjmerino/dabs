@@ -61,15 +61,18 @@ func (c Cell) String() string { return c.Symbol() }
 // NodeView is a display-ready snapshot of a node and its subtree — a TRUE tree,
 // computed once, so any renderer consumes it with no further fs/driver call.
 type NodeView struct {
-	ID        string
-	Kind      NodeKind
-	KindText  string // overrides the KIND cell when set: a box's driver tag, or a pseudo-row's label
-	Where     string // the node's own dir (~/.dabs/nodes/<id>); a box appends its instance name
-	Volume    Cell   // CellEmpty / CellHolds
+	ID       string
+	Kind     NodeKind
+	KindText string // overrides the KIND cell when set: a box's driver tag, or a pseudo-row's label
+	// Info is the INFO cell — what a node's row says about where it lives and how
+	// to reach it, folded per kind: a project/worktree's working location, a box's
+	// copy-pasteable `dabs exec <id> bash` shell-in command.
+	Info      string
+	Volume    Cell // CellEmpty / CellHolds
 	Held      Cell
 	Tmp       Cell
-	State     Cell   // box: live/gone · worktree: no-diff/has work/unmerged · else CellNA
-	StateText string // overrides the STATE cell when set: a git-prompt signal on a (location) row
+	State     Cell   // box: live/gone · else CellNA (worktree state rides StateText)
+	StateText string // overrides the STATE cell when set: project git signal, or a worktree's `state (git signal)`
 	Children  []*NodeView
 }
 
@@ -142,18 +145,21 @@ func (r Real) viewNode(n Node, state map[string]boxState) *NodeView {
 		Tmp:    r.spaceCell(n.ID, SpaceTmp),
 		State:  CellNA,
 	}
-	// WHERE is ONE uniform path per node: its own dir under ~/.dabs/nodes/<id>
-	// (tilde-abbreviated), whatever the kind — the same path `dabs cd` prints.
-	// The work content sits inside it as subdirectories (held/worktree,
-	// held/work).
-	v.Where = tilde(r.nodeDir(n))
+	// INFO folds a node's working location — the place `dabs cd` resolves — into
+	// its own row, per kind, so no separate line is needed. STATE carries the git
+	// signal alongside (a project's directly, a worktree's inside its parens).
 	switch n.Kind {
 	case KindBox:
-		// The driver INSTANCE name — the running box — rides alongside so
-		// users still see it and rm/exec still resolve it.
-		if n.Instance != "" {
-			v.Where += "  (" + n.Instance + ")"
+		// A box has no working directory; INFO is instead the command to shell
+		// into it, ready to copy-paste. It carries the box's INSTANCE name — the
+		// running box's own identity, distinct from the node id the NODE column
+		// shows — which `dabs exec` resolves just as it resolves a node id. A node
+		// minted before its box came up has no instance yet; fall back to the id.
+		handle := n.Instance
+		if handle == "" {
+			handle = n.ID
 		}
+		v.Info = "dabs exec " + handle + " bash"
 		// A box carries its driver in the KIND column — `box (apple)`,
 		// `box (docker)` — so one flat local tree still says where each box
 		// runs. A box under a server's own section needs no tag: the heading
@@ -166,8 +172,23 @@ func (r Real) viewNode(n Node, state map[string]boxState) *NodeView {
 		} else {
 			v.State = CellGone
 		}
+	case KindProject:
+		// INFO is the project's source repo; STATE is that repo's git signal.
+		v.Info = tilde(r.workingDir(n))
+		v.StateText = r.gitSignal(r.workingDir(n))
 	case KindWorktree:
-		v.State = r.worktreeState(n)
+		// INFO is the checkout; STATE is the node's worktree judgment, followed by
+		// the checkout's git signal in parens (no empty parens when there is none).
+		v.Info = tilde(r.workingDir(n))
+		st := r.worktreeState(n).Symbol()
+		if sig := r.gitSignal(r.workingDir(n)); sig != "" {
+			st += " (" + sig + ")"
+		}
+		v.StateText = st
+	default:
+		// A workdir (or any other kind) has no working place of its own; its INFO
+		// is its own node dir, where its held copy sits.
+		v.Info = tilde(r.nodeDir(n))
 	}
 	return v
 }
@@ -274,7 +295,7 @@ const (
 	ColHeld
 	ColTmp
 	ColState
-	ColWhere
+	ColInfo
 )
 
 // columnTitle is the header label for a column.
@@ -290,14 +311,14 @@ func columnTitle(c Column) string {
 		return "TMP"
 	case ColState:
 		return "STATE"
-	case ColWhere:
-		return "WHERE"
+	case ColInfo:
+		return "INFO"
 	default:
 		return "NODE"
 	}
 }
 
-// sanitizeCell neutralizes an untrusted display value — a node id or a WHERE
+// sanitizeCell neutralizes an untrusted display value — a node id or an INFO
 // path, either of which can carry whatever a filesystem name or a hand-written
 // node record holds. It drops ASCII control bytes (< 0x20 and 0x7F), which
 // removes the ESC that begins any ANSI escape sequence (leaving its inert
@@ -374,8 +395,8 @@ func renderForest(roots []*NodeView, cols []Column, indent int) string {
 				return tui.Muted("%s", sanitizeCell(r.v.StateText))
 			}
 			return styleState(r.v.State)
-		case ColWhere:
-			return tui.Muted("%s", sanitizeCell(r.v.Where))
+		case ColInfo:
+			return tui.Muted("%s", sanitizeCell(r.v.Info))
 		default:
 			return ""
 		}
@@ -424,14 +445,12 @@ func renderForest(roots []*NodeView, cols []Column, indent int) string {
 }
 
 // styleCell colors a space cell: a space that holds files shows the amber ●;
-// an empty space shows nothing; n/a recedes (muted).
+// an empty or absent space shows nothing at all — a blank cell, not a dash.
 func styleCell(c Cell) string {
-	switch c {
-	case CellHolds:
+	if c == CellHolds {
 		return tui.Holds()
-	default:
-		return tui.Muted(c.Symbol())
 	}
+	return ""
 }
 
 // styleState colors a box or worktree state cell: what draws the eye (a live

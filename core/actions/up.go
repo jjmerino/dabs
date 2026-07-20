@@ -38,6 +38,15 @@ func (r Real) upDetached(arg, worktree, nodeName string) error {
 	if boxless {
 		return r.provisionNodes(name, rec, worktree, nodeName)
 	}
+	// Booting a box from inside a dabs worktree's own checkout parents the box on
+	// that worktree, exactly as an explicit --worktree would (which wins).
+	if worktree == "" {
+		owner, oerr := r.cwdOwningWorktree()
+		if oerr != nil {
+			return oerr
+		}
+		worktree = owner
+	}
 	// `--worktree <wt>` binds an existing worktree to the `.` source (mounting its
 	// parent .git so git works in-box) instead of cutting a fresh place.
 	sources := rec.Sources

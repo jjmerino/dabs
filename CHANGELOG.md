@@ -16,6 +16,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with egress left open. `run_e2e.sh` and CI run both phases, so coverage is
   unchanged. Tests that only needed a forward-and-transform round trip now use a
   loopback upstream instead of a public host.
+- **The example Anthropic credential broker swaps tokens only in credential
+  positions.** The contrib broker (never shipped with dabs; an example egress
+  module) previously replaced its dummy sentinel anywhere in a request body, so
+  a token string quoted in message content was also expanded. It now swaps only
+  the `Authorization` header and the `refresh_token` field of the refresh
+  grant, optionally restricted to named `hosts:`; a token string appearing in
+  message content instead passes through unchanged (a real one is rewritten
+  back to the dummy) and is recorded to an optional host-side `alerts:` file.
+>>>>>>> origin/main
 
 ## [0.4.1] - 2026-07-18
 

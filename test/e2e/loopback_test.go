@@ -10,8 +10,8 @@
 // net.connect(port, host) on the plaintext CONNECT host, and it runs in the same
 // process space as this suite, so a box that CONNECTs to 127.0.0.1:<port> lands
 // on the server started here. The box's proxy env exempts 127.0.0.1 via NO_PROXY,
-// so the in-box curl passes --noproxy ” to clear that exemption and route the
-// request through the engine (which then dials this loopback listener).
+// so the in-box curl passes an empty --noproxy value to clear that exemption and
+// route the request through the engine (which then dials this loopback listener).
 package e2e
 
 import (
@@ -31,10 +31,10 @@ import (
 	"time"
 )
 
-// selfSignedLoopback mints a self-signed leaf for 127.0.0.1 (with the IP SAN a
-// client needs to validate a literal-IP host) and returns the TLS certificate
+// mintSelfSignedLoopback mints a self-signed leaf for 127.0.0.1 (with the IP SAN
+// a client needs to validate a literal-IP host) and returns the TLS certificate
 // plus its PEM (which, being self-signed, is also the CA a client trusts).
-func selfSignedLoopback(t *testing.T) (tls.Certificate, []byte) {
+func mintSelfSignedLoopback(t *testing.T) (tls.Certificate, []byte) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -73,7 +73,7 @@ func selfSignedLoopback(t *testing.T) (tls.Certificate, []byte) {
 // can --cacert it), and returns the port. It is torn down at test end.
 func startLoopbackTLS(t *testing.T, caPath, body string) int {
 	t.Helper()
-	cert, caPEM := selfSignedLoopback(t)
+	cert, caPEM := mintSelfSignedLoopback(t)
 	ln, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{cert}})
 	if err != nil {
 		t.Fatal(err)

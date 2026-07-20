@@ -770,8 +770,9 @@ func TestProxyHookExceptionNoLeak(t *testing.T) {
 // egress (GET http://…) against a loopback server this test process runs, so the
 // coverage is hermetic — the engine originates plain HTTP (no upstream TLS) to
 // 127.0.0.1. The box's proxy env exempts 127.0.0.1 via NO_PROXY, so the box curls
-// with --noproxy ” to clear that exemption and route the request through the
-// engine, which then originates to this process's loopback listener. The HTTPS
+// with an empty --noproxy value to clear that exemption and route the request
+// through the engine, which then originates to this process's loopback listener.
+// The HTTPS
 // variant of originate differs only in re-encrypting to the upstream with
 // certificate verification on; its verification, against a trusted upstream cert,
 // is not exercised here (a self-signed loopback cert is not in the engine's trust

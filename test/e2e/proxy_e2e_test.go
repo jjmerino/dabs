@@ -1246,9 +1246,9 @@ echo "unlisted $(curl -s -o /dev/null -w '%{http_code}' -m 12 https://www.dabs.d
 // just a parsed field: a box with `egress: none` has its network cut by the
 // driver, so even a live host is unreachable.
 func TestEgressNoneCutsNetwork(t *testing.T) {
-	// Online subset: in the hermetic box the whole suite already runs with no
-	// egress, so a 000 here would prove nothing. This test earns its meaning only
-	// against a box that otherwise HAS network, which the open-egress box gives.
+	// Online subset. Meaningful only against a box that otherwise has network: in
+	// the hermetic box egress is already cut, so a 000 would not isolate the
+	// driver's cut.
 	online(t)
 	clean(t)
 	dir, err := os.MkdirTemp(home, "egressnone-")

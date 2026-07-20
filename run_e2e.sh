@@ -40,6 +40,6 @@ trap '"$DABS" rm "$hermetic" --yes >/dev/null 2>&1 || true' EXIT
 
 # Phase 2: online. The same image with egress open runs ONLY the online subset.
 # Selecting a named (non-default) recipe needs the box dir as the cwd registry.
+trap '"$DABS" rm "$hermetic" --yes >/dev/null 2>&1 || true; "$DABS" rm "${online:-}" --yes >/dev/null 2>&1 || true' EXIT
 online="$(cd test/e2e/box && "$DABS" recipe e2e-box-online --detach | awk '/^id:/{print $2; exit}')"
-trap '"$DABS" rm "$hermetic" --yes >/dev/null 2>&1 || true; "$DABS" rm "$online" --yes >/dev/null 2>&1 || true' EXIT
 "$DABS" exec "$online" "E2E_ONLINE=1 go test -tags e2e -v -run '$ONLINE_RE' ./test/e2e"

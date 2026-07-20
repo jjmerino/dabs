@@ -22,8 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`~/.dabs/nodes/<id>/held/worktree`) is now the exception: dabs resolves the
   owning worktree and attaches the box to it — mounting the checkout and its
   parent `.git` so git works in-box — exactly as an explicit `--worktree` would.
-  Making a project, worktree, or scratch node from under `~/.dabs` stays
-  refused, and the refusal message now names what it refuses.
+  The attach applies only to worktree checkouts; a cwd inside a workdir or
+  scratch node's place stays refused. Making a project, worktree, or scratch
+  node from under `~/.dabs` stays refused, and the refusal message now names
+  what it refuses.
 - **The example Anthropic credential broker swaps tokens only in credential
   positions.** The contrib broker (never shipped with dabs; an example egress
   module) previously replaced its dummy sentinel anywhere in a request body, so

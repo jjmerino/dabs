@@ -118,7 +118,7 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 	// as an explicit --worktree would, instead of trying to mark the checkout as a
 	// new project. An explicit --worktree wins.
 	if worktree == "" {
-		owner, oerr := r.cwdOwningWorktree()
+		owner, oerr := r.resolveOwningWorktree()
 		if oerr != nil {
 			return oerr
 		}
@@ -422,17 +422,8 @@ func (r Real) provisionPlaces(recipeName string, snap *recipe.Recipe, sources []
 		// --worktree (given explicitly, or the cwd sitting inside a worktree's own
 		// checkout) binds an EXISTING place; bindWorktree already rewrote the `.`
 		// source to mount it, so there is nothing to provision and the tip is that
-		// node. The chain root is the worktree's own project ancestor — resolved
-		// here rather than from the cwd, which is the checkout itself.
-		n, rerr := r.readNode(boundWorktree)
-		if rerr != nil {
-			return "", "", nil, nil, nil, rerr
-		}
-		root := n.Parent
-		if root == "" {
-			root = boundWorktree
-		}
-		return root, boundWorktree, map[int]string{}, nil, nil, nil
+		// node.
+		return "", boundWorktree, map[int]string{}, nil, nil, nil
 	}
 	project, err = r.ensureProjectNode(recipeName)
 	if err != nil {
@@ -1691,14 +1682,14 @@ func pathInside(child, parent string) bool {
 	return rel == "." || !strings.HasPrefix(rel, "..")
 }
 
-// cwdOwningWorktree resolves the cwd to the dabs worktree node whose checkout
+// resolveOwningWorktree resolves the cwd to the dabs worktree node whose checkout
 // contains it, or "" when the cwd is not inside any worktree's checkout. A cwd
 // outside dabs's own storage never resolves here — it provisions places the
 // ordinary way; only a cwd under ~/.dabs (e.g. a worktree checkout at
 // ~/.dabs/nodes/<id>/held/worktree) is matched against the worktrees dabs owns.
 // It is what lets a box booted from inside a worktree's checkout parent on that
 // worktree instead of trying to mark the checkout as a new project.
-func (r Real) cwdOwningWorktree() (string, error) {
+func (r Real) resolveOwningWorktree() (string, error) {
 	cwd, err := r.data.Getwd()
 	if err != nil {
 		return "", err
@@ -1720,8 +1711,8 @@ func (r Real) cwdOwningWorktree() (string, error) {
 		if derr != nil {
 			continue
 		}
-		// The deepest checkout wins, so a worktree nested under another's checkout
-		// resolves to the nearer node rather than an ancestor.
+		// Checkouts are siblings under nodes/, so at most one contains the cwd;
+		// the longest-match keeps the pick deterministic regardless.
 		if pathInside(cwd, data) && len(data) > bestLen {
 			best, bestLen = n.ID, len(data)
 		}

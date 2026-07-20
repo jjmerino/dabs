@@ -41,7 +41,7 @@ func (r Real) upDetached(arg, worktree, nodeName string) error {
 	// Booting a box from inside a dabs worktree's own checkout parents the box on
 	// that worktree, exactly as an explicit --worktree would (which wins).
 	if worktree == "" {
-		owner, oerr := r.cwdOwningWorktree()
+		owner, oerr := r.resolveOwningWorktree()
 		if oerr != nil {
 			return oerr
 		}

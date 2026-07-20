@@ -4,6 +4,11 @@
 # suite's inner boxes boot is staged into the box by the box's own Dockerfile
 # (a `COPY --from` of a stage it authors), so nothing is staged on the host and
 # no docker runs in the box.
+#
+# The suite is hermetic: the `e2e-box` recipe carries `egress: none`, so the box
+# has no internet. Every test proves its property against a faked upstream (a
+# terminal hook, or a loopback server the suite process runs), never the real
+# internet — nothing here can reach it.
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -18,6 +23,8 @@ go build -o "$DABS" .
 # docker.
 "$DABS" build dabseption
 "$DABS" build test/e2e/box
-name="$("$DABS" recipe test/e2e/box --detach | awk '/^id:/{print $2; exit}')"
-trap '"$DABS" rm "$name" --yes >/dev/null 2>&1 || true' EXIT
-"$DABS" exec "$name" -- go test -tags e2e -v ./test/e2e
+
+# The egress: none box runs the whole suite; nothing reaches the internet.
+box="$("$DABS" recipe test/e2e/box --detach | awk '/^id:/{print $2; exit}')"
+trap '"$DABS" rm "$box" --yes >/dev/null 2>&1 || true' EXIT
+"$DABS" exec "$box" -- go test -tags e2e -v ./test/e2e

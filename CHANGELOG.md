@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **The e2e suite runs hermetically.** The box the suite runs in carries
+  `egress: none`, so no test can reach the internet — the suite is proven closed,
+  not merely well-behaved. Every test fakes its upstream instead of dialing a
+  public host: a terminal engine hook answers where a status or redirect is the
+  point, and a loopback TLS/HTTP server the suite process runs stands in where a
+  policy needs the tunnel to actually reach an upstream and carry its bytes back.
+  There is no online subset — `run_e2e.sh` and CI run the one hermetic suite.
 - **The example Anthropic credential broker swaps tokens only in credential
   positions.** The contrib broker (never shipped with dabs; an example egress
   module) previously replaced its dummy sentinel anywhere in a request body, so

@@ -88,5 +88,7 @@ jobs:
           printf '%s' '{"env":["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"],"workdir":"/work"}' \
             > "$HOME/.dabs/images/dabs-e2e/image.json"
 
-      - name: Run the e2e suite
+      - name: Run the e2e suite (hermetic)
+        # The whole suite. Every test fakes its upstream (a terminal hook or a
+        # loopback server the suite process runs), so nothing reaches the internet.
         run: go test -tags e2e -v ./test/e2e

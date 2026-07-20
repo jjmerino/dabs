@@ -18,6 +18,8 @@ package e2e
 import (
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -281,7 +283,10 @@ func instanceLine(t *testing.T, out string) string {
 
 // TestEgressDenyList covers the engine-native CONNECT gate as a denylist: a
 // `deny:` pattern refuses one host (403 at CONNECT → curl 000) while everything
-// else tunnels to the real host. No module, no tls — pure engine policy.
+// else tunnels through to the upstream and carries its bytes back. No module, no
+// tls — pure engine policy. The "everything else" host is a loopback TLS upstream
+// this suite runs, so the allowed tunnel is proven end to end without the
+// internet: the box's marker body is what that upstream served.
 func TestEgressDenyList(t *testing.T) {
 	clean(t)
 	dir, err := os.MkdirTemp(home, "proxypolicy-")
@@ -292,6 +297,8 @@ func TestEgressDenyList(t *testing.T) {
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	const mark = "ALLOWED-UPSTREAM-BODY"
+	port := startLoopbackTLS(t, filepath.Join(outDir, "ca.pem"), mark)
 	yaml := fmt.Sprintf(`default: gate
 recipes:
   gate:
@@ -306,12 +313,15 @@ recipes:
 	if err := os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	script := `#!/bin/sh
+	// blocked.test is denied at CONNECT (000). The loopback upstream is not on the
+	// denylist, so its CONNECT is allowed and the tunnel carries the marker back;
+	// --noproxy '' routes 127.0.0.1 through the engine, --cacert trusts its leaf.
+	script := fmt.Sprintf(`#!/bin/sh
 out=/out/out.txt
 : > "$out"
-echo "blocked $(curl -s -o /dev/null -w '%{http_code}' -m 8 https://blocked.test/ || echo 000)" >> "$out"
-echo "allowed $(curl -s -o /dev/null -w '%{http_code}' -m 12 https://example.com/ || echo 000)" >> "$out"
-`
+echo "blocked $(curl -s -o /dev/null -w '%%{http_code}' -m 8 https://blocked.test/ || echo 000)" >> "$out"
+echo "allowed $(curl -s --noproxy '' --cacert /out/ca.pem -m 12 https://127.0.0.1:%d/ || echo FAIL)" >> "$out"
+`, port)
 	if err := os.WriteFile(filepath.Join(outDir, "run.sh"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -325,13 +335,13 @@ echo "allowed $(curl -s -o /dev/null -w '%{http_code}' -m 12 https://example.com
 		t.Fatalf("script failed (%d):\n%s", code, out)
 	}
 	got := readFile(t, filepath.Join(outDir, "out.txt"))
-	// Deny is hermetic: refused at CONNECT.
+	// Denied at CONNECT.
 	if !strings.Contains(got, "blocked 000") {
 		t.Errorf("blocked.test should be denied at CONNECT (000):\n%s", got)
 	}
-	// Everything else tunnels to the real host (needs network in the e2e box).
-	if !strings.Contains(got, "allowed 200") {
-		t.Errorf("example.com should be allowed and reach the real host (200):\n%s", got)
+	// Allowed: the tunnel reached the upstream and returned its bytes.
+	if !strings.Contains(got, "allowed "+mark) {
+		t.Errorf("an unlisted host should tunnel through to the upstream and return its body:\n%s", got)
 	}
 }
 
@@ -548,20 +558,20 @@ func TestProxyFailedBootLeavesNoTempDir(t *testing.T) {
 }
 
 // TestProxyDoesNotFollowRedirects is the regression for a domain-policy bypass:
-// the engine must NOT follow a 30x server-side on the forwarded leg. Policy gates
-// only the CONNECT host, so following a redirect could bounce the box to a host
-// the policy never saw. The box must receive the 3xx itself (and re-request,
-// which re-runs policy). http://github.com issues a permanent 301; if the engine
-// followed it, the box would see the 200 of the https target instead.
+// the engine must NOT follow a 30x on the forwarded leg. Policy gates only the
+// CONNECT host, so following a redirect could bounce the box to a host the policy
+// never saw. The box must receive the 3xx itself (and re-request, which re-runs
+// policy). A terminal hook answers 301 with a Location; if the engine followed
+// it, the box would never see the 301 status.
 func TestProxyDoesNotFollowRedirects(t *testing.T) {
 	clean(t)
 	dir, err := os.MkdirTemp(home, "proxyredir-")
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A pass-through content hook (no transform) so the request forwards upstream.
+	// A terminal hook that redirects: it answers 301 with a Location header.
 	if err := os.WriteFile(filepath.Join(dir, "fwd.ts"),
-		[]byte(`export default () => ({ onRequest() {} });`), 0o644); err != nil {
+		[]byte(`export default () => ({ onRequest() { return { action: "respond", status: 301, headers: { location: "https://moved.test/" }, body: "" }; } });`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	outDir := filepath.Join(dir, "out")
@@ -569,7 +579,7 @@ func TestProxyDoesNotFollowRedirects(t *testing.T) {
 	yaml := fmt.Sprintf("default: r\nrecipes:\n  r:\n    image: dabs-e2e\n    keep: true\n    egress:\n      http_proxy:\n        - tls: terminate\n        - module: %s/fwd.ts\n        - tls: originate\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
 	os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644)
 	// No -L: the box must see the redirect status itself, not the followed page.
-	os.WriteFile(filepath.Join(outDir, "run.sh"), []byte("#!/bin/sh\ncurl -s -o /dev/null -w 'code=%{http_code}\\n' -m 12 http://github.com/ > /out/resp.txt 2>&1\n"), 0o755)
+	os.WriteFile(filepath.Join(outDir, "run.sh"), []byte("#!/bin/sh\ncurl -s -o /dev/null -w 'code=%{http_code}\\n' -m 12 https://redir.test/ > /out/resp.txt 2>&1\n"), 0o755)
 	out, code := run("dabs recipe " + dir + " --detach")
 	if code != 0 {
 		t.Fatalf("boot failed (%d):\n%s", code, out)
@@ -754,42 +764,34 @@ func TestProxyHookExceptionNoLeak(t *testing.T) {
 	}
 }
 
-// TestProxyOriginateForwards covers the upstream-forwarding path (terminate →
-// module → originate) that terminal chains never exercise: forward to a real
-// host and stream a prefix onto its real response on the way back.
-func TestProxyOriginateForwards(t *testing.T) {
+// TestProxyPlainHTTP covers the forward-and-transform egress path (CONNECT →
+// terminate → module → originate): the engine forwards to the upstream and a hook
+// stream-transforms the response on the way back. It uses plain-HTTP forward-proxy
+// egress (GET http://…) against a loopback server this test process runs, so the
+// coverage is hermetic — the engine originates plain HTTP (no upstream TLS) to
+// 127.0.0.1. The box's proxy env exempts 127.0.0.1 via NO_PROXY, so the box curls
+// with an empty --noproxy value to clear that exemption and route the request
+// through the engine, which then originates to this process's loopback listener.
+// The HTTPS
+// variant of originate differs only in re-encrypting to the upstream with
+// certificate verification on; its verification, against a trusted upstream cert,
+// is not exercised here (a self-signed loopback cert is not in the engine's trust
+// store, and the engine has no test-CA override).
+func TestProxyPlainHTTP(t *testing.T) {
 	clean(t)
-	dir, err := os.MkdirTemp(home, "proxyfwd-")
+
+	const upstreamMark = "LOOPBACK-UPSTREAM-BODY"
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "mod.ts"),
-		[]byte(`export default () => ({ onResponseChunk(chunk, ctx) { if (chunk === null) return; if (!ctx.p) { ctx.p = true; return Buffer.concat([Buffer.from("PROXIED:"), chunk]); } } });`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	outDir := filepath.Join(dir, "out")
-	os.MkdirAll(outDir, 0o755)
-	yaml := fmt.Sprintf("default: f\nrecipes:\n  f:\n    image: dabs-e2e\n    keep: true\n    egress:\n      http_proxy:\n        - tls: terminate\n        - module: %s/mod.ts\n        - tls: originate\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
-	os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644)
-	os.WriteFile(filepath.Join(outDir, "run.sh"), []byte("#!/bin/sh\ncurl -s -m 15 https://example.com/ > /out/body.txt 2>&1\n"), 0o755)
-	out, code := run("dabs recipe " + dir + " --detach")
-	if code != 0 {
-		t.Fatalf("boot failed (%d):\n%s", code, out)
-	}
-	inst := instanceLine(t, out)
-	run("dabs exec " + inst + " -- sh /out/run.sh")
-	body := readFile(t, filepath.Join(outDir, "body.txt"))
-	// The request really went to example.com and came back with the hook's prefix.
-	if !strings.Contains(body, "PROXIED:") || !strings.Contains(body, "Example Domain") {
-		t.Errorf("originate should forward to the real host and let the hook stream-transform the real response:\n%s", body)
-	}
-}
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, upstreamMark)
+	})}
+	go srv.Serve(ln)
+	defer srv.Close()
+	port := ln.Addr().(*net.TCPAddr).Port
 
-// TestProxyPlainHTTP covers plain-HTTP forward-proxy egress (GET http://…): the
-// engine handles non-CONNECT requests, applies the content chain, and forwards
-// to the real host — previously an opaque 501.
-func TestProxyPlainHTTP(t *testing.T) {
-	clean(t)
 	dir, err := os.MkdirTemp(home, "proxyhttp-")
 	if err != nil {
 		t.Fatal(err)
@@ -802,8 +804,10 @@ func TestProxyPlainHTTP(t *testing.T) {
 	os.MkdirAll(outDir, 0o755)
 	yaml := fmt.Sprintf("default: h\nrecipes:\n  h:\n    image: dabs-e2e\n    keep: true\n    egress:\n      http_proxy:\n        - tls: terminate\n        - module: %s/mod.ts\n        - tls: originate\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
 	os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644)
-	// http:// (not https) — the box emits a plain forward-proxy request.
-	os.WriteFile(filepath.Join(outDir, "run.sh"), []byte("#!/bin/sh\ncurl -s -m 15 http://example.com/ -w '\\ncode=%{http_code}\\n' > /out/resp.txt 2>&1\n"), 0o755)
+	// http:// (not https) — the box emits a plain forward-proxy request. --noproxy
+	// '' clears the NO_PROXY exemption for 127.0.0.1 so it routes through the engine.
+	script := fmt.Sprintf("#!/bin/sh\ncurl -s --noproxy '' -m 15 http://127.0.0.1:%d/ -w '\\ncode=%%{http_code}\\n' > /out/resp.txt 2>&1\n", port)
+	os.WriteFile(filepath.Join(outDir, "run.sh"), []byte(script), 0o755)
 	out, code := run("dabs recipe " + dir + " --detach")
 	if code != 0 {
 		t.Fatalf("boot failed (%d):\n%s", code, out)
@@ -811,8 +815,8 @@ func TestProxyPlainHTTP(t *testing.T) {
 	inst := instanceLine(t, out)
 	run("dabs exec " + inst + " -- sh /out/run.sh")
 	resp := readFile(t, filepath.Join(outDir, "resp.txt"))
-	if !strings.Contains(resp, "HTTP-PROXIED:") || !strings.Contains(resp, "Example Domain") {
-		t.Errorf("plain http:// should be proxied+forwarded (not 501); got:\n%s", resp)
+	if !strings.Contains(resp, "HTTP-PROXIED:") || !strings.Contains(resp, upstreamMark) {
+		t.Errorf("plain http:// should be proxied+forwarded to the loopback upstream; got:\n%s", resp)
 	}
 }
 
@@ -880,25 +884,31 @@ func TestProxyBinaryBodyPreserved(t *testing.T) {
 
 // TestProxyDirectIPThroughWindow is the regression for the missing iPAddress SAN:
 // a literal-IP host intercepted by a terminate window needs an IP SAN on the leaf
-// or the client rejects the cert. curl to a real IP over the window must complete
-// the TLS handshake (exit 0), not fail with a cert mismatch.
+// or the client rejects the cert. The property is the WINDOW's leaf, not any
+// particular server, so a terminal hook answers the request and the box connects
+// to a literal IP (127.0.0.1) through the window: the handshake must complete
+// (exit 0), which it only can if the minted leaf carries the IP SAN.
 func TestProxyDirectIPThroughWindow(t *testing.T) {
 	clean(t)
 	dir, err := os.MkdirTemp(home, "proxyip-")
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A terminal hook: the box's TLS is to the engine's leaf, so no upstream is
+	// dialed — the test is purely whether that leaf validates for a literal IP.
 	if err := os.WriteFile(filepath.Join(dir, "pass.ts"),
-		[]byte(`export default () => ({ onRequest() {} });`), 0o644); err != nil {
+		[]byte(`export default () => ({ onRequest() { return { action: "respond", status: 200, body: "ok" }; } });`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	outDir := filepath.Join(dir, "out")
 	os.MkdirAll(outDir, 0o755)
 	yaml := fmt.Sprintf("default: ip\nrecipes:\n  ip:\n    image: dabs-e2e\n    keep: true\n    egress:\n      http_proxy:\n        - tls: terminate\n        - module: %s/pass.ts\n        - tls: originate\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
 	os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644)
-	// 1.1.1.1 serves HTTPS; the status does not matter, only that the leaf's IP
-	// SAN lets the handshake succeed (exit 0, not 60).
-	os.WriteFile(filepath.Join(outDir, "run.sh"), []byte("#!/bin/sh\ncurl -s -o /dev/null -m 15 https://1.1.1.1/; echo \"exit=$?\" > /out/ip.txt\n"), 0o755)
+	// A literal IP over the window; curl trusts the engine's CA (box env), so the
+	// handshake succeeds (exit 0) only if the leaf's IP SAN matches 127.0.0.1.
+	// --noproxy '' routes 127.0.0.1 through the engine rather than the box's own
+	// loopback.
+	os.WriteFile(filepath.Join(outDir, "run.sh"), []byte("#!/bin/sh\ncurl -s --noproxy '' -o /dev/null -m 15 https://127.0.0.1/; echo \"exit=$?\" > /out/ip.txt\n"), 0o755)
 	out, code := run("dabs recipe " + dir + " --detach")
 	if code != 0 {
 		t.Fatalf("boot failed (%d):\n%s", code, out)
@@ -914,7 +924,10 @@ func TestProxyDirectIPThroughWindow(t *testing.T) {
 // TestProxyTerminateDomainsScopeInterception proves `tls: terminate` with a
 // `domains` list decrypts ONLY the listed hosts: a listed host is intercepted by
 // the content hook, while an unlisted host passes through un-decrypted to the
-// real internet (the hook never sees it).
+// upstream (the hook never sees it). The unlisted upstream is a loopback TLS
+// server this suite runs, so the passthrough is proven end to end: the box
+// receives the upstream's own marker, which the hook would have replaced had it
+// been decrypted.
 func TestProxyTerminateDomainsScopeInterception(t *testing.T) {
 	clean(t)
 	dir, err := os.MkdirTemp(home, "proxydomains-")
@@ -927,14 +940,20 @@ func TestProxyTerminateDomainsScopeInterception(t *testing.T) {
 	}
 	outDir := filepath.Join(dir, "out")
 	os.MkdirAll(outDir, 0o755)
+	const mark = "PASSED-THROUGH-UPSTREAM"
+	port := startLoopbackTLS(t, filepath.Join(outDir, "ca.pem"), mark)
 	yaml := fmt.Sprintf("default: d\nrecipes:\n  d:\n    image: dabs-e2e\n    keep: true\n    egress:\n      http_proxy:\n        - tls: terminate\n          domains: [mock.test]\n        - module: %s/hook.ts\n        - tls: originate\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
 	os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644)
-	os.WriteFile(filepath.Join(outDir, "run.sh"), []byte(`#!/bin/sh
+	// listed (mock.test): decrypted → the hook answers INTERCEPTED. unlisted
+	// (127.0.0.1, not in domains): not decrypted → raw-tunneled to the loopback
+	// upstream, whose marker returns; --noproxy '' routes it through the engine,
+	// --cacert trusts the upstream's own leaf.
+	os.WriteFile(filepath.Join(outDir, "run.sh"), []byte(fmt.Sprintf(`#!/bin/sh
 out=/out/out.txt
 : > "$out"
 echo "listed=$(curl -s -m 8 https://mock.test/)" >> "$out"
-echo "unlisted=$(curl -s -m 12 https://example.com/ | grep -o 'Example Domain' | head -1)" >> "$out"
-`), 0o755)
+echo "unlisted=$(curl -s --noproxy '' --cacert /out/ca.pem -m 12 https://127.0.0.1:%d/)" >> "$out"
+`, port)), 0o755)
 	out, code := run("dabs recipe " + dir + " --detach")
 	if code != 0 {
 		t.Fatalf("boot failed (%d):\n%s", code, out)
@@ -946,9 +965,10 @@ echo "unlisted=$(curl -s -m 12 https://example.com/ | grep -o 'Example Domain' |
 	if !strings.Contains(got, "listed=INTERCEPTED") {
 		t.Errorf("a listed domain must be intercepted by the hook:\n%s", got)
 	}
-	// The unlisted host passes through un-decrypted to the real server.
-	if !strings.Contains(got, "unlisted=Example Domain") {
-		t.Errorf("an unlisted domain must pass through to the real host, not the hook:\n%s", got)
+	// The unlisted host passes through un-decrypted to the upstream (its marker,
+	// not the hook's INTERCEPTED).
+	if !strings.Contains(got, "unlisted="+mark) {
+		t.Errorf("an unlisted domain must pass through to the upstream, not the hook:\n%s", got)
 	}
 }
 
@@ -1167,8 +1187,9 @@ curl -s -o /dev/null -m 8 https://other.test/; echo "deny_exit=$?" >> "$out"
 
 // TestEgressAllowlistDefaultDeny is the allowlist shape (the inverse of the
 // denylist): allow ONLY a named host and default-deny everything else. The listed
-// host (example.com) reaches the real internet; the UNLISTED host is a LIVE
-// endpoint, so its 000 proves a real CONNECT refusal, not an unreachable host.
+// host is a loopback TLS upstream this suite runs, so its tunnel is proven end to
+// end (the box gets the upstream's marker); the UNLISTED host is refused at
+// CONNECT (000), proving the default-deny.
 func TestEgressAllowlistDefaultDeny(t *testing.T) {
 	clean(t)
 	dir, err := os.MkdirTemp(home, "proxyallow-")
@@ -1179,16 +1200,19 @@ func TestEgressAllowlistDefaultDeny(t *testing.T) {
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	yaml := fmt.Sprintf("default: allow\nrecipes:\n  allow:\n    image: dabs-e2e\n    keep: true\n    egress:\n      allow: example.com\n    sources:\n      - mount: %s\n        path: /out\n", outDir)
+	const mark = "LISTED-UPSTREAM-BODY"
+	port := startLoopbackTLS(t, filepath.Join(outDir, "ca.pem"), mark)
+	// Allowlist only the loopback upstream; everything else is default-denied.
+	yaml := fmt.Sprintf("default: allow\nrecipes:\n  allow:\n    image: dabs-e2e\n    keep: true\n    egress:\n      allow: 127.0.0.1\n    sources:\n      - mount: %s\n        path: /out\n", outDir)
 	if err := os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(outDir, "run.sh"), []byte(`#!/bin/sh
+	if err := os.WriteFile(filepath.Join(outDir, "run.sh"), []byte(fmt.Sprintf(`#!/bin/sh
 out=/out/out.txt
 : > "$out"
-echo "listed $(curl -s -o /dev/null -w '%{http_code}' -m 12 https://example.com/ || echo 000)" >> "$out"
-echo "unlisted $(curl -s -o /dev/null -w '%{http_code}' -m 12 https://www.dabs.dev/test/hello || echo 000)" >> "$out"
-`), 0o755); err != nil {
+echo "listed $(curl -s --noproxy '' --cacert /out/ca.pem -m 12 https://127.0.0.1:%d/ || echo FAIL)" >> "$out"
+echo "unlisted $(curl -s -o /dev/null -w '%%{http_code}' -m 12 https://other.test/ || echo 000)" >> "$out"
+`, port)), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	out, code := run("dabs recipe " + dir + " --detach")
@@ -1200,9 +1224,9 @@ echo "unlisted $(curl -s -o /dev/null -w '%{http_code}' -m 12 https://www.dabs.d
 		t.Fatalf("script failed (%d):\n%s", code, out)
 	}
 	got := readFile(t, filepath.Join(outDir, "out.txt"))
-	// The one allowed host tunnels through to the live endpoint (content unchecked).
-	if !strings.Contains(got, "listed 200") {
-		t.Errorf("the allowlisted host should reach the real endpoint (200):\n%s", got)
+	// The one allowed host tunnels through to the upstream and returns its body.
+	if !strings.Contains(got, "listed "+mark) {
+		t.Errorf("the allowlisted host should reach the upstream and return its body:\n%s", got)
 	}
 	// Everything not on the list is refused at CONNECT.
 	if !strings.Contains(got, "unlisted 000") {
@@ -1212,9 +1236,22 @@ echo "unlisted $(curl -s -o /dev/null -w '%{http_code}' -m 12 https://www.dabs.d
 
 // TestEgressNoneCutsNetwork proves the closed-egress mode is a real wall, not
 // just a parsed field: a box with `egress: none` has its network cut by the
-// driver, so even a live host is unreachable.
+// driver. The cut is proven against a positive control in the same test — a
+// loopback HTTP server this suite runs, which the suite process reaches — so the
+// box's failure to reach that SAME endpoint isolates the driver's cut, not a dead
+// server.
 func TestEgressNoneCutsNetwork(t *testing.T) {
 	clean(t)
+	const mark = "CONTROL-REACHABLE"
+	port := startLoopbackHTTP(t, mark)
+
+	// Positive control: the suite process reaches the loopback server, so it is up.
+	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/", port))
+	if err != nil {
+		t.Fatalf("positive control: suite process could not reach its own loopback server: %v", err)
+	}
+	resp.Body.Close()
+
 	dir, err := os.MkdirTemp(home, "egressnone-")
 	if err != nil {
 		t.Fatal(err)
@@ -1227,11 +1264,13 @@ func TestEgressNoneCutsNetwork(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(outDir, "run.sh"), []byte(`#!/bin/sh
+	// The none-box cannot reach the SAME loopback endpoint the control just did:
+	// its network is cut, so its own loopback is isolated from the suite process's.
+	if err := os.WriteFile(filepath.Join(outDir, "run.sh"), []byte(fmt.Sprintf(`#!/bin/sh
 out=/out/out.txt
 : > "$out"
-echo "code $(curl -s -o /dev/null -w '%{http_code}' -m 8 https://www.dabs.dev/test/hello || echo 000)" >> "$out"
-`), 0o755); err != nil {
+echo "code $(curl -s -o /dev/null -w '%%{http_code}' -m 8 http://127.0.0.1:%d/ || echo 000)" >> "$out"
+`, port)), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	out, code := run("dabs recipe " + dir + " --detach")
@@ -1241,8 +1280,8 @@ echo "code $(curl -s -o /dev/null -w '%{http_code}' -m 8 https://www.dabs.dev/te
 	inst := instanceLine(t, out)
 	run("dabs exec " + inst + " -- sh /out/run.sh")
 	got := readFile(t, filepath.Join(outDir, "out.txt"))
-	// No network → curl cannot connect → our sentinel 000, never a live 200.
+	// No network → curl cannot reach the control server → our sentinel 000.
 	if !strings.Contains(got, "code 000") {
-		t.Errorf("egress: none must cut the box's network (expected 000):\n%s", got)
+		t.Errorf("egress: none must cut the box's network (expected 000 to the control server):\n%s", got)
 	}
 }

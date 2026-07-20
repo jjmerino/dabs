@@ -24,7 +24,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   grant, optionally restricted to named `hosts:`; a token string appearing in
   message content instead passes through unchanged (a real one is rewritten
   back to the dummy) and is recorded to an optional host-side `alerts:` file.
->>>>>>> origin/main
 
 ## [0.4.1] - 2026-07-18
 

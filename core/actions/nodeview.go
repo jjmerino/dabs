@@ -151,8 +151,15 @@ func (r Real) viewNode(n Node, state map[string]boxState) *NodeView {
 	switch n.Kind {
 	case KindBox:
 		// A box has no working directory; INFO is instead the command to shell
-		// into it, ready to copy-paste. `dabs exec <id>` resolves the box.
-		v.Info = "dabs exec " + n.ID + " bash"
+		// into it, ready to copy-paste. It carries the box's INSTANCE name — the
+		// running box's own identity, distinct from the node id the NODE column
+		// shows — which `dabs exec` resolves just as it resolves a node id. A node
+		// minted before its box came up has no instance yet; fall back to the id.
+		handle := n.Instance
+		if handle == "" {
+			handle = n.ID
+		}
+		v.Info = "dabs exec " + handle + " bash"
 		// A box carries its driver in the KIND column — `box (apple)`,
 		// `box (docker)` — so one flat local tree still says where each box
 		// runs. A box under a server's own section needs no tag: the heading

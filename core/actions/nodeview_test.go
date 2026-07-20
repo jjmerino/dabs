@@ -125,9 +125,10 @@ func TestViewNodesBoxStateFromMapOnly(t *testing.T) {
 	if got := byID["box-gone"].State; got != CellGone {
 		t.Errorf("gone box State = %v, want CellGone", got)
 	}
-	// INFO is a box's copy-pasteable shell-in command, keyed on its NODE id — the
-	// handle `dabs exec` resolves — not on a filesystem path.
-	if w := byID["box-live"].Info; w != "dabs exec box-live bash" {
+	// INFO is a box's copy-pasteable shell-in command, keyed on its INSTANCE name
+	// — the running box's identity, which `dabs exec` resolves — not on a
+	// filesystem path.
+	if w := byID["box-live"].Info; w != "dabs exec inst-live bash" {
 		t.Errorf("box Info = %q, want the shell-in command", w)
 	}
 }

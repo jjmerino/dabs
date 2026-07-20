@@ -244,7 +244,8 @@ func TestLsWorktreeStateNoSignalNoParens(t *testing.T) {
 }
 
 // CONTRACT: a box has no (location) row and no working directory — its INFO is
-// the copy-pasteable shell-in command keyed on its node id.
+// the copy-pasteable shell-in command, keyed on its INSTANCE name (the exec
+// handle the running box answers to), while the NODE column shows its node id.
 func TestLsBoxInfoIsShellInCommand(t *testing.T) {
 	fd := baseData()
 	seedBoxNode(fd, "boxy", "inst-b")
@@ -258,7 +259,7 @@ func TestLsBoxInfoIsShellInCommand(t *testing.T) {
 		t.Fatalf("a lone box must not produce a (location) row:\n%s", out)
 	}
 	box := lineWith(out, "boxy")
-	if !strings.Contains(box, "dabs exec boxy bash") {
-		t.Fatalf("a box INFO must be the shell-in command:\n%s", box)
+	if !strings.Contains(box, "dabs exec inst-b bash") {
+		t.Fatalf("a box INFO must be the shell-in command carrying the instance:\n%s", box)
 	}
 }

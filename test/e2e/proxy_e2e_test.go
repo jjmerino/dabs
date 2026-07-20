@@ -18,6 +18,8 @@ package e2e
 import (
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -283,6 +285,7 @@ func instanceLine(t *testing.T, out string) string {
 // `deny:` pattern refuses one host (403 at CONNECT → curl 000) while everything
 // else tunnels to the real host. No module, no tls — pure engine policy.
 func TestEgressDenyList(t *testing.T) {
+	online(t)
 	clean(t)
 	dir, err := os.MkdirTemp(home, "proxypolicy-")
 	if err != nil {
@@ -554,6 +557,7 @@ func TestProxyFailedBootLeavesNoTempDir(t *testing.T) {
 // which re-runs policy). http://github.com issues a permanent 301; if the engine
 // followed it, the box would see the 200 of the https target instead.
 func TestProxyDoesNotFollowRedirects(t *testing.T) {
+	online(t)
 	clean(t)
 	dir, err := os.MkdirTemp(home, "proxyredir-")
 	if err != nil {
@@ -754,10 +758,16 @@ func TestProxyHookExceptionNoLeak(t *testing.T) {
 	}
 }
 
-// TestProxyOriginateForwards covers the upstream-forwarding path (terminate →
-// module → originate) that terminal chains never exercise: forward to a real
-// host and stream a prefix onto its real response on the way back.
+// TestProxyOriginateForwards covers the HTTPS upstream-forwarding path (CONNECT →
+// terminate → module → originate) that terminal chains never exercise: forward
+// to a real host over a fresh upstream TLS and stream a prefix onto its real
+// response on the way back. The originate leg re-encrypts to the upstream with
+// certificate verification on, so it needs a host whose cert the engine trusts —
+// hence a real host and the online subset. The hermetic side of the
+// forward-and-transform path (plain HTTP, no upstream TLS) lives in
+// TestProxyPlainHTTP against a loopback upstream.
 func TestProxyOriginateForwards(t *testing.T) {
+	online(t)
 	clean(t)
 	dir, err := os.MkdirTemp(home, "proxyfwd-")
 	if err != nil {
@@ -787,9 +797,26 @@ func TestProxyOriginateForwards(t *testing.T) {
 
 // TestProxyPlainHTTP covers plain-HTTP forward-proxy egress (GET http://…): the
 // engine handles non-CONNECT requests, applies the content chain, and forwards
-// to the real host — previously an opaque 501.
+// to the upstream. The upstream is a loopback server this test process runs, so
+// the coverage is hermetic — the engine originates plain HTTP (no upstream TLS)
+// to 127.0.0.1. The box's proxy env exempts 127.0.0.1 via NO_PROXY, so the box
+// curls with --noproxy ” to clear that exemption and route the request through
+// the engine, which then originates to this process's loopback listener.
 func TestProxyPlainHTTP(t *testing.T) {
 	clean(t)
+
+	const upstreamMark = "LOOPBACK-UPSTREAM-BODY"
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, upstreamMark)
+	})}
+	go srv.Serve(ln)
+	defer srv.Close()
+	port := ln.Addr().(*net.TCPAddr).Port
+
 	dir, err := os.MkdirTemp(home, "proxyhttp-")
 	if err != nil {
 		t.Fatal(err)
@@ -802,8 +829,10 @@ func TestProxyPlainHTTP(t *testing.T) {
 	os.MkdirAll(outDir, 0o755)
 	yaml := fmt.Sprintf("default: h\nrecipes:\n  h:\n    image: dabs-e2e\n    keep: true\n    egress:\n      http_proxy:\n        - tls: terminate\n        - module: %s/mod.ts\n        - tls: originate\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
 	os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644)
-	// http:// (not https) — the box emits a plain forward-proxy request.
-	os.WriteFile(filepath.Join(outDir, "run.sh"), []byte("#!/bin/sh\ncurl -s -m 15 http://example.com/ -w '\\ncode=%{http_code}\\n' > /out/resp.txt 2>&1\n"), 0o755)
+	// http:// (not https) — the box emits a plain forward-proxy request. --noproxy
+	// '' clears the NO_PROXY exemption for 127.0.0.1 so it routes through the engine.
+	script := fmt.Sprintf("#!/bin/sh\ncurl -s --noproxy '' -m 15 http://127.0.0.1:%d/ -w '\\ncode=%%{http_code}\\n' > /out/resp.txt 2>&1\n", port)
+	os.WriteFile(filepath.Join(outDir, "run.sh"), []byte(script), 0o755)
 	out, code := run("dabs recipe " + dir + " --detach")
 	if code != 0 {
 		t.Fatalf("boot failed (%d):\n%s", code, out)
@@ -811,8 +840,8 @@ func TestProxyPlainHTTP(t *testing.T) {
 	inst := instanceLine(t, out)
 	run("dabs exec " + inst + " -- sh /out/run.sh")
 	resp := readFile(t, filepath.Join(outDir, "resp.txt"))
-	if !strings.Contains(resp, "HTTP-PROXIED:") || !strings.Contains(resp, "Example Domain") {
-		t.Errorf("plain http:// should be proxied+forwarded (not 501); got:\n%s", resp)
+	if !strings.Contains(resp, "HTTP-PROXIED:") || !strings.Contains(resp, upstreamMark) {
+		t.Errorf("plain http:// should be proxied+forwarded to the loopback upstream; got:\n%s", resp)
 	}
 }
 
@@ -883,6 +912,7 @@ func TestProxyBinaryBodyPreserved(t *testing.T) {
 // or the client rejects the cert. curl to a real IP over the window must complete
 // the TLS handshake (exit 0), not fail with a cert mismatch.
 func TestProxyDirectIPThroughWindow(t *testing.T) {
+	online(t)
 	clean(t)
 	dir, err := os.MkdirTemp(home, "proxyip-")
 	if err != nil {
@@ -916,6 +946,7 @@ func TestProxyDirectIPThroughWindow(t *testing.T) {
 // the content hook, while an unlisted host passes through un-decrypted to the
 // real internet (the hook never sees it).
 func TestProxyTerminateDomainsScopeInterception(t *testing.T) {
+	online(t)
 	clean(t)
 	dir, err := os.MkdirTemp(home, "proxydomains-")
 	if err != nil {
@@ -1170,6 +1201,7 @@ curl -s -o /dev/null -m 8 https://other.test/; echo "deny_exit=$?" >> "$out"
 // host (example.com) reaches the real internet; the UNLISTED host is a LIVE
 // endpoint, so its 000 proves a real CONNECT refusal, not an unreachable host.
 func TestEgressAllowlistDefaultDeny(t *testing.T) {
+	online(t)
 	clean(t)
 	dir, err := os.MkdirTemp(home, "proxyallow-")
 	if err != nil {
@@ -1214,6 +1246,10 @@ echo "unlisted $(curl -s -o /dev/null -w '%{http_code}' -m 12 https://www.dabs.d
 // just a parsed field: a box with `egress: none` has its network cut by the
 // driver, so even a live host is unreachable.
 func TestEgressNoneCutsNetwork(t *testing.T) {
+	// Online subset: in the hermetic box the whole suite already runs with no
+	// egress, so a 000 here would prove nothing. This test earns its meaning only
+	// against a box that otherwise HAS network, which the open-egress box gives.
+	online(t)
 	clean(t)
 	dir, err := os.MkdirTemp(home, "egressnone-")
 	if err != nil {

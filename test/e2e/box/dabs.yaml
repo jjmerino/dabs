@@ -5,11 +5,22 @@
 # manifest): the context is the repo root three levels up, which carries the
 # .e2e-stage the Dockerfile copies in. `target` routes it to the privileged
 # docker driver so the nested bwrap driver works.
+# Two recipes off ONE image. `e2e-box` runs the whole suite hermetically:
+# `egress: none` cuts its network, so no test can reach the internet — the
+# suite's inner boxes see only loopback and the engine. `e2e-box-online` reuses
+# that same built image (bare `image: e2e-box`, which dabs resolves to the
+# `dabs-e2e-box` tag) but leaves egress open, for the E2E_ONLINE subset that
+# genuinely proves real-internet behavior.
 default: e2e-box
 recipes:
   e2e-box:
     image:
       dockerfile: Dockerfile
       context: ../../..
+    target: INTERNAL-docker-privileged-for-nested-sandboxing
+    workdir: /work
+    egress: none
+  e2e-box-online:
+    image: e2e-box
     target: INTERNAL-docker-privileged-for-nested-sandboxing
     workdir: /work

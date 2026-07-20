@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **The e2e suite runs hermetically.** The box the suite runs in now carries
+  `egress: none`, so no test can reach the internet — the suite is proven closed,
+  not merely well-behaved. Tests that genuinely need the real internet (a live
+  200, a real redirect, a real upstream cert) move to an explicit `online`
+  subset gated on `E2E_ONLINE=1`, run in a second box that reuses the same image
+  with egress left open. `run_e2e.sh` and CI run both phases, so coverage is
+  unchanged. Tests that only needed a forward-and-transform round trip now use a
+  loopback upstream instead of a public host.
+
 ## [0.4.1] - 2026-07-18
 
 ### Fixed

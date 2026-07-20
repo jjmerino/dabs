@@ -19,8 +19,10 @@
 // positions above, only on those hosts.
 //
 // Same harness family as the sibling tests: a Go HTTP server in this test
-// process plays every upstream on host loopback; /etc/hosts gives it two
-// names, one the broker is told about and one stranger.
+// process plays the upstream on host loopback (curl's --noproxy ” keeps the
+// loopback URL on the proxy path). The harness takes the broker's `hosts`
+// setting, so the upstream can be the allowed host in one test and a stranger
+// in another — no DNS involved.
 package e2e
 
 import (
@@ -42,12 +44,11 @@ type wireRecord struct {
 	body    string
 }
 
-// positionHarness boots a box whose only way out is the real broker, told that
-// "anthropic.mock" is the one host that may carry credentials. Both
-// "anthropic.mock" and "other.mock" resolve to the same recording upstream.
-// It returns the instance, the upstream's port, and a snapshot getter for
-// every request the upstream received, in order.
-func positionHarness(t *testing.T, realAccess, realRefresh string) (inst string, port int, records func() []wireRecord) {
+// positionHarness boots a box whose only way out is the real broker, with
+// `hosts` as the broker's list of hosts that may carry credentials. It returns
+// the instance, the upstream's port, and a snapshot getter for every request
+// the upstream received, in order.
+func positionHarness(t *testing.T, realAccess, realRefresh, hosts string) (inst string, port int, records func() []wireRecord) {
 	t.Helper()
 	clean(t)
 
@@ -70,13 +71,6 @@ func positionHarness(t *testing.T, realAccess, realRefresh string) (inst string,
 		t.Fatalf("read broker.ts: %v", err)
 	}
 	write(filepath.Join(dir, "broker.ts"), string(brokerSrc), 0o644)
-
-	hosts, err := os.ReadFile("/etc/hosts")
-	if err != nil {
-		t.Fatal(err)
-	}
-	write("/etc/hosts", string(hosts)+"\n127.0.0.1 anthropic.mock\n127.0.0.1 other.mock\n", 0o644)
-	t.Cleanup(func() { os.WriteFile("/etc/hosts", hosts, 0o644) })
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -109,9 +103,9 @@ recipes:
     egress:
       http_proxy:
         - tls: terminate
-        - { module: %s/broker.ts, vault: %s, hosts: [anthropic.mock] }
+        - { module: %s/broker.ts, vault: %s, hosts: [%s] }
         - tls: originate
-`, dir, vault)
+`, dir, vault, hosts)
 	write(filepath.Join(dir, "dabs.yaml"), yaml, 0o644)
 
 	out, code := run("dabs recipe " + dir + " --detach")
@@ -136,7 +130,7 @@ func post(t *testing.T, inst string, url, extraHeader, body string) {
 	if extraHeader != "" {
 		h = fmt.Sprintf("-H '%s' ", extraHeader)
 	}
-	out, code := run(fmt.Sprintf(`dabs exec %s -- curl -s --max-time 15 -X POST %s %s-H 'content-type: application/json' -d '%s'`, inst, url, h, body))
+	out, code := run(fmt.Sprintf(`dabs exec %s -- curl -s --noproxy '' --max-time 15 -X POST %s %s-H 'content-type: application/json' -d '%s'`, inst, url, h, body))
 	if code != 0 {
 		t.Fatalf("request to %s failed (%d):\n%s", url, code, out)
 	}
@@ -165,8 +159,8 @@ func TestHeaderSwapNeedsTheExactHeaderName(t *testing.T) {
 	realAccess := "sk-ant-oat01-E2EREALposZZZZZZZZZZZZZZZZZZZZZZZ"
 	realRefresh := "sk-ant-ort01-E2EREALposrefreshZZZZZZZZZZZZZZZZ"
 
-	inst, port, records := positionHarness(t, realAccess, realRefresh)
-	api := fmt.Sprintf("http://anthropic.mock:%d", port)
+	inst, port, records := positionHarness(t, realAccess, realRefresh, "127.0.0.1")
+	api := fmt.Sprintf("http://127.0.0.1:%d", port)
 
 	post(t, inst, api+"/v1/messages", "Authorization: Bearer "+standIn, `{"messages":[{"role":"user","content":"hello"}]}`)
 	post(t, inst, api+"/v1/messages", "Authorizatio: Bearer "+standIn, `{"messages":[{"role":"user","content":"hello"}]}`)
@@ -194,8 +188,8 @@ func TestBodySwapNeedsTheExactFieldPathAndRequest(t *testing.T) {
 	realAccess := "sk-ant-oat01-E2EREALposZZZZZZZZZZZZZZZZZZZZZZZ"
 	realRefresh := "sk-ant-ort01-E2EREALposrefreshZZZZZZZZZZZZZZZZ"
 
-	inst, port, records := positionHarness(t, realAccess, realRefresh)
-	api := fmt.Sprintf("http://anthropic.mock:%d", port)
+	inst, port, records := positionHarness(t, realAccess, realRefresh, "127.0.0.1")
+	api := fmt.Sprintf("http://127.0.0.1:%d", port)
 
 	post(t, inst, api+"/v1/oauth/token", "", fmt.Sprintf(`{"grant_type":"refresh_token","refresh_token":"%s"}`, standInRefresh))
 	post(t, inst, api+"/v1/oauth/token", "", fmt.Sprintf(`{"grant_type":"refresh_token","refresh_tokens":"%s"}`, standInRefresh))
@@ -228,8 +222,10 @@ func TestSwapNeedsTheNamedHost(t *testing.T) {
 	realAccess := "sk-ant-oat01-E2EREALposZZZZZZZZZZZZZZZZZZZZZZZ"
 	realRefresh := "sk-ant-ort01-E2EREALposrefreshZZZZZZZZZZZZZZZZ"
 
-	inst, port, records := positionHarness(t, realAccess, realRefresh)
-	stranger := fmt.Sprintf("http://other.mock:%d", port)
+	// The broker only trusts a host the upstream is not — every request below
+	// goes to a stranger.
+	inst, port, records := positionHarness(t, realAccess, realRefresh, "api.anthropic.com")
+	stranger := fmt.Sprintf("http://127.0.0.1:%d", port)
 
 	post(t, inst, stranger+"/v1/messages", "Authorization: Bearer "+standIn, `{"messages":[{"role":"user","content":"hello"}]}`)
 	post(t, inst, stranger+"/v1/oauth/token", "", fmt.Sprintf(`{"grant_type":"refresh_token","refresh_token":"%s"}`, standInRefresh))

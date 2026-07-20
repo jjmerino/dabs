@@ -21,10 +21,10 @@
 // plain http:// to a Go HTTP server in this test process, reached through
 // `tls: originate` on loopback.
 //
-// The box's proxy env carries NO_PROXY=localhost,127.0.0.1, so the upstream
-// must wear a hostname or curl would bypass the proxy entirely. The engine
-// resolves upstream hosts on ITS side, so an /etc/hosts entry here (the suite
-// runs as root in its own disposable box) points the name at loopback.
+// The box's proxy env carries NO_PROXY=localhost,127.0.0.1, which would send
+// a loopback URL around the proxy; curl's --noproxy ” clears that exemption,
+// so the request goes through the chain and the engine originates to its own
+// loopback — this test's server.
 package e2e
 
 import (
@@ -72,15 +72,6 @@ func TestCredentialBodySwapScope(t *testing.T) {
 	}
 	write(filepath.Join(dir, "broker.ts"), string(brokerSrc), 0o644)
 
-	// The engine resolves "anthropic.mock" via the host's /etc/hosts; restore it
-	// after so later tests see the file they expect.
-	hosts, err := os.ReadFile("/etc/hosts")
-	if err != nil {
-		t.Fatal(err)
-	}
-	write("/etc/hosts", string(hosts)+"\n127.0.0.1 anthropic.mock\n", 0o644)
-	t.Cleanup(func() { os.WriteFile("/etc/hosts", hosts, 0o644) })
-
 	// The upstream: plays Anthropic on host loopback, recording what each
 	// request looked like AFTER the broker — per path, the Authorization it
 	// carried and the body it delivered.
@@ -125,7 +116,7 @@ recipes:
 	// the agent cat'd its creds file last turn and Claude Code now sends the
 	// whole conversation as the request body.
 	transcript := fmt.Sprintf(`{"model":"claude","messages":[{"role":"user","content":"my creds file says %s"}]}`, dummyAccess)
-	msg, code := run(fmt.Sprintf(`dabs exec %s -- curl -s --max-time 15 -X POST http://anthropic.mock:%d/v1/messages -H 'authorization: Bearer %s' -H 'content-type: application/json' -d '%s'`, inst, port, dummyAccess, transcript))
+	msg, code := run(fmt.Sprintf(`dabs exec %s -- curl -s --noproxy '' --max-time 15 -X POST http://127.0.0.1:%d/v1/messages -H 'authorization: Bearer %s' -H 'content-type: application/json' -d '%s'`, inst, port, dummyAccess, transcript))
 	if code != 0 {
 		t.Fatalf("message request failed (%d):\n%s", code, msg)
 	}
@@ -133,7 +124,7 @@ recipes:
 	// 2) The refresh grant: the ONE request whose body legitimately carries a
 	// credential — the dummy refresh token, which must reach Anthropic real.
 	refreshBody := fmt.Sprintf(`{"grant_type":"refresh_token","refresh_token":"%s"}`, dummyRefresh)
-	refresh, code := run(fmt.Sprintf(`dabs exec %s -- curl -s --max-time 15 -X POST http://anthropic.mock:%d/v1/oauth/token -H 'content-type: application/json' -d '%s'`, inst, port, refreshBody))
+	refresh, code := run(fmt.Sprintf(`dabs exec %s -- curl -s --noproxy '' --max-time 15 -X POST http://127.0.0.1:%d/v1/oauth/token -H 'content-type: application/json' -d '%s'`, inst, port, refreshBody))
 	if code != 0 {
 		t.Fatalf("refresh request failed (%d):\n%s", code, refresh)
 	}

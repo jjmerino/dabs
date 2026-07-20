@@ -16,8 +16,8 @@
 // path) and appends one line per suspicious request, naming the request path.
 //
 // Same harness as creds_body_expand_e2e_test.go: a Go HTTP server in this test
-// process plays the API on host loopback, wearing a hostname via /etc/hosts
-// because the box's proxy settings exempt plain loopback addresses.
+// process plays the API on host loopback; curl's --noproxy ” keeps the
+// loopback URL on the proxy path despite the box's NO_PROXY exemption.
 package e2e
 
 import (
@@ -60,13 +60,6 @@ func guardHarness(t *testing.T, realAccess, realRefresh string) (inst string, po
 		t.Fatalf("read broker.ts: %v", err)
 	}
 	write(filepath.Join(dir, "broker.ts"), string(brokerSrc), 0o644)
-
-	hosts, err := os.ReadFile("/etc/hosts")
-	if err != nil {
-		t.Fatal(err)
-	}
-	write("/etc/hosts", string(hosts)+"\n127.0.0.1 anthropic.mock\n", 0o644)
-	t.Cleanup(func() { os.WriteFile("/etc/hosts", hosts, 0o644) })
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -125,7 +118,7 @@ func TestStandInTokenInMessageTextRaisesAlarm(t *testing.T) {
 	inst, port, alerts, saw := guardHarness(t, realAccess, realRefresh)
 
 	body := fmt.Sprintf(`{"model":"claude","messages":[{"role":"user","content":"my creds file says %s"}]}`, standIn)
-	resp, code := run(fmt.Sprintf(`dabs exec %s -- curl -s --max-time 15 -X POST http://anthropic.mock:%d/v1/messages -H 'authorization: Bearer %s' -H 'content-type: application/json' -d '%s'`, inst, port, standIn, body))
+	resp, code := run(fmt.Sprintf(`dabs exec %s -- curl -s --noproxy '' --max-time 15 -X POST http://127.0.0.1:%d/v1/messages -H 'authorization: Bearer %s' -H 'content-type: application/json' -d '%s'`, inst, port, standIn, body))
 	if code != 0 {
 		t.Fatalf("message request failed (%d):\n%s", code, resp)
 	}
@@ -162,7 +155,7 @@ func TestRealTokenNeverLeavesInMessageText(t *testing.T) {
 	inst, port, alerts, saw := guardHarness(t, realAccess, realRefresh)
 
 	body := fmt.Sprintf(`{"model":"claude","messages":[{"role":"user","content":"please remember this for me: %s"}]}`, realAccess)
-	resp, code := run(fmt.Sprintf(`dabs exec %s -- curl -s --max-time 15 -X POST http://anthropic.mock:%d/v1/messages -H 'authorization: Bearer %s' -H 'content-type: application/json' -d '%s'`, inst, port, standIn, body))
+	resp, code := run(fmt.Sprintf(`dabs exec %s -- curl -s --noproxy '' --max-time 15 -X POST http://127.0.0.1:%d/v1/messages -H 'authorization: Bearer %s' -H 'content-type: application/json' -d '%s'`, inst, port, standIn, body))
 	if code != 0 {
 		t.Fatalf("message request failed (%d):\n%s", code, resp)
 	}

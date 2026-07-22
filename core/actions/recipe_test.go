@@ -1353,6 +1353,102 @@ func TestRecipeDotDotBoxPathIsRejected(t *testing.T) {
 	}
 }
 
+// CONTRACT: $NODE_ID in a box path expands to the box's own id, so a mount can
+// auto-namespace its in-box destination per box (path: /$NODE_ID → /<id>). With
+// --name the id is deterministic, so the mount lands at exactly that name.
+func TestRecipeNodeIDExpandsInBoxPath(t *testing.T) {
+	y := `recipes:
+  m:
+    image: img
+    command: [x]
+    sources:
+      - mount: /d
+        path: /$NODE_ID
+`
+	fd := baseData()
+	fd.exists["/d"] = true
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	if err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "m", NodeName: "mybox"}); err != nil {
+		t.Fatalf("Recipe: %v", err)
+	}
+	up := onlyUp(t, drv)
+	if len(up.Mounts) != 1 || up.Mounts[0] != (sandbox.Mount{Host: "/d", Path: "/mybox"}) {
+		t.Errorf("Up mounts = %+v, want one {/d -> /mybox}", up.Mounts)
+	}
+}
+
+// CONTRACT: without --name the id is minted (<recipe>-<hex>), and $NODE_ID
+// resolves to THAT id — never left as the literal token, which would make a box
+// directory named "$NODE_ID".
+func TestRecipeNodeIDExpandsToMintedID(t *testing.T) {
+	y := `recipes:
+  m:
+    image: img
+    command: [x]
+    sources:
+      - mount: /d
+        path: /$NODE_ID
+`
+	fd := baseData()
+	fd.exists["/d"] = true
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	if err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "m"}); err != nil {
+		t.Fatalf("Recipe: %v", err)
+	}
+	got := onlyUp(t, drv).Mounts[0].Path
+	if !strings.HasPrefix(got, "/m-") || strings.Contains(got, "$") {
+		t.Errorf("box path = %q, want /m-<hex> (minted id), never the literal token", got)
+	}
+}
+
+// CONTRACT: $NODE_ID is a convenience, not an escape hatch — a `..` sitting
+// beside it in the box path is still caught, so /$NODE_ID/../../etc cannot
+// smuggle a mount out of the box's workdir. (Node ids themselves are slugs, so
+// the id can never contribute a `..` of its own.)
+func TestRecipeNodeIDCannotSmuggleTraversal(t *testing.T) {
+	y := `recipes:
+  m:
+    image: img
+    command: [x]
+    sources:
+      - mount: /d
+        path: /$NODE_ID/../../etc/injected
+`
+	fd := baseData()
+	fd.exists["/d"] = true
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "m", NodeName: "mybox"})
+	if err == nil || !strings.Contains(err.Error(), "..") {
+		t.Fatalf("want a `..` box-path error, got %v", err)
+	}
+	if len(drv.ups) != 0 {
+		t.Errorf("box brought up despite an escaping box path: %v", drv.ups)
+	}
+}
+
+// CONTRACT: only $NODE_ID resolves in a box path — a space var mixed in beside it
+// is still rejected, so $NODE_ID does not open the door to the others.
+func TestRecipeNodeIDDoesNotAdmitOtherVars(t *testing.T) {
+	y := `recipes:
+  m:
+    image: img
+    command: [x]
+    sources:
+      - mount: /d
+        path: /$NODE_ID/$NODE_VOLUME
+`
+	fd := baseData()
+	fd.exists["/d"] = true
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "m", NodeName: "mybox"})
+	if err == nil || !strings.Contains(err.Error(), "variable") {
+		t.Fatalf("want a box-path variable error, got %v", err)
+	}
+	if len(drv.ups) != 0 {
+		t.Errorf("box brought up despite a space var in the box path: %v", drv.ups)
+	}
+}
+
 // CONTRACT: a RELATIVE source origin that climbs above the project with `..` is
 // rejected — dabs cannot track or reap a place outside its namespace. Absolute
 // origins remain an explicit user choice and are left alone.

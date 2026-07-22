@@ -626,7 +626,11 @@ type Source struct {
 	// spaces ($NODE_HELD/worktree), so the recipe says where the bytes land
 	// and what `rm` will do to them, rather than dabs knowing in secret.
 	At   string `json:"at,omitempty" yaml:"at,omitempty"`
-	Path string `json:"path" yaml:"path"`                 // absolute destination inside the box
+	// Path is the absolute destination inside the box. It may name $NODE_ID —
+	// the box's own id — so a mount can auto-namespace per box (path: /$NODE_ID);
+	// no other variable resolves in a box path (space vars name host origins).
+	Path string `json:"path" yaml:"path"`
+
 	RO   bool   `json:"ro,omitempty" yaml:"ro,omitempty"` // for mount: read-only
 }
 

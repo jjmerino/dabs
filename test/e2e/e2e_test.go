@@ -1486,6 +1486,41 @@ func TestUpFromDabsYamlPath(t *testing.T) {
 	wantContains(t, out, "recipe booted:")
 }
 
+// TestRecipeNodeIDExpandsInWorkdirInBox proves the $NODE_ID workdir expansion end
+// to end in a REAL box: a recipe with `workdir: /$NODE_ID` (and a mount landing at
+// the same `/$NODE_ID` so the cwd exists to be entered) booted under `--name nidwd`
+// makes the box's cwd `/nidwd` — the interpolated id — not the literal `/$NODE_ID`.
+// This is the motivating case: box name → the agent's in-box cwd.
+func TestRecipeNodeIDExpandsInWorkdirInBox(t *testing.T) {
+	const name = "nidwd"
+	run("dabs rm " + name + " --yes")
+	t.Cleanup(func() { run("dabs rm " + name + " --yes") })
+
+	dir := filepath.Join(home, "e2e-nodeid-workdir")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The mount's in-box destination is $NODE_ID too, so the workdir the box is
+	// told to enter (/nidwd) exists — proving expansion is consistent across both
+	// fields, not two independent code paths.
+	yaml := "default: nidwd\nrecipes:\n  nidwd:\n    image: " + sandboxName + "\n" +
+		"    workdir: /$NODE_ID\n    sources:\n      - mount: .\n        path: /$NODE_ID\n"
+	if err := os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, code := runIn(dir, "dabs recipe "+dir+" --name "+name+" --detach")
+	wantExit(t, 0, code)
+
+	// The in-box cwd is the interpolated id, never the literal token.
+	out, code = run("dabs exec " + name + " -- pwd")
+	wantExit(t, 0, code)
+	if got := strings.TrimSpace(out); got != "/"+name {
+		t.Fatalf("in-box pwd = %q, want %q (workdir: /$NODE_ID must expand to the box id, not stay literal)", got, "/"+name)
+	}
+	wantNotContains(t, out, "$NODE_ID")
+}
+
 // TestRecipesPrintShowsFormat: `dabs recipes --print` dumps the authoring YAML,
 // so the format is discoverable without reverse-engineering the binary.
 func TestRecipesPrintShowsFormat(t *testing.T) {

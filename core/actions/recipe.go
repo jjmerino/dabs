@@ -624,18 +624,25 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID, tip string, rec re
 	var mounts []sandbox.Mount
 	for i, s := range sources {
 		rs := resolved[i]
+		// The destination is where the source lands INSIDE the box. $NODE_ID here
+		// resolves to this box's id, so a recipe can name the box's own workdir
+		// (path: /$NODE_ID) — auto-namespacing per box.
+		boxPath, err := expandBoxPath(s.Path, boxID)
+		if err != nil {
+			return "", fmt.Errorf("recipe %q: %w", recipeName, err)
+		}
 		switch rs.kind {
 		case "mount", "worktree", "copy":
 			// worktree and copy own a directory on the host; a `.` mount IS the host
 			// directory. All three are one thing to a driver: a live bind.
-			mounts = append(mounts, sandbox.Mount{Host: rs.origin, Path: s.Path, RO: s.RO})
+			mounts = append(mounts, sandbox.Mount{Host: rs.origin, Path: boxPath, RO: s.RO})
 		case "mkmount":
 			// The origin is the recipe's to name and dabs's to create — 0700,
 			// because this is where a harness puts a credential.
 			if err := r.data.MkdirAll(rs.origin, 0o700); err != nil {
 				return "", fmt.Errorf("recipe %q: mkmount %s: %w", recipeName, rs.origin, err)
 			}
-			mounts = append(mounts, sandbox.Mount{Host: rs.origin, Path: s.Path, RO: s.RO})
+			mounts = append(mounts, sandbox.Mount{Host: rs.origin, Path: boxPath, RO: s.RO})
 		}
 	}
 	// A non-empty proxies chain makes the engine's socket the box's only way out:
@@ -675,7 +682,13 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID, tip string, rec re
 	}
 	sortMountsByDepth(mounts)
 
-	workdir := rec.Workdir
+	// $NODE_ID resolves in the workdir just as it does in a mount destination, so
+	// a recipe can point the box's cwd at its own per-box directory (workdir:
+	// /$NODE_ID). expandBoxPath leaves a $-free workdir (including "") untouched.
+	workdir, err := expandBoxPath(rec.Workdir, boxID)
+	if err != nil {
+		return "", fmt.Errorf("recipe %q: %w", recipeName, err)
+	}
 	if workdir == "" {
 		workdir = "/work"
 	}
@@ -1292,6 +1305,46 @@ func isHostRelative(p string) bool {
 // envRef matches $VAR and ${VAR} references in a path.
 var envRef = regexp.MustCompile(`\$\{?(\w+)\}?`)
 
+// nodeIDRef matches the one variable a box path may name: $NODE_ID / ${NODE_ID},
+// which expands to the id of the box being provisioned. The bare form ends on a
+// word boundary so $NODE_IDX (a different, unknown name) is not mistaken for it.
+var nodeIDRef = regexp.MustCompile(`\$\{NODE_ID\}|\$NODE_ID\b`)
+
+// boxIDSlug is the shape a node id must have to become part of a container path:
+// the same alphabet mintNodeID and validateNodeName produce (alphanumeric start,
+// then letters/digits/dot/underscore/dash). It carries no `/` and no `..`
+// segment, so substituting it into a box path cannot move the mount out of the
+// directory the path names.
+var boxIDSlug = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+// nonNodeIDVar returns the first $VAR reference in a box path that is NOT
+// $NODE_ID, or "" when the only variable named (if any) is $NODE_ID. It lets
+// checkBoxPath admit $NODE_ID while still refusing every space var.
+func nonNodeIDVar(p string) string {
+	return envRef.FindString(nodeIDRef.ReplaceAllString(p, ""))
+}
+
+// expandBoxPath resolves $NODE_ID in a mount's in-box destination path — the one
+// variable a box path may name. It turns the box's own id into the path it mounts
+// at, so a recipe can auto-namespace per box (path: /$NODE_ID). The id becomes
+// part of a container path, so it is validated as a slug first: a value carrying
+// `/` or `..` (which a well-formed id never does) is refused rather than allowed
+// to move the mount. Any other $VAR that survives substitution is an error —
+// space vars name host origins, not box paths.
+func expandBoxPath(boxPath, boxID string) (string, error) {
+	if !strings.Contains(boxPath, "$") {
+		return boxPath, nil
+	}
+	if !boxIDSlug.MatchString(boxID) {
+		return "", fmt.Errorf("box id %q is not a slug — refusing to build box path %q from it", boxID, boxPath)
+	}
+	out := nodeIDRef.ReplaceAllString(boxPath, boxID)
+	if bad := envRef.FindString(out); bad != "" {
+		return "", fmt.Errorf("box path %q uses a variable %s — only $NODE_ID resolves in a box path", boxPath, bad)
+	}
+	return out, nil
+}
+
 // expandPath resolves a leading ~ and any $VAR/${VAR} in a host path. An unset
 // variable is an error, not a silent truncation to a shorter (wrong) path.
 func (r Real) expandPath(p string) (string, error) {
@@ -1645,8 +1698,13 @@ func checkBoxPath(recipeName, kind, origin, boxPath string) error {
 	if boxPath == "" {
 		return nil
 	}
-	if strings.Contains(boxPath, "$") {
-		return fmt.Errorf("recipe %q: box path %q for %s:%s uses a variable — $NODE_*/$PARENT_* resolve in source origins, not box paths", recipeName, boxPath, kind, origin)
+	// A box path may name exactly one variable — $NODE_ID, the box's own id —
+	// so a recipe can auto-namespace a mount per box (path: /$NODE_ID). Every
+	// other variable ($NODE_*/$PARENT_* space roots) names a source ORIGIN on
+	// the host, not a box path, and is refused here: an unexpanded token would
+	// otherwise become a directory literally named "$NODE_VOLUME" at box root.
+	if bad := nonNodeIDVar(boxPath); bad != "" {
+		return fmt.Errorf("recipe %q: box path %q for %s:%s uses a variable %s — only $NODE_ID resolves in a box path ($NODE_*/$PARENT_* resolve in source origins)", recipeName, boxPath, kind, origin, bad)
 	}
 	if !filepath.IsAbs(boxPath) {
 		return fmt.Errorf("recipe %q: box path %q for %s:%s is not absolute — a relative box path is silently rooted at /", recipeName, boxPath, kind, origin)

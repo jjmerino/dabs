@@ -1449,6 +1449,66 @@ func TestRecipeNodeIDDoesNotAdmitOtherVars(t *testing.T) {
 	}
 }
 
+// CONTRACT: $NODE_ID in the recipe workdir expands to the box's own id, so the
+// box's cwd can auto-namespace per box (workdir: /$NODE_ID → /<id>) — the same
+// contract mount paths get, taken raw would leave a literal /$NODE_ID cwd.
+func TestRecipeNodeIDExpandsInWorkdir(t *testing.T) {
+	y := `recipes:
+  m:
+    image: img
+    command: [x]
+    workdir: /$NODE_ID
+`
+	fd := baseData()
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	if err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "m", NodeName: "mybox"}); err != nil {
+		t.Fatalf("Recipe: %v", err)
+	}
+	if got := onlyUp(t, drv).Workdir; got != "/mybox" {
+		t.Errorf("Up workdir = %q, want /mybox", got)
+	}
+}
+
+// CONTRACT: an unset workdir stays the /work default — expandBoxPath leaves a
+// $-free (here empty) workdir untouched, so adding $NODE_ID expansion does not
+// disturb the no-workdir case.
+func TestRecipeEmptyWorkdirKeepsDefault(t *testing.T) {
+	y := `recipes:
+  m:
+    image: img
+    command: [x]
+`
+	fd := baseData()
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	if err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "m", NodeName: "mybox"}); err != nil {
+		t.Fatalf("Recipe: %v", err)
+	}
+	if got := onlyUp(t, drv).Workdir; got != "/work" {
+		t.Errorf("Up workdir = %q, want /work default", got)
+	}
+}
+
+// CONTRACT: only $NODE_ID resolves in the workdir — a space var mixed in is
+// rejected exactly as it is in a box path, so the workdir is not a back door to
+// the other vars.
+func TestRecipeNodeIDWorkdirDoesNotAdmitOtherVars(t *testing.T) {
+	y := `recipes:
+  m:
+    image: img
+    command: [x]
+    workdir: /$NODE_VOLUME
+`
+	fd := baseData()
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "m", NodeName: "mybox"})
+	if err == nil || !strings.Contains(err.Error(), "variable") {
+		t.Fatalf("want a box-path variable error, got %v", err)
+	}
+	if len(drv.ups) != 0 {
+		t.Errorf("box brought up despite a space var in the workdir: %v", drv.ups)
+	}
+}
+
 // CONTRACT: a RELATIVE source origin that climbs above the project with `..` is
 // rejected — dabs cannot track or reap a place outside its namespace. Absolute
 // origins remain an explicit user choice and are left alone.

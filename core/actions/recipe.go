@@ -682,7 +682,13 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID, tip string, rec re
 	}
 	sortMountsByDepth(mounts)
 
-	workdir := rec.Workdir
+	// $NODE_ID resolves in the workdir just as it does in a mount destination, so
+	// a recipe can point the box's cwd at its own per-box directory (workdir:
+	// /$NODE_ID). expandBoxPath leaves a $-free workdir (including "") untouched.
+	workdir, err := expandBoxPath(rec.Workdir, boxID)
+	if err != nil {
+		return "", fmt.Errorf("recipe %q: %w", recipeName, err)
+	}
 	if workdir == "" {
 		workdir = "/work"
 	}

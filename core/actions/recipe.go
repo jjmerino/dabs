@@ -193,7 +193,7 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 		return err
 	}
 
-	instance, err := r.buildBox(drv, name, boxID, tip, rec, image, sources, resolved, cut)
+	instance, err := r.buildBox(drv, name, boxID, tip, rec, image, sources, resolved, cut, extra)
 	if err != nil {
 		return err
 	}
@@ -617,8 +617,10 @@ func (r Real) validateSources(recipeName string, sources []recipe.Source, vars m
 // owns its lifecycle (runRecipe runs the command then tears it down unless the
 // recipe says keep; `--detach` leaves it up). On any failure after the box is up
 // it tears the half-built box down. Shared by runRecipe and the detach path so
-// both mount sources identically.
-func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID, tip string, rec recipe.Recipe, image string, sources []recipe.Source, resolved []resolvedSource, cut []wtCut) (instance string, err error) {
+// both mount sources identically. `extra` is the argv the caller appended to the
+// recipe's command; it is recorded on the box node as provenance of what the box
+// was asked to do, and is empty on the detach path (which runs no command).
+func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID, tip string, rec recipe.Recipe, image string, sources []recipe.Source, resolved []resolvedSource, cut []wtCut, extra []string) (instance string, err error) {
 	// Places are already cut (provisionPlaces): a `.` source's origin is the
 	// directory that place owns. What is left is turning every source into a mount.
 	var mounts []sandbox.Mount
@@ -714,6 +716,7 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID, tip string, rec re
 		RecipeSpec: snapshotRecipe(rec),
 		Created:    stampNow(),
 		Instance:   instance,
+		Extra:      extra,
 	}
 	box.ProxyPID, box.ProxyDir = proxyPID, proxyDir
 	if err := r.writeNode(box); err != nil {

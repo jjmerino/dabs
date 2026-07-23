@@ -47,7 +47,12 @@ type Node struct {
 	// Instance is the driver's name for a box node's sandbox. A node id is minted
 	// before the box is up (its spaces must exist to be mounted), so the two names
 	// are distinct and the node records the link.
-	Instance string        `json:"instance,omitempty"`
+	Instance string `json:"instance,omitempty"`
+	// Extra is the argv appended to the recipe's command when this box was booted
+	// (`dabs recipe <name> <extra…>`) — the provenance of what THIS box was asked
+	// to do, which the recipe snapshot cannot carry. Empty when nothing was
+	// appended, and set only on box nodes.
+	Extra    []string      `json:"extra,omitempty"`
 	Worktree *NodeWorktree `json:"worktree,omitempty"` // kind-specific fields
 	// ProxyPID and ProxyDir track a box's proxy engine — a host-side sidecar
 	// started when the recipe has a `proxies:` chain. They let any later dabs

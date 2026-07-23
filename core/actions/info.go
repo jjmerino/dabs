@@ -57,6 +57,11 @@ func (r Real) Info(p params.Info) error {
 	if n.Instance != "" {
 		rows = append(rows, []string{tui.Muted("instance"), n.Instance})
 	}
+	// The command appended to the recipe at boot — what this box was asked to do,
+	// shown whole (the recipe snapshot carries the recipe's own command, not this).
+	if len(n.Extra) > 0 {
+		rows = append(rows, []string{tui.Muted("appended"), shellJoin(n.Extra)})
+	}
 	b.WriteString(tui.Indent(tui.Rows(nil, rows), 2) + "\n")
 
 	// The three spaces, each with its presence — the SAME predicate `ls` and the

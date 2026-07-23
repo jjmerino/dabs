@@ -57,6 +57,14 @@ func (r Real) Info(p params.Info) error {
 	if n.Instance != "" {
 		rows = append(rows, []string{tui.Muted("instance"), n.Instance})
 	}
+	// The tokens appended to the recipe's command at boot (`dabs recipe <name>
+	// <extra…>`), shown verbatim — what THIS box was asked to do, which the recipe
+	// snapshot below cannot carry. Only the STORED tokens are shown (not joined
+	// with the recipe's own command); whitespace is flattened so a multi-line
+	// prompt token keeps the row intact.
+	if len(n.Extra) > 0 {
+		rows = append(rows, []string{tui.Muted("appended"), collapseSpaces(shellJoin(n.Extra))})
+	}
 	b.WriteString(tui.Indent(tui.Rows(nil, rows), 2) + "\n")
 
 	// The three spaces, each with its presence — the SAME predicate `ls` and the

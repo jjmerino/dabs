@@ -937,6 +937,78 @@ func TestRecipeAppendsCommand(t *testing.T) {
 	}
 }
 
+// CONTRACT: the argv appended to a recipe's command is PERSISTED on the box
+// node (Extra), so the inventory can later say what THIS box was asked to do —
+// the recipe snapshot only carries the recipe's own command, not the appendage.
+func TestRecipeAppendedCommandPersistsOnBoxNode(t *testing.T) {
+	// A KEPT box leaves its node on disk (a non-keep box is torn down and its
+	// record reaped), which is what the inventory later reads.
+	y := `recipes:
+  m:
+    image: img
+    command: [run, it]
+    keep: true
+    sources:
+      - mount: /d
+        path: /work
+`
+	fd := baseData()
+	fd.exists["/d"] = true
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	if err := newReal(y, fd, drv).WithConfirm(yes).
+		Recipe(params.Recipe{Args: []string{"m", "--flag", "x"}}); err != nil {
+		t.Fatalf("Recipe: %v", err)
+	}
+	id := boxNodeIDFrom(t, fd)
+	raw := fd.files[nodeBase+"/"+id+"/dabs-node.json"]
+	var n struct {
+		Extra []string `json:"extra"`
+	}
+	if err := json.Unmarshal(raw, &n); err != nil {
+		t.Fatalf("unmarshal box node: %v", err)
+	}
+	if strings.Join(n.Extra, " ") != "--flag x" {
+		t.Errorf("box node Extra = %v, want [--flag x]", n.Extra)
+	}
+}
+
+// CONTRACT: the appended boot command is PERSISTED on the node but NEVER
+// surfaced in `dabs ls` — the listing shows only the shell-in hint. Exposure is
+// conservative: the command may hold a prompt or a secret, so it is retrievable
+// from the node JSON (and `dabs info`), never leaked into the fleet overview.
+// This locks that: a box node carrying a distinctive Extra token must not print
+// that token anywhere in the ls output.
+func TestLsNeverShowsAppendedCommand(t *testing.T) {
+	fd := baseData()
+	if fd.dirs == nil {
+		fd.dirs = map[string][]string{}
+	}
+	if fd.files == nil {
+		fd.files = map[string][]byte{}
+	}
+	fd.dirs[nodeBase] = append(fd.dirs[nodeBase], "boxy")
+	// A real boot: base command ["claude"], appended tokens carrying a distinctive
+	// marker no other column would ever print.
+	fd.files[nodeBase+"/boxy/dabs-node.json"] = []byte(
+		`{"id":"boxy","kind":"box","instance":"inst-b","recipe":"r","created":"t",` +
+			`"recipeSpec":{"image":{"name":"img"},"command":["claude"]},"extra":["-p","SECRETMARKER"]}`)
+	drv := &fakeDriver{infos: []sandbox.Info{{Name: "inst-b", Status: "running"}}}
+	out := captureStdout(t, func() {
+		if err := newReal("", fd, drv).Ls(params.Ls{}); err != nil {
+			t.Fatalf("Ls: %v", err)
+		}
+	})
+	// The box still lists, with its shell-in hint.
+	box := lineWith(out, "boxy")
+	if !strings.Contains(box, "dabs exec inst-b bash") {
+		t.Fatalf("box INFO lost its shell-in command:\n%s", box)
+	}
+	// But NOTHING of the appended command may appear anywhere in the listing.
+	if strings.Contains(out, "SECRETMARKER") {
+		t.Fatalf("ls leaked the appended command; it must never surface:\n%s", out)
+	}
+}
+
 // CONTRACT: denying the confirmation aborts BEFORE any box is built or run.
 func TestRecipeCommandDenyAborts(t *testing.T) {
 	fd := baseData()

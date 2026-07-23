@@ -94,7 +94,7 @@ func (r Real) upDetached(arg, worktree, nodeName string) error {
 	if err != nil {
 		return err
 	}
-	instance, err := r.buildBox(drv, name, boxID, tip, rec, image, sources, resolved, cut)
+	instance, err := r.buildBox(drv, name, boxID, tip, rec, image, sources, resolved, cut, nil)
 	if err != nil {
 		return err
 	}

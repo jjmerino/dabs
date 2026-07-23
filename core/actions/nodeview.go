@@ -336,6 +336,15 @@ func sanitizeCell(s string) string {
 	return b.String()
 }
 
+// collapseSpaces flattens any run of ASCII whitespace (newline, carriage return,
+// tab, space) to a single space and trims the ends, so a stored command token
+// carrying a newline (a prompt typed with blank lines) renders on ONE table row
+// instead of tearing the row apart. It renders the display string only; the
+// stored node is untouched.
+func collapseSpaces(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
 // renderForest draws view trees in the nested ├─/└─ style, aligning exactly the
 // columns requested. Column widths are computed across the whole forest so deep
 // nodes still line up. The result ends with a trailing newline.

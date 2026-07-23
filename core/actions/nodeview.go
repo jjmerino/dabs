@@ -164,8 +164,8 @@ func (r Real) viewNode(n Node, state map[string]boxState) *NodeView {
 		// <extra…>`) shows that command in INFO too, so the listing answers what the
 		// box was for, not just how to reach it. Truncated to keep the column
 		// scannable; `dabs info` shows it whole.
-		if len(n.Extra) > 0 {
-			v.Info += "  · " + ellipsis(shellJoin(n.Extra), 60)
+		if cmd := n.appendedCommand(); cmd != "" {
+			v.Info += "  · " + ellipsis(collapseSpaces(cmd), 60)
 		}
 		// A box carries its driver in the KIND column — `box (apple)`,
 		// `box (docker)` — so one flat local tree still says where each box
@@ -341,6 +341,15 @@ func sanitizeCell(s string) string {
 		b.WriteRune(r)
 	}
 	return b.String()
+}
+
+// collapseSpaces flattens any run of ASCII whitespace (newline, carriage return,
+// tab, space) to a single space and trims the ends, so a stored command token
+// carrying a newline (a prompt typed with blank lines) renders on ONE table row
+// instead of tearing the row apart. It renders the display string only; the
+// stored node is untouched.
+func collapseSpaces(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }
 
 // renderForest draws view trees in the nested ├─/└─ style, aligning exactly the

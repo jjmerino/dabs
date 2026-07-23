@@ -57,10 +57,12 @@ func (r Real) Info(p params.Info) error {
 	if n.Instance != "" {
 		rows = append(rows, []string{tui.Muted("instance"), n.Instance})
 	}
-	// The command appended to the recipe at boot — what this box was asked to do,
-	// shown whole (the recipe snapshot carries the recipe's own command, not this).
-	if len(n.Extra) > 0 {
-		rows = append(rows, []string{tui.Muted("appended"), shellJoin(n.Extra)})
+	// The FULL command this box was booted with — the recipe's base command plus
+	// the tokens appended at boot — so info answers what the box was asked to do.
+	// Shown whole (only whitespace is flattened, to keep the row intact); the
+	// recipe section below still shows the recipe's own base command.
+	if cmd := n.appendedCommand(); cmd != "" {
+		rows = append(rows, []string{tui.Muted("booted"), collapseSpaces(cmd)})
 	}
 	b.WriteString(tui.Indent(tui.Rows(nil, rows), 2) + "\n")
 

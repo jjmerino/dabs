@@ -160,13 +160,6 @@ func (r Real) viewNode(n Node, state map[string]boxState) *NodeView {
 			handle = n.ID
 		}
 		v.Info = "dabs exec " + handle + " bash"
-		// A box booted with a command appended to its recipe (`dabs recipe <name>
-		// <extra…>`) shows that command in INFO too, so the listing answers what the
-		// box was for, not just how to reach it. Truncated to keep the column
-		// scannable; `dabs info` shows it whole.
-		if cmd := n.appendedCommand(); cmd != "" {
-			v.Info += "  · " + ellipsis(collapseSpaces(cmd), 60)
-		}
 		// A box carries its driver in the KIND column — `box (apple)`,
 		// `box (docker)` — so one flat local tree still says where each box
 		// runs. A box under a server's own section needs no tag: the heading

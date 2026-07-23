@@ -972,13 +972,13 @@ func TestRecipeAppendedCommandPersistsOnBoxNode(t *testing.T) {
 	}
 }
 
-// CONTRACT: a box booted with an appended command shows the FULL effective
-// command in the `dabs ls` INFO cell — the recipe's BASE command
-// (RecipeSpec.Command) plus the appended tokens (Extra), joined — so the listing
-// says what the box was for. The node stores base and appendage SEPARATELY (as a
-// real boot does), so the render must rejoin them; a test that pre-baked the base
-// into Extra would never exercise that join.
-func TestLsShowsAppendedCommandInInfo(t *testing.T) {
+// CONTRACT: the appended boot command is PERSISTED on the node but NEVER
+// surfaced in `dabs ls` — the listing shows only the shell-in hint. Exposure is
+// conservative: the command may hold a prompt or a secret, so it is retrievable
+// from the node JSON (and `dabs info`), never leaked into the fleet overview.
+// This locks that: a box node carrying a distinctive Extra token must not print
+// that token anywhere in the ls output.
+func TestLsNeverShowsAppendedCommand(t *testing.T) {
 	fd := baseData()
 	if fd.dirs == nil {
 		fd.dirs = map[string][]string{}
@@ -987,61 +987,25 @@ func TestLsShowsAppendedCommandInInfo(t *testing.T) {
 		fd.files = map[string][]byte{}
 	}
 	fd.dirs[nodeBase] = append(fd.dirs[nodeBase], "boxy")
-	// A real boot: the recipe's base command is ["claude"], the appended tokens
-	// are ["-p","hello"] — stored apart, exactly as runRecipe writes them.
+	// A real boot: base command ["claude"], appended tokens carrying a distinctive
+	// marker no other column would ever print.
 	fd.files[nodeBase+"/boxy/dabs-node.json"] = []byte(
 		`{"id":"boxy","kind":"box","instance":"inst-b","recipe":"r","created":"t",` +
-			`"recipeSpec":{"image":{"name":"img"},"command":["claude"]},"extra":["-p","hello"]}`)
+			`"recipeSpec":{"image":{"name":"img"},"command":["claude"]},"extra":["-p","SECRETMARKER"]}`)
 	drv := &fakeDriver{infos: []sandbox.Info{{Name: "inst-b", Status: "running"}}}
 	out := captureStdout(t, func() {
 		if err := newReal("", fd, drv).Ls(params.Ls{}); err != nil {
 			t.Fatalf("Ls: %v", err)
 		}
 	})
+	// The box still lists, with its shell-in hint.
 	box := lineWith(out, "boxy")
 	if !strings.Contains(box, "dabs exec inst-b bash") {
 		t.Fatalf("box INFO lost its shell-in command:\n%s", box)
 	}
-	// The base command MUST be present — dropping it (rendering Extra alone) shows
-	// `-p 'hello'`, a command with no program, which is the bug this guards.
-	if !strings.Contains(box, "claude -p hello") {
-		t.Fatalf("box INFO does not show the full base+appended command:\n%s", box)
-	}
-}
-
-// CONTRACT: a stored command token carrying a newline (a prompt typed with blank
-// lines) renders on ONE ls row — the control chars are flattened to spaces so the
-// table is not torn apart. The stored node keeps the raw token; only the cell is
-// flattened.
-func TestLsAppendedCommandNewlineStaysOneRow(t *testing.T) {
-	fd := baseData()
-	if fd.dirs == nil {
-		fd.dirs = map[string][]string{}
-	}
-	if fd.files == nil {
-		fd.files = map[string][]byte{}
-	}
-	fd.dirs[nodeBase] = append(fd.dirs[nodeBase], "boxy")
-	fd.files[nodeBase+"/boxy/dabs-node.json"] = []byte(
-		`{"id":"boxy","kind":"box","instance":"inst-b","recipe":"r","created":"t",` +
-			`"recipeSpec":{"image":{"name":"img"},"command":["claude"]},"extra":["-p","hello\n\n"]}`)
-	drv := &fakeDriver{infos: []sandbox.Info{{Name: "inst-b", Status: "running"}}}
-	out := captureStdout(t, func() {
-		if err := newReal("", fd, drv).Ls(params.Ls{}); err != nil {
-			t.Fatalf("Ls: %v", err)
-		}
-	})
-	box := lineWith(out, "boxy")
-	if strings.ContainsAny(box, "\n\r\t") {
-		t.Fatalf("box INFO row carries a raw control char (should be flattened):\n%q", box)
-	}
-	// The WHOLE command survives on the one row, closing quote and all. shellJoin
-	// single-quotes the newline-bearing token, so an UNFLATTENED render tears the
-	// row right after `'hello`, leaving the closing quote on a phantom next line —
-	// so requiring `hello '` (the quote back on the same row) is what gives this
-	// teeth, where merely requiring `hello` did not.
-	if !strings.Contains(box, "claude -p 'hello '") {
-		t.Fatalf("box INFO does not show the flattened command on one row:\n%s", box)
+	// But NOTHING of the appended command may appear anywhere in the listing.
+	if strings.Contains(out, "SECRETMARKER") {
+		t.Fatalf("ls leaked the appended command; it must never surface:\n%s", out)
 	}
 }
 

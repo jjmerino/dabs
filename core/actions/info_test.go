@@ -63,6 +63,32 @@ func TestInfoRendersPersistedRecipeSnapshot(t *testing.T) {
 	}
 }
 
+// CONTRACT: `dabs info` shows the tokens appended to the recipe's command at
+// boot (Node.Extra), VERBATIM — what this box was asked to do, which `dabs ls`
+// deliberately never surfaces. It shows the STORED tokens only, not a synthesis
+// of the recipe's own command with them.
+func TestInfoShowsAppendedCommand(t *testing.T) {
+	base := "/home/t/.dabs/nodes/"
+	fd := baseData()
+	// A real boot: base command ["claude"] on the snapshot, appended tokens
+	// ["-p","hello"] on the node.
+	fd.files = map[string][]byte{
+		base + "boxy-abcd/dabs-node.json": []byte(`{"id":"boxy-abcd","kind":"box","instance":"inst-b","recipe":"r","created":"t",` +
+			`"recipeSpec":{"image":"img","command":["claude"]},"extra":["-p","hello"]}`),
+	}
+	fd.dirs = map[string][]string{"/home/t/.dabs/nodes": {"boxy-abcd"}}
+
+	out := captureStdout(t, func() {
+		if err := newReal("", fd, &fakeDriver{}).Info(params.Info{Node: "boxy-abcd"}); err != nil {
+			t.Fatalf("Info: %v", err)
+		}
+	})
+	// The appended tokens must appear.
+	if !strings.Contains(out, "-p hello") {
+		t.Fatalf("info did not show the appended command tokens:\n%s", out)
+	}
+}
+
 // CONTRACT: a node with a recipe NAME but no snapshot, whose name the registry
 // no longer defines, does not error — info says the spec is unavailable.
 func TestInfoMissingSnapshotUnknownRecipeIsGraceful(t *testing.T) {

@@ -98,24 +98,6 @@ type NodeWorktree struct {
 	Repo   string `json:"repo"`
 }
 
-// appendedCommand returns the FULL effective command a box was booted with — the
-// recipe's base command (from the creation snapshot) followed by the tokens the
-// caller appended (Extra) — shell-joined for display. A node with no snapshot
-// (an old record) falls back to the appended tokens alone: they are all it has.
-// Empty when nothing was appended, so a caller can gate on that to decide whether
-// to show the cell at all.
-func (n Node) appendedCommand() string {
-	if len(n.Extra) == 0 {
-		return ""
-	}
-	var argv []string
-	if n.RecipeSpec != nil {
-		argv = append(argv, n.RecipeSpec.Command...)
-	}
-	argv = append(argv, n.Extra...)
-	return shellJoin(argv)
-}
-
 // mintNodeID makes a node id — the ONE place ids are minted, so every node's
 // name has the same shape: a readable prefix (what it came from) plus a short
 // random suffix. It also returns that suffix, which callers reuse when they need

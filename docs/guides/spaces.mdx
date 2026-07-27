@@ -49,11 +49,13 @@ After the box writes into each, `dabs ls` shows a dot per space that holds
 files:
 
 ```text
-local (bwrap, this machine)
-  NODE                KIND     VOL  HELD  TMP  STATE  WHERE
-  myproj-________     project  ●                      ~/.dabs/nodes/myproj-________
-  └─ spacey-________  box      ●    ●     ●    live   ~/.dabs/nodes/spacey-________  (shell-____________)
+  NODE                KIND         VOL  HELD  TMP  STATE  INFO
+  myproj-________     project      ●                      ~/myproj
+  └─ spacey-________  box (bwrap)  ●    ●     ●    live   dabs exec shell-____________ bash
 ```
+
+`dabs info <node>` says the same thing one node at a time, in words
+(`holds files` / `empty`) — and names the recipe that mounted each space.
 
 ## What rm does with each
 
@@ -62,8 +64,8 @@ The preview spells out every space's fate before you consent:
 ```text
 ╭─────────────────────────────────────────────────────────────╮
 │ Removing spacey-________ reaps 1 node(s):                   │
-│   NODE             KIND  VOL  HELD  TMP  STATE              │
-│   spacey-________  box   ●    ●     ●    live               │
+│   NODE             KIND         VOL  HELD  TMP  STATE       │
+│   spacey-________  box (bwrap)  ●    ●     ●    live        │
 │ ⚠ 1 node(s) hold a held space — deleted on proceed          │
 │ 1 node(s) hold volume data — kept (pass --volume to delete) │
 │ 1 node(s) hold tmp scratch — always cleared                 │

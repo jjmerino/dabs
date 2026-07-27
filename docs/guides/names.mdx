@@ -56,18 +56,20 @@ dabs ls
 ```
 
 ```text
-local (bwrap, this machine)
-  NODE           KIND      VOL  HELD  TMP  STATE    WHERE
-  repo-________  project                            ~/.dabs/nodes/repo-________
-  ├─ dev         box                       live     ~/.dabs/nodes/dev  (shell-____________)
-  └─ login-fix   worktree       ●          no-diff  ~/.dabs/nodes/login-fix
+  NODE           KIND         VOL  HELD  TMP  STATE                     INFO
+  repo-________  project                      main                      ~/repo
+  ├─ login-fix   worktree          ●          no-diff (dabs/login-fix)  ~/.dabs/nodes/login-fix/held/worktree
+  └─ dev         box (bwrap)                  live                      dabs exec shell-____________ bash
 ```
 
 ## cd into a node
 
-The WHERE column shows each node's own directory. `dabs cd <node>` prints that
-directory as a **bare path**, so a shell can step into it — a child process
-cannot move its parent's shell, so you wrap it:
+`dabs cd <node>` prints a node's **working place** as a bare path, resolved per
+kind: a project to its source repo, a worktree to its checkout, a box to its own
+node dir. For a project and a worktree that is the path INFO shows above; for a
+**box** it is not — a box has no working directory, so its INFO cell carries the
+`dabs exec … bash` line that shells into it, while `cd` gives you the node dir on
+the host. A child process cannot move its parent's shell, so you wrap it:
 
 ```bash
 cd "$(dabs cd dev)"
@@ -78,9 +80,10 @@ cd "$(dabs cd dev)"
 ```
 
 A prefix resolves the same way every handle does (`dabs cd de` → the same path),
-and an ambiguous one is refused rather than guessed. Inside that directory live
-the node's three spaces as subdirectories — `volume/`, `held/`, `tmp/` (see
-[Spaces](/guides/spaces)); a worktree's checkout is its `held/worktree`.
+and an ambiguous one is refused rather than guessed. A box's node dir holds its
+three spaces as subdirectories — `volume/`, `held/`, `tmp/` (see
+[Spaces](/guides/spaces)); `dabs cd login-fix` lands in the worktree's checkout
+instead, which is that node's own `held/worktree`.
 
 ## A name is claimed while its work is live
 

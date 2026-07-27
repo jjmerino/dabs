@@ -1,0 +1,4 @@
+dabs: recipe "quiet": no command to run — `dabs recipe quiet --no-command` boots the box without one
+exit=1
+:done
+#

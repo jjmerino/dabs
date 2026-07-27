@@ -78,12 +78,13 @@ Then:
 dabs build myproj                # build the box's image
 dabs recipe myproj --no-command  # recipe booted: myproj (id: myproj-a3f9c21d4e02) — a NEW pristine box, no command
 dabs ls                          # the tree: what dabs owns, and where it runs
+dabs info myproj-a3f             # ONE node in full: location, spaces, recipe, appended argv
 dabs exec myproj-a3f 'ls | wc -l'        # run a shell line inside (instance prefixes ok, git-style)
 dabs exec myproj-a3f -- ./mycli --help   # exec an exact command inside (no shell)
 dabs recipe myproj               # boot a box and run its command
 dabs recipe myproj --detach      # boot a box, start its command in the background, return
 dabs recipe myproj --name api    # same, but the node is named: exec/rm/cd by "api"
-cd "$(dabs cd api)"              # jump to any node's directory
+cd "$(dabs cd api)"              # jump to a node's working place (repo, checkout, or node dir)
 dabs rm myproj-a3f -y            # stop it and remove its node
 ```
 
@@ -98,11 +99,18 @@ dabs marks every place it makes, so it can tell you what ran, from where, and
 whether anything is still live. `dabs ls` is that tree.
 
 ```
-local (apple, this machine)
-  myproj              project   ~/code/myproj
-  └─ myproj-18f9c901  workdir   ~/code/myproj
-     └─ sh-a88626a1   box       myproj-a3f9c21d4e02 · running
+  NODE                   KIND         VOL  HELD  TMP  STATE  INFO
+  myproj                 project                             ~/code/myproj
+  └─ myproj-18f9c901     workdir                             ~/.dabs/nodes/myproj-18f9c901
+     └─ myproj-a88626a1  box (apple)                  live   dabs exec myproj-a3f9c21d4e02 bash
 ```
+
+Everything on this machine draws in one flat tree — a box's driver rides in its
+KIND cell; only a registered server gets a heading. INFO is per kind: a
+project's source repo, a worktree's checkout, and for a box the command that
+shells into it. `dabs info <node>` expands ONE node instead — its location,
+instance, the argv appended at boot, each space, and the recipe snapshot it was
+provisioned from.
 
 A node is a **project** (the directory a command ran from), a **workdir** (a
 directory a recipe took as its `.`), a **worktree** (a git branch dabs cut), or a
@@ -152,8 +160,9 @@ dabs servers rm homelab             # unregister (remote sandboxes untouched)
 ```
 
 Route a recipe to a server with `target: homelab` (omit for local). `dabs
-build`/`recipe` then run there; `dabs ls` aggregates every driver with a target
-column; `exec`/`rm` address any instance by name wherever it lives.
+build`/`recipe` then run there; `dabs ls` aggregates every driver, drawing each
+server's boxes under a heading that names it; `exec`/`rm` address any instance
+by name wherever it lives.
 
 ## Recipe fields (dabs.yaml)
 
@@ -171,11 +180,13 @@ a throwaway copy of the cwd).
 | field | default | meaning |
 |---|---|---|
 | `image` | (required) | a bare image NAME to reuse, or `{dockerfile, context}` to build |
-| `workdir` | `/work` | cwd inside the box |
+| `description` | — | the one-line summary `dabs recipes` shows |
+| `workdir` | `/work` | cwd inside the box (may name `$NODE_ID`) |
 | `command` | — | what runs in the box |
 | `env` | — | environment inside the box |
 | `sources` | — | what lands in the box, and how |
 | `target` | local | which driver runs it |
+| `egress` | `open` | outbound network: `open`, `none`, or a proxy policy (`allow`/`deny`/`http_proxy`) |
 | `keep` | `false` | keep the box alive after the command finishes |
 
 Paths given to `build`/`recipe` may be a `dabs.yaml` or a directory containing one.

@@ -1,0 +1,24 @@
+dabs: recipe: --no-command and --detach ask for opposite things: one runs no command, the other starts the recipe's
+
+[1m[38;5;141musage:[0m[39m[49m dabs <command> [args][0m
+  [38;5;141mbuild[0m[38;5;141m[39m      build a recipe's box image: build [recipe|path] (no name → dabs.yaml default). A boot rebuilds automatically when the Dockerfile or a bundled image's files change; a change only to build-context files a `COPY .` pulls in is not[0m
+ detected — run `dabs prune` then build to pick it up
+  [38;5;141mcd[0m[38;5;141m[39m         print a node's working place as a bare path, resolved per kind — a project to its source repo, a worktree to its checkout, a box to its node dir (~/.dabs/nodes/<id>); shells cannot be moved by a child process, so: cd "$(dabs cd[0m
+ <node>)". A box's node dir holds the three spaces as subdirectories: volume/ survives `rm --keep`, held/ carries work you would miss (a worktree's checkout, a workdir's copy — `rm` asks before reaping), tmp/ is scratch `rm` reaps quietly
+  [38;5;141mexec[0m[38;5;141m[39m       run a command inside a box: exec <node> -- <cmd…> for an exact argv, or exec <node> <shell…> for a `sh -c` line (pipes/globs/&&)[0m
+  [38;5;141minfo[0m[38;5;141m[39m       show one node's full model: its kind and id, the place it marks, its three spaces (volume/held/tmp), and the recipe that provisioned it (from the snapshot taken at creation, else the current registry by name): info <node>[0m
+  [38;5;141mls[0m[38;5;141m[39m         list the active subtrees dabs owns, as a tree (--inactive: show only the inactive ones instead)[0m
+  [38;5;141mprune[0m[38;5;141m[39m      reclaim built box images (they rebuild on the next build); --dry lists what exists, --force removes even images a live box uses[0m
+  [38;5;141mrecipe[0m[38;5;141m[39m     run a recipe box: recipe [name] [cmd…] (unknown/omitted name → the default recipe, else sh, with the cmd appended); --worktree <wt> binds an existing worktree (git works in-box); --name <n> names the node the boot creates (uniq[0m
+ue; an inactive holder is reaped); --no-command boots a NEW box and runs no command; --detach boots a NEW box, starts the recipe's command in the background and returns, leaving the box up with it running
+  [38;5;141mrecipes[0m[38;5;141m[39m    list the known recipes, one line each: name, description, and origin (bundled | global ~/.dabs/recipes.yaml | project ./dabs.yaml). --print dumps the full merged registry as YAML, sources and all, marking each recipe's origin;[0m
+--print <name> dumps just that recipe
+  [38;5;141mrm[0m[38;5;141m[39m         stop a box and remove its node and what it holds (--keep keeps the record instead; --clean-worktrees sweeps every worktree with no unreviewed work; --inactive sweeps every inactive subtree): rm <node> [-y] [--keep] [--volume] [[0m
+--multiple] [--dry] [--force] | rm --clean-worktrees [--force] [--dry] | rm --inactive [--dry]
+  [38;5;141mservers[0m[38;5;141m[39m    manage registered servers: servers [ls] | add <name> [host] | rm <name>[0m
+  [38;5;141mworktrees[0m[38;5;141m[39m  inspect worktree nodes (reap with `dabs rm <name>` or `dabs rm --clean-worktrees`): worktrees [ls | diff <name>][0m
+
+[38;5;145magents: `dabs --help-full-for-agents` prints the full guide (recipes, examples)[0m
+[39mexit=2[0m
+:done
+#

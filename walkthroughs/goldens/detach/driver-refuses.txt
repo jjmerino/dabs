@@ -1,0 +1,4 @@
+dabs: recipe "sh": the bwrap driver cannot hold a detached command: it enters the box with a fresh bwrap per command, so a command cannot outlive the call that started it — use `dabs recipe sh --no-command` and `dabs exec`
+exit=1
+:done
+#

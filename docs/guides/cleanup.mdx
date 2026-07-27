@@ -7,15 +7,27 @@ description: "dabs ls shows what lives; dabs rm is the single reaper — with fo
 
 ## Reading `dabs ls`
 
-`ls` draws what dabs owns as a tree, grouped by driver: NODE · KIND ·
-VOL/HELD/TMP (a dot per space that holds files) · STATE · WHERE.
+`ls` draws what dabs owns as a tree: NODE · KIND · VOL/HELD/TMP (a dot per
+space that holds files) · STATE · INFO.
 
 ```text
-local (bwrap, this machine)
-  NODE             KIND     VOL  HELD  TMP  STATE  WHERE
-  myproj-________  project                         ~/.dabs/nodes/myproj-________
-  └─ sh-________   box                      live   ~/.dabs/nodes/sh-________  (shell-____________)
+  NODE             KIND         VOL  HELD  TMP  STATE  INFO
+  myproj-________  project                             ~/myproj
+  └─ sh-________   box (bwrap)                  live   dabs exec shell-____________ bash
 ```
+
+Everything on **this machine** draws in one flat tree with no heading, whichever
+local driver runs each box — the box's own driver rides in its KIND cell
+(`box (bwrap)`, `box (apple)`). A registered server earns a heading of its own,
+because knowing a server is there (and reachable, or not) is a finding.
+
+INFO is resolved per kind: a project's source repo and a worktree's checkout —
+the paths `dabs cd` prints for them — and, for a box, the `dabs exec <instance>
+bash` line that shells into it. A box has no working directory, so that cell is
+a command rather than a place; `dabs cd <box>` gives you its node dir on the
+host instead. For one node's whole model —
+location, instance, the argv appended at boot, every space, the recipe snapshot
+— use [`dabs info <node>`](/reference/cli#info).
 
 Visibility follows **life**: `ls` shows only subtrees holding a running box or
 real files. Empty markers (a project record with nothing under it) hide behind

@@ -25,12 +25,17 @@ var nodeNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 // dabs/<name>, which git refuses for `..`, a trailing dot, or a .lock suffix.
 // Checked up front, so a bad name costs nothing instead of failing at git
 // after provisioning began.
-func validateNodeName(name string) error {
+func validateNodeName(name string) error { return validateIDShape("--name", name) }
+
+// validateIDShape is that check over any string destined to BE a node id or to
+// prefix one. The what argument names the source of the string — a flag, a
+// field — so the message points at whoever supplied it.
+func validateIDShape(what, name string) error {
 	if !nodeNameRe.MatchString(name) {
-		return fmt.Errorf("--name %q: a name is letters, digits, dots, underscores, dashes — starting alphanumeric, at most 64", name)
+		return fmt.Errorf("%s %q: a name is letters, digits, dots, underscores, dashes — starting alphanumeric, at most 64", what, name)
 	}
 	if strings.Contains(name, "..") || strings.HasSuffix(name, ".") || strings.HasSuffix(name, ".lock") {
-		return fmt.Errorf("--name %q: `..`, a trailing dot, or a .lock suffix cannot name a git branch (dabs/%s)", name, name)
+		return fmt.Errorf("%s %q: `..`, a trailing dot, or a .lock suffix cannot name a git branch (dabs/%s)", what, name, name)
 	}
 	return nil
 }

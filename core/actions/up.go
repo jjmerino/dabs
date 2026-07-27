@@ -56,12 +56,35 @@ func (r Real) upDetached(arg, worktree, nodeName string, startCommand bool) erro
 	if boxless {
 		return r.provisionNodes(name, rec, worktree, nodeName)
 	}
+	box, logFile, kept, err := r.bootDetached(name, rec, worktree, nodeName, startCommand)
+	if err != nil {
+		return err
+	}
+	// Neither form tears the box down: the box outlives the call by construction,
+	// and `keep` decides the fate of a box dabs is WAITING on — nothing is waiting
+	// here, so there is no exit to reap at. The box is the user's, to reap with
+	// `dabs rm`.
+	for _, k := range kept {
+		fmt.Fprintln(os.Stdout, tui.Success("kept: %s", k))
+	}
+	printUp(name, box.ID, box.Instance, rec, logFile)
+	return nil
+}
+
+// bootDetached brings a NEW pristine box up from an already-resolved recipe
+// VALUE and hands the caller back the box's identity, the host file a detached
+// command's output goes to (empty when no command was started), and the places
+// the boot kept. startCommand picks the form: false runs nothing, true starts
+// the recipe's own command in the BACKGROUND inside the box. It tears nothing
+// down on success and prints nothing — every user-facing message belongs to the
+// caller.
+func (r Real) bootDetached(name string, rec recipe.Recipe, worktree, nodeName string, startCommand bool) (Box, string, []string, error) {
 	// Booting a box from inside a dabs worktree's own checkout parents the box on
 	// that worktree, exactly as an explicit --worktree would (which wins).
 	if worktree == "" {
 		owner, oerr := r.resolveOwningWorktree()
 		if oerr != nil {
-			return oerr
+			return Box{}, "", nil, oerr
 		}
 		worktree = owner
 	}
@@ -71,17 +94,18 @@ func (r Real) upDetached(arg, worktree, nodeName string, startCommand bool) erro
 	if worktree != "" {
 		full, werr := r.resolveWorktreeArg(worktree)
 		if werr != nil {
-			return werr
+			return Box{}, "", nil, werr
 		}
 		worktree = full
-		sources, err = r.bindWorktree(name, rec.Sources, worktree)
-		if err != nil {
-			return err
+		bound, berr := r.bindWorktree(name, rec.Sources, worktree)
+		if berr != nil {
+			return Box{}, "", nil, berr
 		}
+		sources = bound
 	}
 	drv, err := r.driverFor(rec.Target)
 	if err != nil {
-		return err
+		return Box{}, "", nil, err
 	}
 	// ASK the driver, before the boot, so one that cannot hold a background command
 	// refuses while nothing has been provisioned — never a box that quietly holds
@@ -92,10 +116,10 @@ func (r Real) upDetached(arg, worktree, nodeName string, startCommand bool) erro
 	detacher, canDetach := drv.(sandbox.Detacher)
 	if startCommand {
 		if !canDetach {
-			return fmt.Errorf("recipe %q: the %s driver cannot hold a detached command — use `dabs recipe %s --no-command` and `dabs exec`", name, drv.Kind(), name)
+			return Box{}, "", nil, fmt.Errorf("recipe %q: the %s driver cannot hold a detached command — use `dabs recipe %s --no-command` and `dabs exec`", name, drv.Kind(), name)
 		}
 		if cerr := detacher.CheckDetach(); cerr != nil {
-			return fmt.Errorf("recipe %q: %w — use `dabs recipe %s --no-command` and `dabs exec`", name, cerr, name)
+			return Box{}, "", nil, fmt.Errorf("recipe %q: %w — use `dabs recipe %s --no-command` and `dabs exec`", name, cerr, name)
 		}
 	}
 	// The image is resolved first — WITHOUT building the recipe's own
@@ -106,22 +130,22 @@ func (r Real) upDetached(arg, worktree, nodeName string, startCommand bool) erro
 	// path above).
 	image, err := r.resolveBuiltImage(drv, name, rec.Image, rec.Target)
 	if err != nil {
-		return err
+		return Box{}, "", nil, err
 	}
 	if nodeName != "" {
 		if err := r.claimNodeName(nodeName); err != nil {
-			return err
+			return Box{}, "", nil, err
 		}
 	}
 	// Cut the PLACE first: a box names its parent's spaces ($PARENT_VOLUME), and a
 	// parent must exist to be named.
 	_, tip, hosts, kept, cut, err := r.provisionPlaces(name, snapshotRecipe(rec), sources, worktree)
 	if err != nil {
-		return err
+		return Box{}, "", nil, err
 	}
 	boxID, vars, err := r.mintBoxNode(name, tip, nodeName)
 	if err != nil {
-		return err
+		return Box{}, "", nil, err
 	}
 	// A detached command has no terminal, so its output goes to a file — and the
 	// file belongs on the HOST, in the box node's own tmp space, where it is
@@ -133,7 +157,7 @@ func (r Real) upDetached(arg, worktree, nodeName string, startCommand bool) erro
 	if startCommand {
 		tmp, terr := r.resolveNodeSpace(boxID, SpaceTmp)
 		if terr != nil {
-			return terr
+			return Box{}, "", nil, terr
 		}
 		logFile = filepath.Join(tmp, sandbox.DetachedLogName)
 		sources = append(append([]recipe.Source{}, sources...),
@@ -141,11 +165,11 @@ func (r Real) upDetached(arg, worktree, nodeName string, startCommand bool) erro
 	}
 	resolved, err := r.validateSources(name, sources, vars, hosts)
 	if err != nil {
-		return err
+		return Box{}, "", nil, err
 	}
 	instance, err := r.buildBox(drv, name, boxID, tip, rec, image, sources, resolved, cut, nil)
 	if err != nil {
-		return err
+		return Box{}, "", nil, err
 	}
 	// A box that cannot be ENTERED is not up: a source mounted over `/`, a
 	// `workdir:` missing from the image, or a read-only parent masking an rw child
@@ -155,7 +179,7 @@ func (r Real) upDetached(arg, worktree, nodeName string, startCommand bool) erro
 	if _, serr := drv.Exec(instance, []string{"true"}); serr != nil {
 		proxy.Reap(r.boxProxy(instance)) // the box is abandoned; reap its engine too, not just the box
 		_ = drv.Down(instance)
-		return fmt.Errorf("boot failed: box is not usable: %w", serr)
+		return Box{}, "", nil, fmt.Errorf("boot failed: box is not usable: %w", serr)
 	}
 	// A bound worktree is mounted, not cut, so buildBox never journals it — record
 	// its box→worktree link here so `worktrees ls` shows the box as live.
@@ -173,18 +197,10 @@ func (r Real) upDetached(arg, worktree, nodeName string, startCommand bool) erro
 		if derr := detacher.Detach(instance, rec.Command); derr != nil {
 			proxy.Reap(r.boxProxy(instance))
 			_ = drv.Down(instance)
-			return fmt.Errorf("recipe %q: starting the detached command: %w", name, derr)
+			return Box{}, "", nil, fmt.Errorf("recipe %q: starting the detached command: %w", name, derr)
 		}
 	}
-	// Neither form tears the box down: the box outlives the call by construction,
-	// and `keep` decides the fate of a box dabs is WAITING on — nothing is waiting
-	// here, so there is no exit to reap at. The box is the user's, to reap with
-	// `dabs rm`.
-	for _, k := range kept {
-		fmt.Fprintln(os.Stdout, tui.Success("kept: %s", k))
-	}
-	printUp(name, boxID, instance, rec, logFile)
-	return nil
+	return Box{ID: boxID, Instance: instance}, logFile, kept, nil
 }
 
 // printUp reports what the boot did and what to do next. The box has two names:

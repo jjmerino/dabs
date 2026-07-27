@@ -1,0 +1,21 @@
+[38;5;141mkeeper-________[0m[38;5;141m[39m [0m[38;5;141m[39m[38;5;145m(box)[0m
+[39m  [0m[39m[38;5;145mlocation[0m[39m[38;5;145m[39m  ~/.dabs/nodes/keeper-________[0m
+  [38;5;145minstance[0m[38;5;145m[39m  shell-____________[0m
+  [38;5;145mappended[0m[38;5;145m[39m  boxed hello[0m
+
+[1m[38;5;141mspaces:[0m
+[39m[49m  [0m[39m[49m[38;5;145mVOL[0m[39m[49m[38;5;145m[39m   holds files[0m
+  [38;5;145mHELD[0m[38;5;145m[39m  empty[0m
+  [38;5;145mTMP[0m[38;5;145m[39m   empty[0m
+
+[1m[38;5;141mrecipe:[0m
+[39m[49m  [0m[39m[49m[38;5;141mkeeper[0m[39m[49m[38;5;141m[39m [0m[39m[49m[38;5;141m[39m[38;5;145m(snapshot at creation)[0m
+[39m  [0m[39m[38;5;145mimage[0m[39m[38;5;145m[39m    shell[0m
+  [38;5;145mcommand[0m[38;5;145m[39m  echo[0m
+  [38;5;145menv:[0m
+[39m    GREETING=hello-info[0m
+  [38;5;145mmounts:[0m
+[39m    mount    .                   [0m[39m[38;5;145m→[0m[39m[38;5;145m[39m  /work[0m
+    mkmount  $NODE_VOLUME/cache  [38;5;145m→[0m[38;5;145m[39m  /cache[0m
+:done
+#

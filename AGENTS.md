@@ -13,13 +13,13 @@ Before you run or test anything with dabs in this repo, **read `./dabs.yaml`**.
 It decides what every bare command does. Nothing below is meaningful until you
 know what is in it:
 
-- **`default:`** is what `dabs build`, `dabs recipe --detach`, and `dabs recipe`
+- **`default:`** is what `dabs build`, `dabs recipe --no-command`, and `dabs recipe`
   resolve to when you pass no name — and, for `recipe`, also when the first token
   is not a known recipe (then ALL tokens are appended to the default's command).
   It is NOT a shell. A `default:` naming a `claude -p` agent turns a bare
   `dabs recipe -c 'echo hi'` into your argv appended to Claude's — an agent that
   boots and prints nothing for minutes. This repo sets no `default:`, so
-  `build`/`recipe --detach` with no name list the choices, and `recipe` with an
+  `build`/`recipe --no-command` with no name list the choices, and `recipe` with an
   unknown/absent name falls back to the bundled `sh` box. Name the recipe you mean:
   `dabs recipe sh -c 'echo hi'`.
 - **Which recipes exist**. `dabs recipes` lists them one line each — name,
@@ -38,13 +38,23 @@ know what is in it:
    dabs build [recipe|path]
    ```
 
-2. **Boot a fresh instance** — every `recipe --detach` is a NEW pristine DETACHED
+2. **Boot a fresh instance** — every `recipe --no-command` is a NEW pristine
    box (same recipe resolution as `build`); it brings the box up but does NOT run
    the recipe's command. Capture the instance name it prints:
 
    ```bash
-   dabs recipe [recipe|path] --detach     # recipe booted: myproj (id: myproj-a3f9c21d4e02)
+   dabs recipe [recipe|path] --no-command     # recipe booted: myproj (id: myproj-a3f9c21d4e02)
    ```
+
+   `--detach` boots the same box but STARTS the recipe's command inside it in the
+   background and returns without waiting — for a recipe whose command never
+   exits (a server, a multiplexer). The command's combined output goes to
+   `~/.dabs/nodes/<id>/tmp/detached.log` on the host (the boot prints the
+   `tail -f` line), and is reaped with the node. It needs a driver whose box
+   carries a process of its own — dabs asks the driver, so the refusal names the
+   driver and its own reason. docker and apple can; bwrap cannot (it enters the
+   box with a fresh bwrap per command), and there `--no-command` + `dabs exec` is
+   the way.
 
    The instance is named after the recipe's **image**, not the recipe. Recipes
    that share an image share a name prefix, so `dabs ls` cannot tell you which
@@ -211,7 +221,8 @@ know what is in it:
 cwd". `--worktree` binds it to an EXISTING worktree instead (by name from `dabs
 worktrees ls`): `worktree:`/`mount:` mount that worktree live — and also mount its
 parent `.git`, so **git works inside the box** and the agent's commits reconcile
-straight into the shared store (no push). It composes with `--detach`. Use it to
+straight into the shared store (no push). It composes with `--no-command` and
+`--detach`. Use it to
 point a fresh agent (or a different recipe, e.g. review) at work another agent
 already started, without cutting a new branch.
 
@@ -219,7 +230,7 @@ already started, without cutting a new branch.
 
 - Tell the in-box agent the shape of its world: a fresh machine, no host
   access, whatever the Dockerfile installed. It only sees the box.
-- One instance per agent: instances are cheap (`dabs recipe --detach` again) and isolated;
+- One instance per agent: instances are cheap (`dabs recipe --no-command` again) and isolated;
   sharing a box couples runs.
 - Boxes are copies, not mounts — rebuild after editing source, and a box
   only contains what its Dockerfile installed.
@@ -262,10 +273,14 @@ already started, without cutting a new branch.
   kept box whose spaces are empty becomes inactive and drops out of the default
   `dabs ls` (it is a record of history, shown by `dabs ls --inactive`;
   `dabs rm --inactive` sweeps all of them).
-- `dabs recipe` or `dabs build` must be run from a directory OUTSIDE `~/.dabs`:
-  provisioning from inside dabs's own storage is refused by design — it would
-  mark the node store itself as a project. This includes test drivers: give a
-  journey its own directory under your home, never a path under `~/.dabs`.
+- `dabs recipe` refuses to make a project, worktree, or scratch node from inside
+  `~/.dabs`: marking the node store itself as a project is nonsense. The one
+  exception is a dabs WORKTREE's checkout (`~/.dabs/nodes/<id>/held/worktree`) —
+  a boot from in there parents the box on that worktree and mounts its parent
+  `.git`, exactly as `--worktree` would, so working inside a checkout is
+  supported. `dabs build` provisions no node at all, and runs from anywhere.
+  Test drivers still get their own directory under your home: a journey wants a
+  HOME whose dabs state is its own.
 - Everything dabs owns is namespaced: it only ever sees or removes its own
   boxes.
 - Keep the build context under your home directory. A context under
@@ -291,7 +306,7 @@ recipes:
 ```
 
 `dabs build [recipe|path]` builds a recipe's image; `dabs recipe [recipe|path]
---detach` boots a detached box from it (no command). Both take no arg (the registry
+--no-command` boots a box from it and runs no command. Both take no arg (the registry
 `default:`), a recipe name, or a path to a `dabs.yaml` (or a dir holding one).
 A recipe is the whole box spec — image, env, workdir, target, sources.
 
@@ -325,11 +340,11 @@ reach in:
 ```bash
 dabs recipe dabseption                   # → box kept: dabseption-482e37bd203c
 dabs exec <instance> -- dabs recipes     # exercise its CLI, no host install
-dabs exec <instance> 'dabs recipe sh --detach' # the dabs in the box boots its OWN box
+dabs exec <instance> 'dabs recipe sh --no-command' # the dabs in the box boots its OWN box
 ```
 
 **The box boots nested boxes.** Its image stages a ready-built `shell` rootfs, so
-`dabs recipe sh --detach` and `dabs recipe sh` work inside with no builder. Only `dabs build` cannot
+`dabs recipe sh --no-command` and `dabs recipe sh` work inside with no builder. Only `dabs build` cannot
 run in there — it shells out to `docker`, which the box does not carry — and
 nothing needs it to.
 
@@ -350,13 +365,21 @@ dabseptionwt` cuts a new worktree but does NOT mount the parent `.git`, so git i
 blind in-box; use `--worktree` when a test needs in-box git.
 
 This covers CLI behaviour, recipe resolution, worktree/keep/rm logic, git
-in-box, nested boots, and error paths — the fast inner loop for changing dabs.
-The FULL e2e suite also runs in there: `dabs exec <box> 'cd /work && go build
--o /usr/local/bin/dabs . && go test -tags e2e ./test/e2e'` — the suite builds
-its fixture image from the staged `shell` when its own is not staged. One
-suite run per box: the suite assumes a pristine $HOME, and a kept box
-accumulates state — boot a fresh box (`--worktree <wt>` rebinds the same
-checkout) for each run. `./run_e2e.sh` remains the one-command form.
+in-box, nested boots, and error paths — the fast inner loop for changing dabs,
+alongside `go test ./...`.
+
+**The FULL `-tags e2e` suite runs in its own box — `./run_e2e.sh`.** The suite
+needs more than dabseption carries: `bun` for the proxy engine, `openssl` to
+mint its CA, and a dabs built `-tags withforwarder` so proxy egress has a
+forwarder to mount. That is the `test/e2e/box` recipe, whose Dockerfile builds
+FROM the dabseption image and adds exactly those. `./run_e2e.sh` is the whole
+procedure: build `dabseption`, build `test/e2e/box`, boot it (`egress: none`,
+so the run is hermetic), and `go test -tags e2e -v ./test/e2e` inside. Running
+the suite in a plain dabseption box instead fails every proxy test with
+`bun must be on PATH`.
+
+One suite run per box: the suite assumes a pristine `$HOME`, and a box
+accumulates state — each run gets a fresh box.
 
 **How a box boots its own boxes.** Three things, all declared in the recipe and
 its Dockerfile (`contrib/recipes/dabseption.Dockerfile`) — no host script, no
@@ -415,6 +438,12 @@ core/sandbox/<kind>/   one driver per kind (apple, bwrap, server). Drivers
   goes in `core/actions`; a driver only ever takes exact names.
 - New verb checklist: params struct + Actions method → action file →
   pure parser → command-table entry + runX → fake method in cli_test.go.
+- New OPTIONAL driver capability checklist: declare the interface in
+  `core/sandbox` with "OPTIONAL driver capability" in its doc → add it to
+  `sandbox.Capable` → forward it from every wrapper (`Lazy`). The compiler and
+  `core/sandbox/capability_test.go` enforce the last two; the marker in the doc
+  is what the test finds it by. A capability a wrapper drops does not fail — it
+  answers "this driver cannot", naming a driver that can.
 - Self-contained: no references to private projects, machines, usernames, or
   home paths anywhere (code, comments, tests, commit messages). Example
   names are neutral (`demo-0`, `myproj`).
@@ -444,10 +473,13 @@ which is what the install script downloads. No version is embedded in the Go
 source. Release changes go through a PR like any other change — never straight
 to `main`.
 
-1. On a branch, move the `## [Unreleased]` block in `CHANGELOG.md` into a dated
-   `## [X.Y.Z] - <date>` section, leave a fresh empty `## [Unreleased]`, and add
-   the `[X.Y.Z]: …/compare/vPREV...vX.Y.Z` link at the bottom. Pick the version
-   by semver (pre-1.0, breaking changes ride a minor bump).
+1. On a branch, WRITE the release's section in `CHANGELOG.md` at cut time: read
+   `git log vPREV..` and each PR it names, and turn everything user-visible into
+   a dated `## [X.Y.Z] - <date>` section under the Keep-a-Changelog categories.
+   There is no `## [Unreleased]` section — a change lands without touching the
+   changelog, and the cut is where the record gets written. Add the
+   `[X.Y.Z]: …/compare/vPREV...vX.Y.Z` link at the bottom. Pick the version by
+   semver (pre-1.0, breaking changes ride a minor bump).
 2. `gofmt -l .`, `go build ./...` **and** `GOOS=linux go build ./...`,
    `go test ./...` — all green.
 3. Commit, push the branch, open a PR, and let it merge to `main`.

@@ -151,6 +151,20 @@ func (d Driver) Exec(instance string, cmd []string) (string, error) {
 	return string(out), nil
 }
 
+// CheckDetach reports that this driver can hold a detached command: an instance
+// is a long-lived container, so a command forked onto its init keeps running
+// between execs.
+func (Driver) CheckDetach() error { return nil }
+
+// Detach starts cmd in the background inside the instance. The container lives
+// between commands, so the exec'd shell forks the command onto the container's
+// init and exits — the command keeps running with its output in the box's
+// detached log.
+func (d Driver) Detach(instance string, cmd []string) error {
+	_, err := d.Exec(instance, clidriver.DetachLine(cmd))
+	return err
+}
+
 func (Driver) Down(instance string) error {
 	_ = command("docker", "rm", "-f", containerName(instance)).Run()
 	return nil

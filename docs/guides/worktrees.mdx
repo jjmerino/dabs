@@ -48,7 +48,7 @@ also mounts the parent repo's `.git`, so **git works inside the box** and
 commits reconcile straight into your shared object store (no push):
 
 ```bash
-dabs recipe sh --worktree repo-________ --detach
+dabs recipe sh --worktree repo-________ --no-command
 dabs exec sh-________ 'cd /work && git add -A && git commit -qm improve && git --no-pager log --oneline'
 ```
 
@@ -76,6 +76,20 @@ and after an in-box commit, to `unmerged`:
 NAME           WORKTREE                                                 STATE     DETAIL
 repo-________  ~/.dabs/nodes/repo-________/held/worktree  unmerged  branch dabs/________ · recipe wt · uncommitted=false ahead=1 · box shell-____________ live
 ```
+
+## Working from inside the checkout
+
+A worktree's checkout lives under dabs's own storage
+(`~/.dabs/nodes/<id>/held/worktree`), and it is a normal place to work from:
+`cd "$(dabs cd <wt>)"`, then run dabs there. A boot from inside a checkout
+parents the box on **that worktree** — and mounts the parent repo's `.git`, so
+git works in-box — exactly as if you had passed `--worktree <wt>`. An explicit
+`--worktree` still wins.
+
+That is the one exception to dabs refusing to provision from inside `~/.dabs`.
+What it refuses is marking dabs's own node store as a new project, worktree, or
+scratch node; a boot from a checkout never does that — it resolves the owning
+worktree first and stands on it.
 
 ## Review, then reap
 

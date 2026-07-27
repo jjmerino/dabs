@@ -24,11 +24,11 @@ prints the install command; it never installs anything for you.
 
 ## 1. Boot a box
 
-`--detach` boots a fresh box and leaves it up without running the recipe's
+`--no-command` boots a fresh box and leaves it up without running the recipe's
 command. Note the id it prints — that is your handle for everything else.
 
 ```bash
-dabs recipe sh --detach
+dabs recipe sh --no-command
 ```
 
 ```text
@@ -79,14 +79,15 @@ dabs ls
 ```
 
 ```text
-local (bwrap, this machine)
-  NODE             KIND     VOL  HELD  TMP  STATE  WHERE
-  myproj-________  project                         ~/.dabs/nodes/myproj-________
-  └─ sh-________   box                      live   ~/.dabs/nodes/sh-________  (shell-____________)
+  NODE             KIND         VOL  HELD  TMP  STATE  INFO
+  myproj-________  project                             ~/myproj
+  └─ sh-________   box (bwrap)                  live   dabs exec shell-____________ bash
 ```
 
 The tree reads: a **project** node marks the directory you ran from, and the
-**box** stands on it. `live` means the box is running right now.
+**box** stands on it. `live` means the box is running right now. KIND names the
+driver running each box, and INFO says where a node lives — for a box, the
+ready-to-paste command that shells into it.
 
 ## 4. Reap it
 
@@ -98,12 +99,12 @@ dabs rm sh-________
 ```
 
 ```text
-╭────────────────────────────────────────────╮
-│ Removing sh-________ reaps 1 node(s):      │
-│   NODE         KIND  VOL  HELD  TMP  STATE │
-│   sh-________  box                   live  │
-│ Proceed?                                   │
-╰────────────────────────────────────────────╯
+╭───────────────────────────────────────────────────╮
+│ Removing sh-________ reaps 1 node(s):             │
+│   NODE         KIND         VOL  HELD  TMP  STATE │
+│   sh-________  box (bwrap)                  live  │
+│ Proceed?                                          │
+╰───────────────────────────────────────────────────╯
 ┃ Proceed?
 ┃
 ┃   Yes     No

@@ -103,6 +103,32 @@ A plain `mount:` whose origin is missing is treated as a typo and **refused**:
 dabs: recipe "broken": mount source ~/myproj/does-not-exist does not exist (use mkmount: to create it)
 ```
 
+## A per-box destination: `$NODE_ID`
+
+A source's `path:` (and the recipe's `workdir:`) may name `$NODE_ID` — the id of
+the box being provisioned. It is the one variable a **box** path may name; the
+space variables name host origins only.
+
+It earns its keep when a tool keys state off its own working directory. A recipe
+that mounts `. → /work` gives every box the identical cwd, so every agent
+session inside derives the same transcript slug and they collide across boxes.
+Namespacing the destination gives each box its own:
+
+```yaml
+recipes:
+  agent:
+    description: one in-box workdir per box, so sessions never collide
+    image: shell
+    workdir: /$NODE_ID
+    command: [sh]
+    sources:
+      - mount: .
+        path: /$NODE_ID
+```
+
+The id is validated as a slug before it is substituted, so it can carry no `/`
+and no `..`: `$NODE_ID` cannot move a mount out of the path that names it.
+
 ## Where a snapshot lands: `at:`
 
 For `worktree:` and `copy:` sources, `at:` says where the bytes land in the

@@ -125,7 +125,7 @@ func TestBoxFromWorktreeCheckoutParentsOnWorktree(t *testing.T) {
 
 	// (e) Booting a box from ~/.dabs itself (not inside any node's place) stays
 	// refused.
-	out, code = runIn(filepath.Join(home, ".dabs"), "dabs recipe sh --detach")
+	out, code = runIn(filepath.Join(home, ".dabs"), "dabs recipe sh --no-command")
 	if code == 0 {
 		t.Fatalf("booting from ~/.dabs itself must refuse, got exit 0:\n%s", out)
 	}

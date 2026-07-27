@@ -16,7 +16,7 @@
 // path) and appends one line per suspicious request, naming the request path.
 //
 // Same harness as creds_body_expand_e2e_test.go: a Go HTTP server in this test
-// process plays the API on host loopback; curl's --noproxy '' keeps the
+// process plays the API on host loopback; curl's --noproxy "" keeps the
 // loopback URL on the proxy path despite the box's NO_PROXY exemption.
 package e2e
 
@@ -92,7 +92,7 @@ recipes:
 `, dir, vault, alerts)
 	write(filepath.Join(dir, "dabs.yaml"), yaml, 0o644)
 
-	out, code := run("dabs recipe " + dir + " --detach")
+	out, code := run("dabs recipe " + dir + " --no-command")
 	if code != 0 {
 		t.Fatalf("boot failed (%d):\n%s", code, out)
 	}

@@ -39,6 +39,20 @@ func MountArg(m sandbox.Mount) string {
 	return arg
 }
 
+// DetachLine renders cmd as a `sh -c` line that starts it in the BACKGROUND
+// with its combined output redirected to sandbox.DetachedLogPath, so the shell
+// the driver execs exits at once and the command is reparented onto the box's
+// own init. Each argument is single-quoted, so a command carrying spaces,
+// quotes or shell metacharacters reaches the box exactly as the recipe wrote it.
+func DetachLine(cmd []string) []string {
+	quoted := make([]string, len(cmd))
+	for i, a := range cmd {
+		quoted[i] = "'" + strings.ReplaceAll(a, "'", `'\''`) + "'"
+	}
+	line := fmt.Sprintf("{ %s; } >%s 2>&1 &", strings.Join(quoted, " "), sandbox.DetachedLogPath)
+	return []string{"sh", "-c", line}
+}
+
 // FilterPrefixed keeps the names carrying dabs's Prefix, strips it, and
 // deduplicates — the shared tail of every CLI driver's image listing.
 func FilterPrefixed(names []string) []string {

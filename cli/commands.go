@@ -40,7 +40,7 @@ type cmdDoc struct{ Help, Args, NotesTitle, Notes string }
 
 var commandDocs = map[string]cmdDoc{
 	"build":     {Help: "build a recipe's box image: build [recipe|path] (no name → dabs.yaml default). A boot rebuilds automatically when the Dockerfile or a bundled image's files change; a change only to build-context files a `COPY .` pulls in is not detected — run `dabs prune` then build to pick it up", Args: "build [recipe|path]"},
-	"recipe":    {Help: "run a recipe box: recipe [name] [cmd…] (unknown/omitted name → the default recipe, else sh, with the cmd appended); --worktree <wt> binds an existing worktree (git works in-box); --name <n> names the node the boot creates (unique; an inactive holder is reaped); --no-command boots a NEW box and runs no command (--detach: unstable alias — may later mean a true background detach)", Args: "recipe [name] [cmd… | --no-command] [--worktree <wt>] [--name <n>]"},
+	"recipe":    {Help: "run a recipe box: recipe [name] [cmd…] (unknown/omitted name → the default recipe, else sh, with the cmd appended); --worktree <wt> binds an existing worktree (git works in-box); --name <n> names the node the boot creates (unique; an inactive holder is reaped); --no-command boots a NEW box and runs no command; --detach boots a NEW box, starts the recipe's command in the background and returns, leaving the box up with it running", Args: "recipe [name] [cmd… | --no-command | --detach] [--worktree <wt>] [--name <n>]"},
 	"recipes":   {Help: "list the known recipes, one line each: name, description, and origin (bundled | global ~/.dabs/recipes.yaml | project ./dabs.yaml). --print dumps the full merged registry as YAML, sources and all, marking each recipe's origin; --print <name> dumps just that recipe", Args: "recipes [--print [name]]"},
 	"worktrees": {Help: "inspect worktree nodes (reap with `dabs rm <name>` or `dabs rm --clean-worktrees`): worktrees [ls | diff <name>]", Args: "worktrees [ls | diff <name>]"},
 	"cd":        {Help: "print a node's working place as a bare path, resolved per kind — a project to its source repo, a worktree to its checkout, a box to its node dir (~/.dabs/nodes/<id>); shells cannot be moved by a child process, so: cd \"$(dabs cd <node>)\". A box's node dir holds the three spaces as subdirectories: volume/ survives `rm --keep`, held/ carries work you would miss (a worktree's checkout, a workdir's copy — `rm` asks before reaping), tmp/ is scratch `rm` reaps quietly", Args: "cd <node>"},
@@ -74,10 +74,11 @@ func (c *CLI) runRecipe(args []string) error {
 		p.Args = args[1:]
 		return c.actions.Recipe(p)
 	}
-	// --detach boots a NEW pristine DETACHED box and runs no command; it takes an
-	// optional recipe name or dabs.yaml path and no appended command. --worktree
-	// <wt> binds an existing worktree to the recipe's `.` source (git works in-box)
-	// instead of the cwd, and composes with --detach.
+	// --no-command boots a NEW pristine box and runs no command; --detach boots one
+	// and starts the recipe's own command in the background. Both take an optional
+	// recipe name or dabs.yaml path and no appended command. --worktree <wt> binds
+	// an existing worktree to the recipe's `.` source (git works in-box) instead of
+	// the cwd, and composes with either.
 	//
 	// dabs's own flags END at the first bare `--`: everything after it is the
 	// appended command, verbatim, whatever recipe was named. Without that stop,
@@ -101,7 +102,9 @@ func (c *CLI) runRecipe(args []string) error {
 			break
 		}
 		switch {
-		case a == "--detach", a == "--no-command":
+		case a == "--no-command":
+			p.NoCommand = true
+		case a == "--detach":
 			p.Detach = true
 		case a == "--worktree":
 			if i+1 >= len(args) {
@@ -123,8 +126,14 @@ func (c *CLI) runRecipe(args []string) error {
 			rest = append(rest, a)
 		}
 	}
+	if p.NoCommand && p.Detach {
+		return BadArgsError{Cmd: "recipe", Reason: "--no-command and --detach ask for opposite things: one runs no command, the other starts the recipe's"}
+	}
+	if p.NoCommand && len(rest) > 1 {
+		return BadArgsError{Cmd: "recipe", Reason: "recipe --no-command takes an optional recipe name or dabs.yaml path and runs no command"}
+	}
 	if p.Detach && len(rest) > 1 {
-		return BadArgsError{Cmd: "recipe", Reason: "recipe --detach takes an optional recipe name or dabs.yaml path and runs no command"}
+		return BadArgsError{Cmd: "recipe", Reason: "recipe --detach takes an optional recipe name or dabs.yaml path and starts the recipe's own command — nothing is appended to it"}
 	}
 	if p.Worktree != "" && len(rest) == 0 {
 		return BadArgsError{Cmd: "recipe", Reason: "recipe --worktree <wt> needs a recipe name (from: dabs recipes)"}

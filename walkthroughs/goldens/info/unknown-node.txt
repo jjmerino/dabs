@@ -1,0 +1,4 @@
+dabs: info: no node "nothere" (see dabs ls)
+exit=1
+:done
+#

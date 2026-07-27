@@ -67,6 +67,28 @@ func TestNamedBootUsesNameAsNodeID(t *testing.T) {
 	}
 }
 
+// CONTRACT: the reap line a `keep: true` run prints offers the NODE ID — the
+// name --name chose — not the driver's generated instance name. A boot the
+// caller named must not hand back a random handle to reap it by.
+func TestKeptBoxReapLineOffersTheNodeID(t *testing.T) {
+	fd := namedBootData(t)
+	drv := &fakeDriver{}
+	out, err := bootNamed(t, fd, drv, "feature-x")
+	if err != nil {
+		t.Fatalf("named boot: %v", err)
+	}
+	if !strings.Contains(out, "dabs rm feature-x") {
+		t.Fatalf("the kept box's reap line must name the node id; got:\n%s", out)
+	}
+	// The instance stays visible so the mapping to the driver's name survives.
+	if len(drv.ups) != 1 {
+		t.Fatalf("want exactly one instance up, got %v", drv.ups)
+	}
+	if !strings.Contains(out, drv.ups[0].Name) {
+		t.Fatalf("the kept box's line must still show instance %q; got:\n%s", drv.ups[0].Name, out)
+	}
+}
+
 // CONTRACT: a name held by an ACTIVE node refuses the boot before anything is
 // provisioned — nothing built, nothing up, nothing reaped.
 func TestNamedBootRefusesActiveHolder(t *testing.T) {

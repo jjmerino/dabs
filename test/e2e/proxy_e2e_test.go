@@ -113,9 +113,9 @@ recipes:
 `, dir, innerLog, dir, outerLog, outDir)
 	write("dabs.yaml", yaml, 0o644)
 
-	// Boot detached (starts the engine), then run the script via exec — exec runs
+	// Boot with no command (starts the engine), then run the script via exec — exec runs
 	// under the same proxy env + forwarder, and skips the recipe confirm prompt.
-	out, code := run("dabs recipe " + dir + " --detach")
+	out, code := run("dabs recipe " + dir + " --no-command")
 	if code != 0 {
 		t.Fatalf("boot failed (%d):\n%s", code, out)
 	}
@@ -189,7 +189,7 @@ recipes:
 		t.Fatal(err)
 	}
 
-	out, code := run("dabs recipe " + dir + " --detach")
+	out, code := run("dabs recipe " + dir + " --no-command")
 	if code != 0 {
 		t.Fatalf("boot failed (%d):\n%s", code, out)
 	}
@@ -227,7 +227,7 @@ recipes:
 }
 
 // engineNode reads the box node's recorded proxy engine PID and temp dir off the
-// `id:` line of a `dabs recipe --detach` report.
+// `id:` line of a `dabs recipe --no-command` report.
 func engineNode(t *testing.T, out string) (int, string) {
 	t.Helper()
 	var id string
@@ -268,7 +268,7 @@ func running(pid int) bool {
 	return s[i+2] != 'Z' // Z = zombie = killed but unreaped
 }
 
-// instanceLine pulls the driver instance name off a `dabs recipe --detach`
+// instanceLine pulls the driver instance name off a `dabs recipe --no-command`
 // report (its `instance:` line), which exec/rm resolve.
 func instanceLine(t *testing.T, out string) string {
 	t.Helper()
@@ -326,7 +326,7 @@ echo "allowed $(curl -s --noproxy '' --cacert /out/ca.pem -m 12 https://127.0.0.
 		t.Fatal(err)
 	}
 
-	out, code := run("dabs recipe " + dir + " --detach")
+	out, code := run("dabs recipe " + dir + " --no-command")
 	if code != 0 {
 		t.Fatalf("boot failed (%d):\n%s", code, out)
 	}
@@ -383,7 +383,7 @@ recipes:
 		[]byte("#!/bin/sh\ncurl -s -D- -o /dev/null -m 8 https://x.test/ > /out/headers.txt\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	out, code := run("dabs recipe " + dir + " --detach")
+	out, code := run("dabs recipe " + dir + " --no-command")
 	if code != 0 {
 		t.Fatalf("boot failed (%d):\n%s", code, out)
 	}
@@ -421,7 +421,7 @@ recipes:
 	if err := os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out, code := run("dabs recipe " + dir + " --detach")
+	out, code := run("dabs recipe " + dir + " --no-command")
 	if code == 0 {
 		t.Fatalf("expected a boot failure for a missing module, got success:\n%s", out)
 	}
@@ -445,7 +445,7 @@ func TestProxyInjectsEcosystemCAEnv(t *testing.T) {
 	}
 	yaml := "default: e\nrecipes:\n  e:\n    image: dabs-e2e\n    keep: true\n    egress:\n      allow: \"*\"\n"
 	os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644)
-	out, code := run("dabs recipe " + dir + " --detach")
+	out, code := run("dabs recipe " + dir + " --no-command")
 	if code != 0 {
 		t.Fatalf("boot failed (%d):\n%s", code, out)
 	}
@@ -486,7 +486,7 @@ echo "upper $(code https://BLOCK.TEST/)" >> "$out"
 echo "dot $(code https://block.test./)" >> "$out"
 echo "allowed $(code https://allow.test/)" >> "$out"
 `), 0o755)
-	out, code := run("dabs recipe " + dir + " --detach")
+	out, code := run("dabs recipe " + dir + " --no-command")
 	if code != 0 {
 		t.Fatalf("boot failed (%d):\n%s", code, out)
 	}
@@ -516,7 +516,7 @@ func TestProxyMalformedFactoryFailsClosed(t *testing.T) {
 	}
 	yaml := fmt.Sprintf("default: n\nrecipes:\n  n:\n    image: dabs-e2e\n    egress:\n      http_proxy:\n        - tls: terminate\n        - module: %s/nullish.ts\n        - tls: originate\n", dir)
 	os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644)
-	out, code := run("dabs recipe " + dir + " --detach")
+	out, code := run("dabs recipe " + dir + " --no-command")
 	if code == 0 {
 		t.Fatalf("expected a boot failure for a factory returning null, got success:\n%s", out)
 	}
@@ -547,7 +547,7 @@ func TestProxyFailedBootLeavesNoTempDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	before, _ := filepath.Glob("/tmp/dabs-proxy-*")
-	out, code := run("dabs recipe " + dir + " --detach")
+	out, code := run("dabs recipe " + dir + " --no-command")
 	if code == 0 {
 		t.Fatalf("expected a boot failure for a broken engine module, got success:\n%s", out)
 	}
@@ -580,7 +580,7 @@ func TestProxyDoesNotFollowRedirects(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644)
 	// No -L: the box must see the redirect status itself, not the followed page.
 	os.WriteFile(filepath.Join(outDir, "run.sh"), []byte("#!/bin/sh\ncurl -s -o /dev/null -w 'code=%{http_code}\\n' -m 12 https://redir.test/ > /out/resp.txt 2>&1\n"), 0o755)
-	out, code := run("dabs recipe " + dir + " --detach")
+	out, code := run("dabs recipe " + dir + " --no-command")
 	if code != 0 {
 		t.Fatalf("boot failed (%d):\n%s", code, out)
 	}
@@ -608,7 +608,7 @@ func TestProxyReapsEngineWhenBoxEntryFails(t *testing.T) {
 	yaml := "default: g\nrecipes:\n  g:\n    image: dabs-e2e\n    workdir: /does/not/exist\n    egress:\n      allow: \"*\"\n"
 	os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644)
 	before, _ := filepath.Glob("/tmp/dabs-proxy-*")
-	out, code := run("dabs recipe " + dir + " --detach")
+	out, code := run("dabs recipe " + dir + " --no-command")
 	if code == 0 {
 		t.Fatalf("expected a boot failure for a missing workdir, got success:\n%s", out)
 	}
@@ -637,7 +637,7 @@ func TestProxyCarriesNonStandardPort(t *testing.T) {
 	yaml := fmt.Sprintf("default: p\nrecipes:\n  p:\n    image: dabs-e2e\n    keep: true\n    egress:\n      http_proxy:\n        - tls: terminate\n        - module: %s/hook.ts\n        - tls: originate\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
 	os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644)
 	os.WriteFile(filepath.Join(outDir, "run.sh"), []byte("#!/bin/sh\ncurl -s -m 8 https://mock.test:8443/ > /out/resp.txt 2>&1\n"), 0o755)
-	out, code := run("dabs recipe " + dir + " --detach")
+	out, code := run("dabs recipe " + dir + " --no-command")
 	if code != 0 {
 		t.Fatalf("boot failed (%d):\n%s", code, out)
 	}
@@ -675,7 +675,7 @@ recipes:
 	if err := os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out, code := run("dabs recipe " + dir + " --detach")
+	out, code := run("dabs recipe " + dir + " --no-command")
 	if code != 0 {
 		t.Fatalf("box should still boot (the warning is advisory), got failure:\n%s", out)
 	}
@@ -710,7 +710,7 @@ out=/out/out.txt
 echo "throw $(curl -s -o /dev/null -w '%{http_code}' -m 8 https://boom.test/ || echo 000)" >> "$out"
 echo "survived $(curl -s -m 12 https://ok.test/ || echo 000)" >> "$out"
 `), 0o755)
-	out, code := run("dabs recipe " + dir + " --detach")
+	out, code := run("dabs recipe " + dir + " --no-command")
 	if code != 0 {
 		t.Fatalf("boot failed (%d):\n%s", code, out)
 	}
@@ -747,7 +747,7 @@ func TestProxyHookExceptionNoLeak(t *testing.T) {
 	yaml := fmt.Sprintf("default: b\nrecipes:\n  b:\n    image: dabs-e2e\n    keep: true\n    egress:\n      http_proxy:\n        - tls: terminate\n        - module: %s/boom.ts\n        - tls: originate\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
 	os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644)
 	os.WriteFile(filepath.Join(outDir, "run.sh"), []byte("#!/bin/sh\ncurl -s -m 8 https://x.test/ -w '\\ncode=%{http_code}\\n' > /out/resp.txt 2>&1\n"), 0o755)
-	out, code := run("dabs recipe " + dir + " --detach")
+	out, code := run("dabs recipe " + dir + " --no-command")
 	if code != 0 {
 		t.Fatalf("boot failed (%d):\n%s", code, out)
 	}
@@ -808,7 +808,7 @@ func TestProxyPlainHTTP(t *testing.T) {
 	// '' clears the NO_PROXY exemption for 127.0.0.1 so it routes through the engine.
 	script := fmt.Sprintf("#!/bin/sh\ncurl -s --noproxy '' -m 15 http://127.0.0.1:%d/ -w '\\ncode=%%{http_code}\\n' > /out/resp.txt 2>&1\n", port)
 	os.WriteFile(filepath.Join(outDir, "run.sh"), []byte(script), 0o755)
-	out, code := run("dabs recipe " + dir + " --detach")
+	out, code := run("dabs recipe " + dir + " --no-command")
 	if code != 0 {
 		t.Fatalf("boot failed (%d):\n%s", code, out)
 	}
@@ -840,7 +840,7 @@ func TestProxyResponseHeaderInjectionFailsClosed(t *testing.T) {
 	yaml := fmt.Sprintf("default: e\nrecipes:\n  e:\n    image: dabs-e2e\n    keep: true\n    egress:\n      http_proxy:\n        - tls: terminate\n        - module: %s/evil.ts\n        - tls: originate\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
 	os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644)
 	os.WriteFile(filepath.Join(outDir, "run.sh"), []byte("#!/bin/sh\ncurl -s -i -m 12 https://any.test/ > /out/resp.txt 2>&1\n"), 0o755)
-	out, code := run("dabs recipe " + dir + " --detach")
+	out, code := run("dabs recipe " + dir + " --no-command")
 	if code != 0 {
 		t.Fatalf("boot failed (%d):\n%s", code, out)
 	}
@@ -871,7 +871,7 @@ func TestProxyBinaryBodyPreserved(t *testing.T) {
 	yaml := fmt.Sprintf("default: b\nrecipes:\n  b:\n    image: dabs-e2e\n    keep: true\n    egress:\n      http_proxy:\n        - tls: terminate\n        - module: %s/bin.ts\n        - tls: originate\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
 	os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644)
 	os.WriteFile(filepath.Join(outDir, "run.sh"), []byte("#!/bin/sh\ncurl -s -m 12 https://any.test/ | wc -c | tr -d ' \\n' > /out/size.txt\n"), 0o755)
-	out, code := run("dabs recipe " + dir + " --detach")
+	out, code := run("dabs recipe " + dir + " --no-command")
 	if code != 0 {
 		t.Fatalf("boot failed (%d):\n%s", code, out)
 	}
@@ -909,7 +909,7 @@ func TestProxyDirectIPThroughWindow(t *testing.T) {
 	// --noproxy '' routes 127.0.0.1 through the engine rather than the box's own
 	// loopback.
 	os.WriteFile(filepath.Join(outDir, "run.sh"), []byte("#!/bin/sh\ncurl -s --noproxy '' -o /dev/null -m 15 https://127.0.0.1/; echo \"exit=$?\" > /out/ip.txt\n"), 0o755)
-	out, code := run("dabs recipe " + dir + " --detach")
+	out, code := run("dabs recipe " + dir + " --no-command")
 	if code != 0 {
 		t.Fatalf("boot failed (%d):\n%s", code, out)
 	}
@@ -954,7 +954,7 @@ out=/out/out.txt
 echo "listed=$(curl -s -m 8 https://mock.test/)" >> "$out"
 echo "unlisted=$(curl -s --noproxy '' --cacert /out/ca.pem -m 12 https://127.0.0.1:%d/)" >> "$out"
 `, port)), 0o755)
-	out, code := run("dabs recipe " + dir + " --detach")
+	out, code := run("dabs recipe " + dir + " --no-command")
 	if code != 0 {
 		t.Fatalf("boot failed (%d):\n%s", code, out)
 	}
@@ -1002,7 +1002,7 @@ func TestProxyBrokerHeaderRoundTrip(t *testing.T) {
 	yaml := fmt.Sprintf("default: br\nrecipes:\n  br:\n    image: dabs-e2e\n    keep: true\n    egress:\n      http_proxy:\n        - tls: terminate\n        - module: %s/broker.ts\n        - module: %s/api.ts\n        - tls: originate\n    sources:\n      - mount: %s\n        path: /out\n", dir, dir, outDir)
 	os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644)
 	os.WriteFile(filepath.Join(outDir, "run.sh"), []byte("#!/bin/sh\ncurl -s -m 8 -H 'Authorization: Bearer dummy' https://api.test/ > /out/body.txt 2>&1\n"), 0o755)
-	out, code := run("dabs recipe " + dir + " --detach")
+	out, code := run("dabs recipe " + dir + " --no-command")
 	if code != 0 {
 		t.Fatalf("boot failed (%d):\n%s", code, out)
 	}
@@ -1037,7 +1037,7 @@ func TestProxySingleHookSwapBack(t *testing.T) {
 	yaml := fmt.Sprintf("default: b\nrecipes:\n  b:\n    image: dabs-e2e\n    keep: true\n    egress:\n      http_proxy:\n        - tls: terminate\n        - module: %s/broker.ts\n        - tls: originate\n    sources:\n      - mount: %s\n        path: /out\n", dir, outDir)
 	os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644)
 	os.WriteFile(filepath.Join(outDir, "run.sh"), []byte("#!/bin/sh\ncurl -s -m 8 https://api.test/ > /out/body.txt 2>&1\n"), 0o755)
-	out, code := run("dabs recipe " + dir + " --detach")
+	out, code := run("dabs recipe " + dir + " --no-command")
 	if code != 0 {
 		t.Fatalf("boot failed (%d):\n%s", code, out)
 	}
@@ -1073,7 +1073,7 @@ func TestProxyHungHookTimesOut(t *testing.T) {
 	// curl -m 8: if the hook hung unbounded, curl would hit its own timeout (28);
 	// with the engine hook timeout it gets a quick 502.
 	os.WriteFile(filepath.Join(outDir, "run.sh"), []byte("#!/bin/sh\ncode=$(curl -s -o /dev/null -w '%{http_code}' -m 8 https://x.test/); echo \"code=$code exit=$?\" > /out/r.txt\n"), 0o755)
-	out, code := run("dabs recipe " + dir + " --detach")
+	out, code := run("dabs recipe " + dir + " --no-command")
 	if code != 0 {
 		t.Fatalf("boot failed (%d):\n%s", code, out)
 	}
@@ -1125,7 +1125,7 @@ echo "pin2=$(curl -s --cacert $SYS -m 12 https://example.com/ | grep -o 'Example
 # the domain denylist still holds, even with tls: terminate in the chain.
 curl -s --cacert $SYS -o /dev/null -m 8 https://blocked.test/; echo "deny_exit=$?" >> "$out"
 `), 0o755)
-	out, code := run("dabs recipe " + dir + " --detach")
+	out, code := run("dabs recipe " + dir + " --no-command")
 	if code != 0 {
 		t.Fatalf("boot failed (%d):\n%s", code, out)
 	}
@@ -1170,7 +1170,7 @@ out=/out/out.txt
 echo "allowed=$(curl -s -m 8 https://ok.test/)" >> "$out"
 curl -s -o /dev/null -m 8 https://other.test/; echo "deny_exit=$?" >> "$out"
 `), 0o755)
-	out, code := run("dabs recipe " + dir + " --detach")
+	out, code := run("dabs recipe " + dir + " --no-command")
 	if code != 0 {
 		t.Fatalf("boot failed (%d):\n%s", code, out)
 	}
@@ -1215,7 +1215,7 @@ echo "unlisted $(curl -s -o /dev/null -w '%%{http_code}' -m 12 https://other.tes
 `, port)), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	out, code := run("dabs recipe " + dir + " --detach")
+	out, code := run("dabs recipe " + dir + " --no-command")
 	if code != 0 {
 		t.Fatalf("boot failed (%d):\n%s", code, out)
 	}
@@ -1273,7 +1273,7 @@ echo "code $(curl -s -o /dev/null -w '%%{http_code}' -m 8 http://127.0.0.1:%d/ |
 `, port)), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	out, code := run("dabs recipe " + dir + " --detach")
+	out, code := run("dabs recipe " + dir + " --no-command")
 	if code != 0 {
 		t.Fatalf("boot failed (%d):\n%s", code, out)
 	}

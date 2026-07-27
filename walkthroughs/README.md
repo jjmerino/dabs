@@ -16,7 +16,7 @@ a host whose dabs state matters. From this repo's root (see `../dabs.yaml`):
 
 ```bash
 dabs build dabseption && dabs build scribe     # base image, then tuti + released dabs
-dabs recipe scribe --detach                    # dabs + tuti + tmux, /work = this repo
+dabs recipe scribe --no-command                    # dabs + tuti + tmux, /work = this repo
 dabs exec <box> 'cd /work/walkthroughs && python3 -m pytest -q'
 ```
 

@@ -26,7 +26,7 @@ func TestLsHidesInactiveProjectSubtrees(t *testing.T) {
 	resetNodes(t)
 	dir := filepath.Join(home, "e2e-inactive")
 	bugRecipe(t, dir, "inact", "")
-	out, code := runIn(dir, "dabs recipe inact --detach")
+	out, code := runIn(dir, "dabs recipe inact --no-command")
 	if code != 0 {
 		t.Fatalf("up failed (%d): %s", code, out)
 	}
@@ -65,7 +65,7 @@ func TestLeftoverFilesKeepASubtreeActive(t *testing.T) {
 	resetNodes(t)
 	dir := filepath.Join(home, "e2e-leftover")
 	bugRecipe(t, dir, "leftover", "")
-	out, code := runIn(dir, "dabs recipe leftover --detach")
+	out, code := runIn(dir, "dabs recipe leftover --no-command")
 	if code != 0 {
 		t.Fatalf("up failed (%d): %s", code, out)
 	}
@@ -104,7 +104,7 @@ func TestEmptyDirTreeIsEmpty(t *testing.T) {
 	resetNodes(t)
 	dir := filepath.Join(home, "e2e-emptytree")
 	bugRecipe(t, dir, "emptytree", "")
-	out, code := runIn(dir, "dabs recipe emptytree --detach")
+	out, code := runIn(dir, "dabs recipe emptytree --no-command")
 	if code != 0 {
 		t.Fatalf("up failed (%d): %s", code, out)
 	}
@@ -160,7 +160,7 @@ func TestLiveBoxIsAlwaysActive(t *testing.T) {
 	resetNodes(t)
 	dir := filepath.Join(home, "e2e-livebox")
 	bugRecipe(t, dir, "livebox", "")
-	out, code := runIn(dir, "dabs recipe livebox --detach")
+	out, code := runIn(dir, "dabs recipe livebox --no-command")
 	if code != 0 {
 		t.Fatalf("up failed (%d): %s", code, out)
 	}
@@ -215,7 +215,7 @@ func TestGoneEmptyBoxIsInactiveEvenUnderActiveParent(t *testing.T) {
 	resetNodes(t)
 	dir := filepath.Join(home, "e2e-goneunder")
 	bugRecipe(t, dir, "goneunder", "")
-	out, code := runIn(dir, "dabs recipe goneunder --detach")
+	out, code := runIn(dir, "dabs recipe goneunder --no-command")
 	if code != 0 {
 		t.Fatalf("up failed (%d): %s", code, out)
 	}
@@ -287,7 +287,7 @@ func TestRmInactiveSweepsOnlyInactive(t *testing.T) {
 	// and only the empty project marker remains.
 	deadDir := filepath.Join(home, "e2e-sweep-dead")
 	bugRecipe(t, deadDir, "sweepdead", "")
-	out, code := runIn(deadDir, "dabs recipe sweepdead --detach")
+	out, code := runIn(deadDir, "dabs recipe sweepdead --no-command")
 	if code != 0 {
 		t.Fatalf("dead up failed (%d): %s", code, out)
 	}
@@ -299,7 +299,7 @@ func TestRmInactiveSweepsOnlyInactive(t *testing.T) {
 	// An active subtree: a live box.
 	liveDir := filepath.Join(home, "e2e-sweep-live")
 	bugRecipe(t, liveDir, "sweeplive", "")
-	out, code = runIn(liveDir, "dabs recipe sweeplive --detach")
+	out, code = runIn(liveDir, "dabs recipe sweeplive --no-command")
 	if code != 0 {
 		t.Fatalf("live up failed (%d): %s", code, out)
 	}

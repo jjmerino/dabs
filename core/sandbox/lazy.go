@@ -16,6 +16,12 @@ func Lazy(kind string, build func() (Driver, error)) Driver {
 	return &lazy{kind: kind, build: build}
 }
 
+// The wrapper stands in front of the driver, so a caller type-asserts THIS type
+// for a capability: every optional one must be forwarded, or a driver that has
+// it is reported as not having it. Capable is the one list; this line is what
+// makes forgetting a forward a compile error.
+var _ Capable = (*lazy)(nil)
+
 type lazy struct {
 	kind  string
 	build func() (Driver, error)
@@ -115,6 +121,34 @@ func (l *lazy) Images() ([]Image, error) {
 		return s.Images()
 	}
 	return nil, nil
+}
+
+// CheckDetach builds the driver and forwards the capability. An inner driver
+// with no answer of its own cannot hold a detached command; the refusal names
+// this driver's kind and claims no cause it cannot know.
+func (l *lazy) CheckDetach() error {
+	d, err := l.get()
+	if err != nil {
+		return err
+	}
+	if dt, ok := d.(Detacher); ok {
+		return dt.CheckDetach()
+	}
+	return fmt.Errorf("the %s driver cannot hold a detached command", l.kind)
+}
+
+// Detach builds the driver and forwards the start. Callers ask CheckDetach
+// first, so an inner driver with no answer only reaches here out of order — it
+// gets the same refusal rather than a nil error and a command nobody started.
+func (l *lazy) Detach(instance string, cmd []string) error {
+	d, err := l.get()
+	if err != nil {
+		return err
+	}
+	if dt, ok := d.(Detacher); ok {
+		return dt.Detach(instance, cmd)
+	}
+	return fmt.Errorf("the %s driver cannot hold a detached command", l.kind)
 }
 
 // RemoveImage forwards to the inner driver's image store; with none there is

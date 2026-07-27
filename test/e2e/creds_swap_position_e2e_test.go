@@ -19,7 +19,7 @@
 // positions above, only on those hosts.
 //
 // Same harness family as the sibling tests: a Go HTTP server in this test
-// process plays the upstream on host loopback (curl's --noproxy '' keeps the
+// process plays the upstream on host loopback (curl's --noproxy "" keeps the
 // loopback URL on the proxy path). The harness takes the broker's `hosts`
 // setting, so the upstream can be the allowed host in one test and a stranger
 // in another — no DNS involved.
@@ -108,7 +108,7 @@ recipes:
 `, dir, vault, hosts)
 	write(filepath.Join(dir, "dabs.yaml"), yaml, 0o644)
 
-	out, code := run("dabs recipe " + dir + " --detach")
+	out, code := run("dabs recipe " + dir + " --no-command")
 	if code != 0 {
 		t.Fatalf("boot failed (%d):\n%s", code, out)
 	}

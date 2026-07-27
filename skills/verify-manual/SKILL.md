@@ -38,7 +38,7 @@ Run from the repo root on the host; the suite runs INSIDE the box.
 2. **Boot it and run the suite:**
 
    ```bash
-   dabs recipe scribe --detach --name scribe
+   dabs recipe scribe --no-command --name scribe
    dabs exec scribe 'cd /work/walkthroughs && python3 -m pytest -q'
    ```
 

@@ -104,10 +104,23 @@ the broker rewrote this response
 ```
 
 <Tip>
-This is the mechanism behind a **credential broker**: instead of rewriting the
-whole body, a real hook swaps a dummy token for the real one on the way **out**
-and scrubs the real token back out of every response, so the box holds only the
-dummy. See the `confined-claude` recipe and
+This is the mechanism behind a **credential broker**: the box runs with a fully
+dummy credential and the real token lives only in a host-side vault. On the way
+out, the hook expands the dummy in exactly **two positions**, each named by
+header/field, place, and host — never by what the bytes look like:
+
+- the `Authorization` header of a request, and
+- the `refresh_token` field of the refresh grant's JSON body
+  (`POST /v1/oauth/token`, `grant_type=refresh_token`).
+
+An optional `hosts:` list scopes both to particular hosts inside the terminate
+window. Everything else a request carries is **content**: a token sitting in
+message content is passed through un-expanded, a real one is rewritten back to
+its dummy before the request leaves, and the sighting is recorded host-side to
+the hook's `alerts:` file. Inbound, every real token is rewritten to its dummy
+and rotation is captured to the vault, so the box only ever holds sentinels.
+
+See the `confined-claude` recipe and
 `contrib/proxy/creds-inject-anthropic/broker.ts` in the dabs repo, and the
 `egress` field in the [recipe schema](/reference/recipe-schema).
 </Tip>

@@ -6,6 +6,8 @@ in the NODE column. `dabs cd <node>` prints that node's own directory as a bare
 path, so a shell can step into it.
 """
 
+import time
+
 from conftest import check, run
 
 
@@ -16,8 +18,16 @@ def test_name_your_work_and_reach_it(tut, dabs_home, repo):
     # branch is cut after it (`dabs/<name>`), not a random id.
     check(tut, "dabs recipe wt --name login-fix", "names/cut")
 
+    # `ls` draws siblings oldest-first from each node's `created` stamp, and that
+    # stamp is RFC3339 — one-second resolution. Two nodes minted inside the same
+    # second tie, and the stable sort then leaves them in the order `ls` gathered
+    # them, which puts a live box ahead of its sibling worktree. Crossing a second
+    # boundary separates the two children below by their real ages, so the screen
+    # this walkthrough photographs is the same one every run.
+    time.sleep(1.1)
+
     # Name a box over the repo: the boot line carries `id: dev`.
-    check(tut, "dabs recipe sh --name dev --detach", "names/boot")
+    check(tut, "dabs recipe sh --name dev --no-command", "names/boot")
 
     # The name works everywhere an id does — reach into the box by name.
     check(tut, "dabs exec dev -- echo 'reached dev by name'", "names/exec")

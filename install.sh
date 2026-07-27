@@ -7,7 +7,15 @@ set -eu
 REPO="jjmerino/dabs"
 # A user-owned directory: dabs needs no root. It drives docker, bwrap or
 # apple's container as the invoking user and keeps its state in ~/.dabs.
-INSTALL_DIR="${DABS_INSTALL_DIR:-$HOME/.local/bin}"
+if [ -n "${DABS_INSTALL_DIR:-}" ]; then
+  INSTALL_DIR="$DABS_INSTALL_DIR"
+elif [ -n "${HOME:-}" ]; then
+  INSTALL_DIR="$HOME/.local/bin"
+else
+  echo "HOME is not set, so there is no default install directory." >&2
+  echo "Set HOME, or name the directory: DABS_INSTALL_DIR=/path/to/bin" >&2
+  exit 1
+fi
 
 os="$(uname -s 2>/dev/null || echo unknown)"
 arch="$(uname -m 2>/dev/null || echo unknown)"
@@ -82,6 +90,9 @@ if [ ! -w "$INSTALL_DIR" ]; then
   echo "Point DABS_INSTALL_DIR at a directory you can write, e.g. DABS_INSTALL_DIR=\$HOME/bin" >&2
   exit 1
 fi
+# Absolute and without a trailing slash, so every path printed from here reads
+# cleanly and the PATH line offered at the end is one a shell can use.
+INSTALL_DIR="$(cd "$INSTALL_DIR" && pwd)"
 
 # Resolve /releases/latest to the tag it currently points at, so the binary and
 # the SHA256SUMS come from ONE release even if a new one publishes mid-install,

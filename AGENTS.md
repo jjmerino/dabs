@@ -461,10 +461,13 @@ which is what the install script downloads. No version is embedded in the Go
 source. Release changes go through a PR like any other change — never straight
 to `main`.
 
-1. On a branch, move the `## [Unreleased]` block in `CHANGELOG.md` into a dated
-   `## [X.Y.Z] - <date>` section, leave a fresh empty `## [Unreleased]`, and add
-   the `[X.Y.Z]: …/compare/vPREV...vX.Y.Z` link at the bottom. Pick the version
-   by semver (pre-1.0, breaking changes ride a minor bump).
+1. On a branch, WRITE the release's section in `CHANGELOG.md` at cut time: read
+   `git log vPREV..` and each PR it names, and turn everything user-visible into
+   a dated `## [X.Y.Z] - <date>` section under the Keep-a-Changelog categories.
+   There is no `## [Unreleased]` section — a change lands without touching the
+   changelog, and the cut is where the record gets written. Add the
+   `[X.Y.Z]: …/compare/vPREV...vX.Y.Z` link at the bottom. Pick the version by
+   semver (pre-1.0, breaking changes ride a minor bump).
 2. `gofmt -l .`, `go build ./...` **and** `GOOS=linux go build ./...`,
    `go test ./...` — all green.
 3. Commit, push the branch, open a PR, and let it merge to `main`.

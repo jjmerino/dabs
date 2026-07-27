@@ -273,10 +273,14 @@ already started, without cutting a new branch.
   kept box whose spaces are empty becomes inactive and drops out of the default
   `dabs ls` (it is a record of history, shown by `dabs ls --inactive`;
   `dabs rm --inactive` sweeps all of them).
-- `dabs recipe` or `dabs build` must be run from a directory OUTSIDE `~/.dabs`:
-  provisioning from inside dabs's own storage is refused by design — it would
-  mark the node store itself as a project. This includes test drivers: give a
-  journey its own directory under your home, never a path under `~/.dabs`.
+- `dabs recipe` refuses to make a project, worktree, or scratch node from inside
+  `~/.dabs`: marking the node store itself as a project is nonsense. The one
+  exception is a dabs WORKTREE's checkout (`~/.dabs/nodes/<id>/held/worktree`) —
+  a boot from in there parents the box on that worktree and mounts its parent
+  `.git`, exactly as `--worktree` would, so working inside a checkout is
+  supported. `dabs build` provisions no node at all, and runs from anywhere.
+  Test drivers still get their own directory under your home: a journey wants a
+  HOME whose dabs state is its own.
 - Everything dabs owns is namespaced: it only ever sees or removes its own
   boxes.
 - Keep the build context under your home directory. A context under

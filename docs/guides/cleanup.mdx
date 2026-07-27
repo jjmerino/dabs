@@ -21,9 +21,11 @@ local driver runs each box — the box's own driver rides in its KIND cell
 (`box (bwrap)`, `box (apple)`). A registered server earns a heading of its own,
 because knowing a server is there (and reachable, or not) is a finding.
 
-INFO is resolved per kind, and it is the same place `dabs cd` prints: a
-project's source repo, a worktree's checkout, and for a box the `dabs exec
-<instance> bash` line that shells into it. For one node's whole model —
+INFO is resolved per kind: a project's source repo and a worktree's checkout —
+the paths `dabs cd` prints for them — and, for a box, the `dabs exec <instance>
+bash` line that shells into it. A box has no working directory, so that cell is
+a command rather than a place; `dabs cd <box>` gives you its node dir on the
+host instead. For one node's whole model —
 location, instance, the argv appended at boot, every space, the recipe snapshot
 — use [`dabs info <node>`](/reference/cli#info).
 

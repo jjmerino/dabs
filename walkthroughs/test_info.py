@@ -1,6 +1,6 @@
 """docs/reference/cli.mdx (## info) — one node's full model.
 
-`dabs info <node>` is the per-node counterpart of the fleet-wide `dabs ls`: the
+`dabs info <node>` expands ONE node where `dabs ls` gives every node a row: the
 node's kind and id, the place it marks (per kind — a project's source repo, a
 box's own node dir), its box instance, the argv appended to the recipe's command
 at boot, the three spaces with what each holds, and the recipe that provisioned
@@ -71,7 +71,7 @@ def test_info_shows_the_appended_boot_command(tut, dabs_home):
     # holding files; the untouched held and tmp spaces read as empty.
     check(tut, f"dabs info {keeper}", "info/appended")
 
-    # ...and the fleet-wide listing shows no trace of the appended argv.
+    # ...and the listing of everything dabs owns shows no trace of that argv.
     check(tut, "dabs ls", "info/ls-hides-appended")
 
     run(tut, f"dabs rm {keeper} -y --volume")

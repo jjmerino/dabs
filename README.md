@@ -99,10 +99,10 @@ dabs marks every place it makes, so it can tell you what ran, from where, and
 whether anything is still live. `dabs ls` is that tree.
 
 ```
-  NODE                KIND         VOL  HELD  TMP  STATE  INFO
-  myproj              project                             ~/code/myproj
-  └─ myproj-18f9c901  workdir                             ~/.dabs/nodes/myproj-18f9c901
-     └─ sh-a88626a1   box (apple)                  live   dabs exec myproj-a3f9c21d4e02 bash
+  NODE                   KIND         VOL  HELD  TMP  STATE  INFO
+  myproj                 project                             ~/code/myproj
+  └─ myproj-18f9c901     workdir                             ~/.dabs/nodes/myproj-18f9c901
+     └─ myproj-a88626a1  box (apple)                  live   dabs exec myproj-a3f9c21d4e02 bash
 ```
 
 Everything on this machine draws in one flat tree — a box's driver rides in its

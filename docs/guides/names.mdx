@@ -58,16 +58,18 @@ dabs ls
 ```text
   NODE           KIND         VOL  HELD  TMP  STATE                     INFO
   repo-________  project                      main                      ~/repo
-  ├─ dev         box (bwrap)                  live                      dabs exec shell-____________ bash
-  └─ login-fix   worktree          ●          no-diff (dabs/login-fix)  ~/.dabs/nodes/login-fix/held/worktree
+  ├─ login-fix   worktree          ●          no-diff (dabs/login-fix)  ~/.dabs/nodes/login-fix/held/worktree
+  └─ dev         box (bwrap)                  live                      dabs exec shell-____________ bash
 ```
 
 ## cd into a node
 
-`dabs cd <node>` prints a node's **working place** as a bare path — the same
-place the INFO column shows, resolved per kind: a project to its source repo, a
-worktree to its checkout, and a box to its own node dir. A child process cannot
-move its parent's shell, so you wrap it:
+`dabs cd <node>` prints a node's **working place** as a bare path, resolved per
+kind: a project to its source repo, a worktree to its checkout, a box to its own
+node dir. For a project and a worktree that is the path INFO shows above; for a
+**box** it is not — a box has no working directory, so its INFO cell carries the
+`dabs exec … bash` line that shells into it, while `cd` gives you the node dir on
+the host. A child process cannot move its parent's shell, so you wrap it:
 
 ```bash
 cd "$(dabs cd dev)"

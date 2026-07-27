@@ -85,7 +85,7 @@ func TestLibraryBootFromInMemoryRecipe(t *testing.T) {
 	if out, _ := run("dabs recipes --print"); strings.Contains(out, marker) {
 		t.Fatalf("the in-memory recipe reached the registry: %s", out)
 	}
-	// Boot never runs the recipe's command, and the box stays up.
+	// The box outlives the call: Boot tears nothing down, so `ls` still lists it.
 	out, code := run("dabs ls")
 	if code != 0 || !strings.Contains(out, node) {
 		t.Fatalf("ls does not show the booted box (%d): %s", code, out)

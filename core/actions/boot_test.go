@@ -5,6 +5,7 @@ package actions_test
 // the refusals are pinned without a real box.
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -36,6 +37,65 @@ func TestBootFromValueNeedsNoRegistry(t *testing.T) {
 	if spec.Env["A"] != "b" {
 		t.Errorf("the value's env must reach the driver, got %v", spec.Env)
 	}
+}
+
+// CONTRACT: Boot runs NOTHING. It is the `--no-command` form: the box comes up
+// and the recipe's command is left for the caller to run through Exec, so a
+// recipe carrying a command must still reach the driver as a bare boot.
+func TestBootRunsNoCommand(t *testing.T) {
+	fd := baseData()
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	if _, err := newReal("", fd, drv).Boot(actions.BootSpec{
+		Name:   "inmem",
+		Recipe: recipe.Recipe{Image: recipe.ImageRef{Name: "img"}, Command: []string{"sh", "-c", "server"}},
+	}); err != nil {
+		t.Fatalf("Boot: %v", err)
+	}
+	if len(drv.runs) != 0 {
+		t.Errorf("Boot must not run the recipe's command, got %v", drv.runs)
+	}
+	if len(drv.detached) != 0 {
+		t.Errorf("Boot must not start the recipe's command detached, got %v", drv.detached)
+	}
+}
+
+// undetachableDriver forwards the whole Driver surface and nothing else, so it
+// is not a Detacher: neither asking the capability nor asserting the type finds
+// one here.
+type undetachableDriver struct{ sandbox.Driver }
+
+// CONTRACT: Boot does not need a driver that can hold a detached command. It
+// starts no command, so the detach capability never enters into it — a driver
+// that lacks it entirely, and one that answers that it cannot detach, both boot.
+func TestBootNeedsNoDetacher(t *testing.T) {
+	t.Run("driver is not a Detacher at all", func(t *testing.T) {
+		fd := baseData()
+		drv := &fakeDriver{built: map[string]bool{"img": true}}
+		box, err := newReal("", fd, undetachableDriver{drv}).Boot(actions.BootSpec{
+			Name:   "inmem",
+			Recipe: recipe.Recipe{Image: recipe.ImageRef{Name: "img"}, Command: []string{"sh"}},
+		})
+		if err != nil {
+			t.Fatalf("Boot: %v", err)
+		}
+		if box.ID == "" || box.Instance == "" {
+			t.Fatalf("Boot must return an identity, got %+v", box)
+		}
+	})
+	t.Run("driver answers that it cannot detach", func(t *testing.T) {
+		fd := baseData()
+		drv := &fakeDriver{built: map[string]bool{"img": true}, checkDetachErr: errors.New("this driver cannot hold a background command")}
+		box, err := newReal("", fd, drv).Boot(actions.BootSpec{
+			Name:   "inmem",
+			Recipe: recipe.Recipe{Image: recipe.ImageRef{Name: "img"}, Command: []string{"sh"}},
+		})
+		if err != nil {
+			t.Fatalf("Boot: %v", err)
+		}
+		if box.ID == "" || box.Instance == "" {
+			t.Fatalf("Boot must return an identity, got %+v", box)
+		}
+	})
 }
 
 // CONTRACT: a chosen node name is the box's id, so the caller can reap by the

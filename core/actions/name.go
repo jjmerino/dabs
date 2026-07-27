@@ -28,7 +28,8 @@ var nodeNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 func validateNodeName(name string) error { return validateIDShape("--name", name) }
 
 // validateIDShape is that check over any string destined to BE a node id or to
-// prefix one. what labels the offender for whoever supplied it.
+// prefix one. The what argument names the source of the string — a flag, a
+// field — so the message points at whoever supplied it.
 func validateIDShape(what, name string) error {
 	if !nodeNameRe.MatchString(name) {
 		return fmt.Errorf("%s %q: a name is letters, digits, dots, underscores, dashes — starting alphanumeric, at most 64", what, name)

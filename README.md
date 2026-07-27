@@ -35,7 +35,22 @@ at the install command; it never installs anything for you.
 
 ## Install
 
-Prebuilt binary — download from
+Install script — picks the right prebuilt binary and checks it against the
+release's SHA256SUMS:
+
+```bash
+curl -fsSL https://dabs.dev/install.sh | sh
+```
+
+It is [`install.sh`](install.sh) in this repo, so you can read it before you
+run it:
+
+```bash
+curl -fsSL https://dabs.dev/install.sh -o install.sh
+less install.sh && sh install.sh
+```
+
+Or prebuilt binary — download from
 [Releases](https://github.com/jjmerino/dabs/releases), then put it on your
 PATH:
 

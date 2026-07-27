@@ -94,7 +94,7 @@ func TestRmPreviewShowsLiveBoxAsLiveE2E(t *testing.T) {
 	resetNodes(t)
 	dir := filepath.Join(home, "e2e-vm-live")
 	bugRecipe(t, dir, "vmlive", "")
-	out, code := runIn(dir, "dabs recipe vmlive --detach")
+	out, code := runIn(dir, "dabs recipe vmlive --no-command")
 	if code != 0 {
 		t.Fatalf("up failed (%d): %s", code, out)
 	}
@@ -131,7 +131,7 @@ func TestLsPlaceWithDownedBoxNotUnderNoBoxE2E(t *testing.T) {
 	resetNodes(t)
 	dir := filepath.Join(home, "e2e-vm-arch")
 	bugRecipe(t, dir, "vmarch", "")
-	out, code := runIn(dir, "dabs recipe vmarch --detach")
+	out, code := runIn(dir, "dabs recipe vmarch --no-command")
 	if code != 0 {
 		t.Fatalf("up failed (%d): %s", code, out)
 	}
@@ -171,12 +171,12 @@ func TestLsNestsGoneBoxUnderLiveParentE2E(t *testing.T) {
 	resetNodes(t)
 	dir := filepath.Join(home, "e2e-vm-nest")
 	bugRecipe(t, dir, "vmnest", "")
-	outA, code := runIn(dir, "dabs recipe vmnest --detach")
+	outA, code := runIn(dir, "dabs recipe vmnest --no-command")
 	if code != 0 {
 		t.Fatalf("up A failed (%d): %s", code, outA)
 	}
 	boxA := nodeIDFrom(t, outA)
-	outB, code := runIn(dir, "dabs recipe vmnest --detach")
+	outB, code := runIn(dir, "dabs recipe vmnest --no-command")
 	if code != 0 {
 		t.Fatalf("up B failed (%d): %s", code, outB)
 	}

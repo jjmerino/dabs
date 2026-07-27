@@ -97,7 +97,8 @@ func finish(err error) {
 // createsBox reports whether argv runs a command that brings up a fresh box AND
 // tears it down on exit — the only case where an interrupt can leak one. A plain
 // `recipe` creates-and-runs; `exec` reuses an existing box, and `recipe
-// --detach` intentionally leaves one behind, so an interrupt must NOT reap it.
+// --no-command`/`--detach` intentionally leave one behind, so an interrupt must
+// NOT reap it.
 func createsBox(args []string) bool {
 	if len(args) == 0 || args[0] != "recipe" {
 		return false

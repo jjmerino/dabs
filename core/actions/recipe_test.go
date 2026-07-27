@@ -27,30 +27,47 @@ import (
 
 // Compile-time proof the fakes satisfy the real seams.
 var (
-	_ sandbox.Driver = (*fakeDriver)(nil)
-	_ data.Data      = (*fakeData)(nil)
+	_ sandbox.Driver   = (*fakeDriver)(nil)
+	_ sandbox.Detacher = (*fakeDriver)(nil)
+	_ data.Data        = (*fakeData)(nil)
 )
+
+// noDetachDriver is a driver that CANNOT hold a detached command: embedding the
+// interface forwards every Driver method to the fake while leaving
+// sandbox.Detacher unimplemented, which is exactly how a real driver whose box
+// has no process of its own presents itself.
+type noDetachDriver struct{ sandbox.Driver }
+
+// detachedCall is one Detach the fake was asked for: which instance, and the
+// argv handed to it.
+type detachedCall struct {
+	instance string
+	cmd      []string
+}
 
 // --- fake driver: records every op, returns canned results -------------------
 
 type fakeDriver struct {
-	built     map[string]bool // name -> HasImage answer
-	buildErr  error           // if non-nil, Build fails (simulates a driver with no builder)
-	builds    []sandbox.BuildSpec
-	ups       []sandbox.Spec
-	upErr     error
-	execs     [][]string
-	execErr   error // if non-nil, Exec fails (simulates a box that cannot be entered)
-	runs      [][]string
-	runErr    error
-	downs     []string
-	nInst     int
-	infos     []sandbox.Info // what Ls reports (for name resolution in Down)
-	kind      string         // Kind() override; "" → "fake" (a local, non-server driver)
-	lsCall    *bool          // if non-nil, set true when Ls is called (proves contact)
-	lsCount   int            // how many times Ls was called (pins drivers-query batching)
-	lsErrOnce error          // if non-nil, the FIRST Ls call fails with it (a transient outage)
-	lsPanic   bool           // if true, Ls panics — proves it was never called when the test passes
+	built          map[string]bool // name -> HasImage answer
+	buildErr       error           // if non-nil, Build fails (simulates a driver with no builder)
+	builds         []sandbox.BuildSpec
+	ups            []sandbox.Spec
+	upErr          error
+	execs          [][]string
+	execErr        error // if non-nil, Exec fails (simulates a box that cannot be entered)
+	runs           [][]string
+	runErr         error
+	downs          []string
+	nInst          int
+	infos          []sandbox.Info // what Ls reports (for name resolution in Down)
+	kind           string         // Kind() override; "" → "fake" (a local, non-server driver)
+	lsCall         *bool          // if non-nil, set true when Ls is called (proves contact)
+	lsCount        int            // how many times Ls was called (pins drivers-query batching)
+	lsErrOnce      error          // if non-nil, the FIRST Ls call fails with it (a transient outage)
+	lsPanic        bool           // if true, Ls panics — proves it was never called when the test passes
+	detached       []detachedCall // every Detach asked for (the detached-command starts)
+	detachErr      error          // if non-nil, Detach fails (simulates a command that cannot be started)
+	checkDetachErr error          // if non-nil, the driver answers that it CANNOT hold a detached command
 }
 
 func (d *fakeDriver) Build(s sandbox.BuildSpec) error {
@@ -84,6 +101,14 @@ func (d *fakeDriver) Exec(_ string, cmd []string) (string, error) {
 		return "bwrap: Can't chdir to /work: No such file or directory", d.execErr
 	}
 	return "", nil
+}
+func (d *fakeDriver) CheckDetach() error { return d.checkDetachErr }
+func (d *fakeDriver) Detach(inst string, cmd []string) error {
+	if d.detachErr != nil {
+		return d.detachErr
+	}
+	d.detached = append(d.detached, detachedCall{instance: inst, cmd: cmd})
+	return nil
 }
 func (d *fakeDriver) Down(inst string) error { d.downs = append(d.downs, inst); return nil }
 func (d *fakeDriver) Ls() ([]sandbox.Info, error) {
@@ -332,7 +357,7 @@ func (f *fakeData) GitCommonDir(wt string) (string, error) {
 
 // build a Real wired to the fakes, with the given user recipes.yaml and an
 // images FS advertising the named bundled images.
-func newReal(recipesYAML string, fd *fakeData, drv *fakeDriver, bundledImages ...string) actions.Real {
+func newReal(recipesYAML string, fd *fakeData, drv sandbox.Driver, bundledImages ...string) actions.Real {
 	imgs := fstest.MapFS{}
 	for _, n := range bundledImages {
 		imgs["images/"+n] = &fstest.MapFile{Mode: fs.ModeDir}
@@ -1740,7 +1765,7 @@ func TestRecipeEmptyCommandWithAppendedArgvRejected(t *testing.T) {
 	}
 }
 
-// CONTRACT: `dabs recipe --detach` on a boxless (imageless) recipe provisions the
+// CONTRACT: `dabs recipe --no-command` on a boxless (imageless) recipe provisions the
 // place(s) and stops — the SAME outcome as a plain `dabs recipe`, not a spurious
 // "has no path" error.
 func TestUpOnBoxlessRecipeProvisionsLikeRecipe(t *testing.T) {
@@ -1765,7 +1790,7 @@ func TestUpOnBoxlessRecipeProvisionsLikeRecipe(t *testing.T) {
 		return drv
 	}
 	run(func(r actions.Real) error { return r.Recipe(params.Recipe{Name: "place"}) })
-	run(func(r actions.Real) error { return r.Recipe(params.Recipe{Detach: true, Args: []string{"place"}}) })
+	run(func(r actions.Real) error { return r.Recipe(params.Recipe{NoCommand: true, Args: []string{"place"}}) })
 }
 
 // CONTRACT: running dabs from inside its OWN storage (~/.dabs/...) is refused —
@@ -1955,7 +1980,7 @@ func TestRelativeSourceOriginReachesDriverAbsolute(t *testing.T) {
 
 // CONTRACT: a dabs.yaml loaded BY PATH anchors its relative source origins on
 // its OWN directory (as it already does for its image dockerfile/context), so
-// `dabs recipe path/to/box --detach` provisions the same box from any cwd.
+// `dabs recipe path/to/box --no-command` provisions the same box from any cwd.
 func TestUpFromDabsYamlPathRebasesSourcePaths(t *testing.T) {
 	y := `default: base
 recipes:
@@ -1972,7 +1997,7 @@ recipes:
 	fd.exists["/proj/box/assets"] = true
 	fd.files = map[string][]byte{path: []byte(y)}
 	drv := &fakeDriver{built: map[string]bool{"img": true}}
-	if err := newReal("", fd, drv).Recipe(params.Recipe{Detach: true, Args: []string{path}}); err != nil {
+	if err := newReal("", fd, drv).Recipe(params.Recipe{NoCommand: true, Args: []string{path}}); err != nil {
 		t.Fatalf("Up: %v", err)
 	}
 	up := onlyUp(t, drv)
@@ -1981,7 +2006,7 @@ recipes:
 	}
 }
 
-// CONTRACT: `--detach` smoke-checks the box by entering it once. If that enter
+// CONTRACT: `--no-command` smoke-checks the box by entering it once. If that enter
 // fails (a source over `/`, a missing `workdir:`, a masked child mount — all
 // surface as a driver error), the boot did not really succeed: no success block
 // prints, the box is reaped, and the error carries the driver's message.
@@ -1997,7 +2022,7 @@ func TestUpReapsAndErrorsWhenBoxCannotBeEntered(t *testing.T) {
 	fd := baseData()
 	fd.exists["/data"] = true
 	drv := &fakeDriver{built: map[string]bool{"img": true}, execErr: errors.New("bwrap: Can't chdir to /work: No such file or directory")}
-	err := newReal(y, fd, drv).Recipe(params.Recipe{Detach: true, Args: []string{"m"}})
+	err := newReal(y, fd, drv).Recipe(params.Recipe{NoCommand: true, Args: []string{"m"}})
 	if err == nil {
 		t.Fatal("want an error when the smoke check fails, got nil")
 	}
@@ -2009,7 +2034,7 @@ func TestUpReapsAndErrorsWhenBoxCannotBeEntered(t *testing.T) {
 	}
 }
 
-// CONTRACT: a healthy `--detach` box passes the smoke check, prints its id, and
+// CONTRACT: a healthy `--no-command` box passes the smoke check, prints its id, and
 // is NOT reaped — the box stays up for the user to reach in and eventually `rm`.
 func TestUpKeepsBoxAndPrintsIDWhenSmokeCheckPasses(t *testing.T) {
 	y := `recipes:
@@ -2026,10 +2051,10 @@ func TestUpKeepsBoxAndPrintsIDWhenSmokeCheckPasses(t *testing.T) {
 	var out string
 	err := errors.New("unset")
 	out = captureStdout(t, func() {
-		err = newReal(y, fd, drv).Recipe(params.Recipe{Detach: true, Args: []string{"m"}})
+		err = newReal(y, fd, drv).Recipe(params.Recipe{NoCommand: true, Args: []string{"m"}})
 	})
 	if err != nil {
-		t.Fatalf("Recipe --detach: %v", err)
+		t.Fatalf("Recipe --no-command: %v", err)
 	}
 	if len(drv.execs) != 1 || strings.Join(drv.execs[0], " ") != "true" {
 		t.Errorf("smoke check = %v, want one exec of [true]", drv.execs)
@@ -2624,9 +2649,9 @@ func TestBoxFromWorktreeCheckoutParentsOnWorktree(t *testing.T) {
 	}
 }
 
-// CONTRACT: the same parenting holds for the `--detach` path — and the box node,
-// which `--detach` keeps, records the worktree as its parent.
-func TestDetachBoxFromWorktreeCheckoutParentsOnWorktree(t *testing.T) {
+// CONTRACT: the same parenting holds for the `--no-command` path — and the box node,
+// which `--no-command` keeps, records the worktree as its parent.
+func TestNoCommandBoxFromWorktreeCheckoutParentsOnWorktree(t *testing.T) {
 	y := `recipes:
   m:
     image: img
@@ -2641,12 +2666,12 @@ func TestDetachBoxFromWorktreeCheckoutParentsOnWorktree(t *testing.T) {
 	fd.exists["/repo/.git"] = true
 	drv := &fakeDriver{built: map[string]bool{"img": true}}
 	captureStdout(t, func() {
-		if err := newReal(y, fd, drv).Recipe(params.Recipe{Detach: true, Args: []string{"m"}}); err != nil {
-			t.Fatalf("recipe --detach from worktree checkout: %v", err)
+		if err := newReal(y, fd, drv).Recipe(params.Recipe{NoCommand: true, Args: []string{"m"}}); err != nil {
+			t.Fatalf("recipe --no-command from worktree checkout: %v", err)
 		}
 	})
 	if len(fd.worktrees) != 0 {
-		t.Fatalf("--detach from a checkout forked a worktree: %v", fd.worktrees)
+		t.Fatalf("--no-command from a checkout forked a worktree: %v", fd.worktrees)
 	}
 	if got := boxNodeParent(t, fd); got != "wt1" {
 		t.Errorf("box parent = %q, want the worktree node wt1", got)

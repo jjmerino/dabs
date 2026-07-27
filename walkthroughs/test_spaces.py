@@ -28,7 +28,7 @@ recipes:
 def test_three_spaces_three_fates(tut, dabs_home):
     (dabs_home / "myproj" / "dabs.yaml").write_text(RECIPE)
 
-    run(tut, "dabs recipe spacey --detach")
+    run(tut, "dabs recipe spacey --no-command")
     box = grab(tut, r"\bspacey-[0-9a-f]{8}\b")
 
     check(
@@ -52,12 +52,12 @@ def test_three_spaces_three_fates(tut, dabs_home):
 def test_parent_volume_reloads_on_the_next_box(tut, dabs_home):
     (dabs_home / "myproj" / "dabs.yaml").write_text(RECIPE)
 
-    run(tut, "dabs recipe spacey --detach")
+    run(tut, "dabs recipe spacey --no-command")
     box = grab(tut, r"\bspacey-[0-9a-f]{8}\b")
     run(tut, f"dabs exec {box} 'echo keep-me > /keepers/f; echo box-only > /cache/f'")
     run(tut, f"dabs rm {box} -y --volume")
 
-    run(tut, "dabs recipe spacey --detach")
+    run(tut, "dabs recipe spacey --no-command")
     box2 = grab(tut, r"\bspacey-[0-9a-f]{8}\b")
     check(tut, f"dabs exec {box2} 'cat /keepers/f; cat /cache/f'", "spaces/parent-volume-persists")
 

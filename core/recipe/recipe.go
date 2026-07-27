@@ -2,7 +2,7 @@
 // recipe is a fully declarative box: an image, what to mount/copy into it, its
 // env, and the command to run. Everything a box does is visible in the recipe —
 // nothing is hardcoded in Go. `dabs recipe sh` is just the bundled `sh`
-// recipe; the same box is reproducible by hand as a plain dabs recipe --detach + dabs exec.
+// recipe; the same box is reproducible by hand as a plain dabs recipe --no-command + dabs exec.
 //
 // The registry is YAML (so it can carry comments) with a single top-level
 // `recipes:` map. It is the bundled default merged with the user's

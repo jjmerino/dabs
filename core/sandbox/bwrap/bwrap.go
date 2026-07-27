@@ -325,6 +325,21 @@ func (d Driver) Exec(instance string, cmd []string) (string, error) {
 	return string(out), nil
 }
 
+// CheckDetach reports that this driver cannot hold a detached command, and why.
+// An instance is an overlay directory, not a process: every Run/Exec enters it
+// with a FRESH bwrap that owns the sandbox for exactly as long as the command
+// runs (--die-with-parent, its own PID namespace, an exclusive lock for the
+// duration). A command therefore cannot outlive the call that started it, and
+// nothing else could enter the box while it did.
+func (d Driver) CheckDetach() error {
+	return fmt.Errorf("the bwrap driver cannot hold a detached command: it enters the box with a fresh bwrap per command, so a command cannot outlive the call that started it")
+}
+
+// Detach refuses for the reason CheckDetach gives. The capability is implemented
+// so the reason lives with the driver that owns it rather than being guessed by
+// a caller.
+func (d Driver) Detach(instance string, cmd []string) error { return d.CheckDetach() }
+
 // Down removes the exactly-named instance; absent is not an error.
 func (d Driver) Down(instance string) error {
 	if err := os.RemoveAll(d.instanceDir(instance)); err != nil {

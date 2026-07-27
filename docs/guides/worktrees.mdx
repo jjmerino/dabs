@@ -48,7 +48,7 @@ also mounts the parent repo's `.git`, so **git works inside the box** and
 commits reconcile straight into your shared object store (no push):
 
 ```bash
-dabs recipe sh --worktree repo-________ --detach
+dabs recipe sh --worktree repo-________ --no-command
 dabs exec sh-________ 'cd /work && git add -A && git commit -qm improve && git --no-pager log --oneline'
 ```
 

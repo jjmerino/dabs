@@ -76,17 +76,18 @@ Then:
 
 ```bash
 dabs build myproj                # build the box's image
-dabs recipe myproj --detach      # recipe booted: myproj (id: myproj-a3f9c21d4e02) — a NEW pristine box, no command
+dabs recipe myproj --no-command  # recipe booted: myproj (id: myproj-a3f9c21d4e02) — a NEW pristine box, no command
 dabs ls                          # the tree: what dabs owns, and where it runs
 dabs exec myproj-a3f 'ls | wc -l'        # run a shell line inside (instance prefixes ok, git-style)
 dabs exec myproj-a3f -- ./mycli --help   # exec an exact command inside (no shell)
 dabs recipe myproj               # boot a box and run its command
+dabs recipe myproj --detach      # boot a box, start its command in the background, return
 dabs recipe myproj --name api    # same, but the node is named: exec/rm/cd by "api"
 cd "$(dabs cd api)"              # jump to any node's directory
 dabs rm myproj-a3f -y            # stop it and remove its node
 ```
 
-Every `recipe --detach` creates a **new** instance with a random id — the image is the clean
+Every boot creates a **new** instance with a random id — the image is the clean
 state, so "give me a fresh machine" is instant. `rm <name> --dry` shows what a
 name would reap; a name matching more than one node is refused unless you pass
 `--multiple`.

@@ -106,7 +106,7 @@ recipes:
 `, dir, vault)
 	write(filepath.Join(dir, "dabs.yaml"), yaml, 0o644)
 
-	out, code := run("dabs recipe " + dir + " --detach")
+	out, code := run("dabs recipe " + dir + " --no-command")
 	if code != 0 {
 		t.Fatalf("boot failed (%d):\n%s", code, out)
 	}

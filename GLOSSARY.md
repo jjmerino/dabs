@@ -29,7 +29,7 @@ glossary records where the vocabulary is going so new work simply avoids the old
 
 | word | meaning | where you meet it |
 |---|---|---|
-| **box** | the disposable, host-isolated environment a command or agent runs in | the user-facing noun in `AGENTS.md`/`README.md`; `recipe --detach` boots one |
+| **box** | the disposable, host-isolated environment a command or agent runs in | the user-facing noun in `AGENTS.md`/`README.md`; `recipe --no-command` boots one |
 | **instance** | the driver's name for one running box, `<name>-<hex>` | `dabs ls` INSTANCE-in-parens, `Driver.Up/Run/Down` |
 | **node** | the record dabs wrote for one thing it provisioned; its `id` is the canonical handle | `~/.dabs/nodes/<id>/`, `actions.Node` |
 | **place** | the directories a node offers; a box uses them only if the recipe says so | `provisionPlaces`, the ls chain |
@@ -46,7 +46,9 @@ glossary records where the vocabulary is going so new work simply avoids the old
 | **driver** | one sandboxing mechanism behind the `sandbox.Driver` contract | `core/sandbox/<kind>` |
 | **fleet** (deprecated) | use **drivers** | `Real.drivers`, `dabs ls` |
 | **worktree** | a fresh git branch off HEAD, cut into a node's held space and mounted live | the `worktree:` source, `dabs worktrees` |
-| **--detach** | boot a box and leave it up without running the recipe's command (`--detach`: unstable alias) | `recipe --no-command`, `upDetached` |
+| **--no-command** | boot a box and leave it up WITHOUT running the recipe's command | `recipe --no-command`, `upDetached` |
+| **--detach** | boot a box, START the recipe's command in the background, and return without waiting for it | `recipe --detach`, `upDetached`, `sandbox.Detacher` |
+| **optional driver capability** | something a driver MAY do beyond the Driver contract; `Capable` lists them all and every wrapper answers for all of them | `EgressEnforcer`, `ImageStore`, `Detacher`, `Capable` |
 
 ---
 
@@ -56,7 +58,7 @@ glossary records where the vocabulary is going so new work simply avoids the old
 The disposable, host-isolated environment a command or agent runs in — a
 pristine machine that sees only what its image installed, with no view of the
 host. The primary user-facing noun.
-*Where:* `AGENTS.md`/`README.md` throughout; `recipe --detach` boots one;
+*Where:* `AGENTS.md`/`README.md` throughout; `recipe --no-command` boots one;
 `sandbox.Spec` describes one to a driver.
 
 ### instance
@@ -162,23 +164,50 @@ leading `--` — it runs the DEFAULT recipe (the `dabs.yaml` `default:`, else th
 bundled `sh` box) with the command appended, always confirming first.
 *Where:* `Recipe`/`runRecipe`.
 
-### recipe --detach
+### recipe --no-command
 Boot a NEW pristine box from a recipe and leave it up WITHOUT running the
 recipe's command. It leads its output with the box's node id (the canonical
 handle) and prints the driver instance on its own line; the box is yours to reach
-with `exec` and to reap with `rm`. A boxless recipe (no image) detaches cleanly —
+with `exec` and to reap with `rm`. A boxless recipe (no image) boots cleanly —
 it provisions its places and stops.
-
-The flag `--detach` (unstable) is an alias of **--no-command** today: boot, run
-nothing. The intended future is a true detach — boot AND run the recipe's
-command in the background — so its behavior is likely to change. Use
-`--no-command` when no-command is what you mean.
 *Where:* `upDetached`, `printUp`.
+
+### recipe --detach
+Boot a NEW pristine box from a recipe, START the recipe's own command inside it
+in the background, and return without waiting for it — the box is left up with
+its command running, reported exactly as `--no-command` reports its box. The
+command's combined output — both streams, interleaved — goes to
+`detached.log` in the box node's own tmp space
+(`~/.dabs/nodes/<id>/tmp/detached.log`), bound into the box at
+`sandbox.DetachedLogDir`; the boot prints the `tail -f` line for it and the log
+is reaped with the node. Nothing is wired to the terminal. `keep` does not enter into it: `keep` decides the fate of a box dabs is
+WAITING on, and nothing waits on a detached one — the box stays until `rm`,
+whether or not its command exits. Nothing is appended to the command; a recipe
+that declares none is an error pointing at `--no-command`.
+
+Detaching needs a driver whose box carries a process of its own. dabs ASKS the
+driver (`sandbox.Detacher.CheckDetach`) before booting anything, exactly as it
+asks about egress: **apple** and **docker** answer yes; **bwrap** answers no and
+says why (it enters the box with a fresh bwrap per command, so a command cannot
+outlive the call that started it). The refusal is the driver's own words —
+`--detach` is never degraded into a foreground run, and never refused with a
+reason that is false for the driver refusing.
+*Where:* `upDetached`, `printUp`, `sandbox.Detacher`, `clidriver.DetachLine`.
+
+### optional driver capability
+Something a driver MAY do beyond `sandbox.Driver` — enforce egress
+(`EgressEnforcer`), keep a reapable image store (`ImageStore`), hold a detached
+command (`Detacher`). A caller reaches one by type-asserting the driver it
+holds, so a capability is asked of whatever stands in front: **`Capable`** is the
+single list of all of them, and every WRAPPER (`Lazy`) is pinned to it, because a
+forward a wrapper forgets does not fail — it reports "this driver cannot",
+naming a driver that can.
+*Where:* `sandbox.Capable`, `sandbox.Lazy`, `core/sandbox/capability_test.go`.
 
 ### recipe --worktree \<wt>
 Bind an EXISTING dabs worktree (by name from `worktrees ls`) to the recipe's `.`
 source instead of the cwd, mounting the worktree and its parent `.git` live so
-git resolves inside the box. Composes with `--detach`.
+git resolves inside the box. Composes with `--no-command` and `--detach`.
 *Where:* `bindWorktree`, `Recipe`/`upDetached`.
 
 ### exec
@@ -486,8 +515,8 @@ appears in `dabs rm` output.
 
 ### boxless recipe
 A recipe with no image: it provisions its places (a worktree, a copied directory)
-and stops. There is no box to mount, so `--detach` and a plain `recipe` reach the
-same outcome.
+and stops. There is no box to mount, so `--no-command` and a plain `recipe` reach the
+same outcome, and `--detach` refuses (there is nowhere to run a command).
 *Where:* `provisionNodes`.
 
 ### DABS_NAME
@@ -523,6 +552,13 @@ A box is what the user runs; the **node** is the record dabs keeps of it (and of
 every place). `rm`'s help speaks of removing a box's node because the node is what
 persists — most of all for an archived box, where the record is all that is left.
 
+### --detach meant "run nothing"
+`--detach` once booted a box and deliberately did NOT run the recipe's command,
+with `--no-command` alongside it as an alias. The two are now distinct verbs:
+**--no-command** carries that behavior under its own name, and **--detach** means
+what it means in every other tool — start the thing, do not wait for it, leave it
+running. `--detach` is not an alias of anything.
+
 ### the ephemeral → held rename
 The space once named **ephemeral** is now **held**, because the word that matters
 is *why* dabs hesitates to delete it: something outside the box points at it.
@@ -536,7 +572,7 @@ held space.
 **cast** became `recipe --worktree` (bind an existing worktree). **run** became
 `exec` without `--` (the shell-line form); `Driver.Run` survives at the contract
 layer as the mechanism `exec` calls. The old lifecycle verbs `up`/`down` are
-gone: booting is `recipe --detach`, reaping is `rm`.
+gone: booting is `recipe --no-command`, reaping is `rm`.
 
 ### archived → active / inactive
 **archived** named a box whose record was kept after `rm --keep` while its

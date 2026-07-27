@@ -25,6 +25,6 @@ go build -o "$DABS" .
 "$DABS" build test/e2e/box
 
 # The egress: none box runs the whole suite; nothing reaches the internet.
-box="$("$DABS" recipe test/e2e/box --detach | awk '/^id:/{print $2; exit}')"
+box="$("$DABS" recipe test/e2e/box --no-command | awk '/^id:/{print $2; exit}')"
 trap '"$DABS" rm "$box" --yes >/dev/null 2>&1 || true' EXIT
 "$DABS" exec "$box" -- go test -tags e2e -v ./test/e2e

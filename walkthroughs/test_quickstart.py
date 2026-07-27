@@ -8,7 +8,7 @@ from conftest import check, grab, run, scrubbed
 def test_boot_reach_in_and_reap(tut):
     run(tut, "echo 'hello from my project' > note.txt")
 
-    check(tut, "dabs recipe sh --detach", "quickstart/boot")
+    check(tut, "dabs recipe sh --no-command", "quickstart/boot")
     box = grab(tut, r"\bsh-[0-9a-f]{8}\b")
 
     check(

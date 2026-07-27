@@ -10,7 +10,7 @@ def test_shell_form_vs_exact_argv(tut, dabs_home):
     (proj / "app.py").write_text("")
     (proj / "notes.md").write_text("")
 
-    run(tut, "dabs recipe sh --detach")
+    run(tut, "dabs recipe sh --no-command")
     box = grab(tut, r"\bsh-[0-9a-f]{8}\b")
 
     # `--` is an exact argv: no shell, so `*` reaches echo verbatim.

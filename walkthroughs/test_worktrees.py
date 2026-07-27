@@ -11,7 +11,7 @@ def test_worktree_lifecycle(tut, repo):
     check(tut, "dabs worktrees ls", "worktrees/no-diff")
     wt = grab(tut, r"\brepo-[0-9a-f]{8}\b")
 
-    run(tut, f"dabs recipe sh --worktree {wt} --detach")
+    run(tut, f"dabs recipe sh --worktree {wt} --no-command")
     box = grab(tut, r"\bsh-[0-9a-f]{8}\b")
 
     check(

@@ -7,7 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`dabs recipe --detach`** — boot a box with the recipe's command RUNNING in
+  the background. The call returns as soon as the command is started, nothing is
+  wired to the terminal, and the box is left up with its command alive — so a
+  recipe whose command never exits (a server, a multiplexer) can be launched and
+  left running. The command's combined output — both streams, interleaved — goes
+  to `detached.log` in the box node's own directory
+  (`~/.dabs/nodes/<id>/tmp/detached.log`), which the boot prints a `tail -f` line
+  for and which is reaped with the node. The box stays until `dabs rm` whether or
+  not the command exits: `keep` decides the fate of a
+  box dabs is WAITING on, and nothing waits on a detached one. A recipe that
+  declares no command is refused, pointing at `--no-command`. Detaching needs a
+  driver whose box carries a process of its own — the new optional
+  `sandbox.Detacher` capability. dabs ASKS the driver (`CheckDetach`) before
+  booting anything, the way it already asks about egress: the docker and apple
+  drivers answer yes; the bwrap driver answers no and says why (it enters the box
+  with a fresh bwrap per command, so a command cannot outlive the call that
+  started it). The refusal carries the driver's own words rather than a cause the
+  caller guessed.
+- **`sandbox.Capable`** — one interface listing every optional driver capability,
+  which every driver WRAPPER is pinned to. A caller reaches a capability by
+  type-asserting the driver it holds, so a wrapper that forgets to forward one
+  does not fail: it answers "this driver cannot", naming a driver that can.
+  `Capable` makes that a compile error, and a test reads the package's own source
+  so a newly declared capability missing from the list fails too.
+
 ### Changed
+- **`--detach` now means what detach means everywhere else.** The flag that
+  booted a box and deliberately did NOT run the recipe's command is now
+  **`--no-command`** — the name its own success line already printed, and the
+  successor the glossary had named. `--detach` is not an alias of it; it is the
+  true detach described above. Pre-1.0, the old spelling is gone rather than
+  deprecated: a script passing `--detach` now STARTS the recipe's command instead
+  of skipping it, and must move to `--no-command`.
 - **The e2e suite runs hermetically.** The box the suite runs in carries
   `egress: none`, so no test can reach the internet — the suite is proven closed,
   not merely well-behaved. Every test fakes its upstream instead of dialing a

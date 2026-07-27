@@ -45,12 +45,12 @@ func TestNamedNodesSessionJourney(t *testing.T) {
 	}
 
 	// A dev box over its own fresh worktree, named — the daily driver.
-	out, code = runIn(repo, "dabs recipe wtbox --name dev-box --detach")
+	out, code = runIn(repo, "dabs recipe wtbox --name dev-box --no-command")
 	if code != 0 {
 		t.Fatalf("wtbox --name dev-box failed (%d): %s", code, out)
 	}
 	if !strings.Contains(out, "id: dev-box") {
-		t.Fatalf("--detach must report the chosen name as the id:\n%s", out)
+		t.Fatalf("--no-command must report the chosen name as the id:\n%s", out)
 	}
 
 	// The name works everywhere an id does: exec into the box by name.
@@ -60,7 +60,7 @@ func TestNamedNodesSessionJourney(t *testing.T) {
 
 	// Cast a box ONTO an existing named worktree, naming the box too — the
 	// review-a-branch move.
-	out, code = run("dabs recipe sh --worktree recipes-menu --detach --name menu-box")
+	out, code = run("dabs recipe sh --worktree recipes-menu --no-command --name menu-box")
 	if code != 0 {
 		t.Fatalf("sh --worktree recipes-menu --name menu-box failed (%d): %s", code, out)
 	}

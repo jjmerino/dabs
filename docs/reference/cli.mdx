@@ -27,7 +27,7 @@ change — but **not** when only `COPY .` context files changed; run
 ## recipe
 
 ```text
-dabs recipe [name] [cmd… | --no-command] [--worktree <wt>] [--name <n>]
+dabs recipe [name] [cmd… | --no-command | --detach] [--worktree <wt>] [--name <n>]
 ```
 
 Boot a box from a recipe and run its command, then tear the box down (unless
@@ -35,8 +35,14 @@ the recipe says `keep: true`). Trailing tokens are **appended** to the
 recipe's command; appending always confirms first, showing the exact final
 command.
 
-- `--no-command` — boot a NEW box, run nothing, leave it up. `--detach` is an
-  unstable alias (it may later mean a true background detach).
+- `--no-command` — boot a NEW box, run nothing, leave it up.
+- `--detach` — boot a NEW box, start the recipe's command inside it in the
+  background, and return without waiting for it. The box is left up with its
+  command running; the command's combined output goes to
+  `~/.dabs/nodes/<id>/tmp/detached.log` on the host, and the boot prints the
+  `tail -f` line for it. The log is reaped with the node. Needs a driver whose
+  box carries a process of its own (docker, apple); it is refused, not degraded,
+  on one that does not.
 - `--worktree <wt>` — bind an existing worktree to the recipe's `.` source and
   mount its parent `.git`, so git works in-box.
 - `--name <n>` — name the node the boot creates instead of a generated id; the

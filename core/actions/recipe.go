@@ -40,16 +40,18 @@ import (
 // `--worktree <wt>` (p.Worktree) binds the recipe's `.` source to an EXISTING
 // dabs worktree instead of the cwd, mounting its parent .git so git works in-box.
 //
-// `--detach` (p.Detach) is a fourth shape: it boots a NEW pristine DETACHED box
-// from the resolved recipe (Args[0] as a name or dabs.yaml path, else the
-// default) and does NOT run the recipe's command.
+// `--no-command` (p.NoCommand) and `--detach` (p.Detach) are a fourth shape:
+// both boot a NEW pristine box from the resolved recipe (Args[0] as a name or
+// dabs.yaml path, else the default) and leave it up. `--no-command` runs
+// nothing; `--detach` starts the recipe's own command in the background and
+// returns without waiting for it.
 func (r Real) Recipe(p params.Recipe) error {
-	if p.Detach {
+	if p.NoCommand || p.Detach {
 		arg := ""
 		if len(p.Args) > 0 {
 			arg = p.Args[0]
 		}
-		return r.upDetached(arg, p.Worktree, p.NodeName)
+		return r.upDetached(arg, p.Worktree, p.NodeName, p.Detach)
 	}
 	reg, err := r.loadRegistry()
 	if err != nil {
@@ -67,7 +69,7 @@ func (r Real) Recipe(p params.Recipe) error {
 	}
 	name := p.Args[0]
 	// A first positional whose SHAPE is a path names a dabs.yaml to load and run,
-	// the same resolution `--detach` and `build` use — so `dabs recipe .` runs the
+	// the same resolution `--no-command` and `build` use — so `dabs recipe .` runs the
 	// recipe in the cwd's dabs.yaml instead of being rejected as an unknown name.
 	if _, ok := reg.Recipes[name]; !ok && looksLikePath(name) {
 		pathReg, pathName, err := r.resolveRecipe(name)
@@ -549,7 +551,7 @@ type resolvedSource struct{ kind, origin, top string }
 // a non-git worktree dir, a repo with no commits, or a missing mount/copy path
 // all fail HERE, before any image build or box touch. It returns one
 // resolvedSource per source, in source order. Shared by runRecipe and the
-// detach path so both validate identically.
+// boot path so both validate identically.
 func (r Real) validateSources(recipeName string, sources []recipe.Source, vars map[string]string, hosts map[int]string) ([]resolvedSource, error) {
 	resolved := make([]resolvedSource, len(sources))
 	for i, s := range sources {
@@ -615,11 +617,12 @@ func (r Real) validateSources(recipeName string, sources []recipe.Source, vars m
 // It returns the instance and the worktrees it cut (kept, for the caller to
 // report). No command is run and, on success, the box is left up — the caller
 // owns its lifecycle (runRecipe runs the command then tears it down unless the
-// recipe says keep; `--detach` leaves it up). On any failure after the box is up
-// it tears the half-built box down. Shared by runRecipe and the detach path so
-// both mount sources identically. `extra` is the argv the caller appended to the
-// recipe's command; it is recorded on the box node as provenance of what the box
-// was asked to do, and is empty on the detach path (which runs no command).
+// recipe says keep; `--no-command` and `--detach` leave it up). On any failure
+// after the box is up it tears the half-built box down. Shared by runRecipe and
+// the boot path so both mount sources identically. `extra` is the argv the caller
+// appended to the recipe's command; it is recorded on the box node as provenance
+// of what the box was asked to do, and is empty on the boot path (which appends
+// nothing).
 func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID, tip string, rec recipe.Recipe, image string, sources []recipe.Source, resolved []resolvedSource, cut []wtCut, extra []string) (instance string, err error) {
 	// Places are already cut (provisionPlaces): a `.` source's origin is the
 	// directory that place owns. What is left is turning every source into a mount.
@@ -752,7 +755,7 @@ func snapshotRecipe(rec recipe.Recipe) *recipe.Recipe {
 	return &clone
 }
 
-// resolveRecipe picks the recipe that `dabs build`/`dabs recipe --detach` act on
+// resolveRecipe picks the recipe that `dabs build`/`dabs recipe --no-command` act on
 // and returns the effective registry plus the chosen recipe name:
 //   - ""     → the registry `default:` (bundled → ~/.dabs → ./dabs.yaml).
 //   - a path → a dabs.yaml file (or a dir containing one) loaded as an overlay;
@@ -846,7 +849,7 @@ func rebaseImagePaths(reg *recipe.Registry, dir string) {
 // rebaseSourcePaths anchors each recipe's RELATIVE source origins (mount/copy/
 // worktree) AND its proxy hook `module:` paths to dir, for a dabs.yaml loaded BY
 // PATH — the same rule rebaseImagePaths applies to its image, so `dabs recipe
-// path/to/box --detach` provisions the same box from any cwd. Absolute origins,
+// path/to/box --no-command` provisions the same box from any cwd. Absolute origins,
 // `~`/`$VAR` origins (expanded later), and `perbox:` labels are left alone.
 //
 // Registry recipes (bundled, ~/.dabs/recipes.yaml, ./dabs.yaml) are NOT rebased:
@@ -883,14 +886,14 @@ func rebaseSourcePaths(reg *recipe.Registry, dir string) {
 }
 
 // resolveBuiltImage returns the image name to BOOT for a recipe WITHOUT building
-// the recipe's own Dockerfile: `dabs recipe --detach` boots an image a prior
+// the recipe's own Dockerfile: a `--no-command`/`--detach` boot uses an image a prior
 // `dabs build` produced and must not (re)build — it may run where no builder
 // exists (a staged prebuilt image, a machine with no docker).
 //
 // A recipe with a fleet `target` (a server, docker) manages its own image
 // lifecycle through the driver, and its HasImage cannot cheaply probe (the
 // server driver's HasImage returns false BY DESIGN — see core/sandbox/server).
-// Gating those on HasImage would wrongly reject a remote detach, so a targeted
+// Gating those on HasImage would wrongly reject a remote boot, so a targeted
 // recipe passes its image name straight to the driver's Up (which builds/boots
 // it remotely, as `dabs build` staged it). Only the LOCAL path gates: a bare
 // name resolves the normal way (reuse if built, build from a bundled recipe if

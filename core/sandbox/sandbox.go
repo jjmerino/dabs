@@ -119,6 +119,50 @@ type EgressEnforcer interface {
 	CheckEgress(mode string) error
 }
 
+// DetachedLogDir is where the box sees the directory a detached command's log is
+// written into, in dabs's own box-path namespace. The caller binds the box
+// node's own tmp space here, so the log is a plain host file that lives and dies
+// with the node it belongs to.
+const DetachedLogDir = "/run/dabs/log"
+
+// DetachedLogName is the file, in DetachedLogDir and in the node's tmp space,
+// that a detached command's output is written to. Stable by contract: it is what
+// a caller tails.
+const DetachedLogName = "detached.log"
+
+// DetachedLogPath is the full box path a detached command's combined output is
+// redirected to. Both streams share the one file, interleaved as they happen —
+// that is the order the command produced them in, and splitting them would hide
+// which output preceded which error.
+const DetachedLogPath = DetachedLogDir + "/" + DetachedLogName
+
+// Detacher is an OPTIONAL driver capability: a driver that has an ANSWER about
+// running a command in the background — either it can (its box carries a
+// long-lived process of its own) or it states, mechanically, why it cannot. The
+// policy sits above: actions asks CheckDetach BEFORE Up and refuses to boot a
+// box whose command the driver cannot hold, so `--detach` is never degraded
+// into a foreground run.
+//
+// A driver that answers "no" still implements this interface, so the reason
+// lives with the driver that owns it and no caller has to guess one. A driver
+// that implements nothing at all gets the caller's plain refusal, which claims
+// no cause it cannot know.
+type Detacher interface {
+	// CheckDetach reports whether this driver can hold a detached command (nil)
+	// or why it cannot (an error stating the mechanical reason: the platform,
+	// the transport, how the driver enters its box).
+	CheckDetach() error
+	// Detach starts cmd inside the instance with the workdir and env the
+	// instance was created with, its combined output redirected to
+	// DetachedLogPath inside the box, and returns as soon as the command is
+	// started — never waiting for it to exit, never wiring it to the caller's
+	// streams. The caller has bound a host directory at DetachedLogDir, so what
+	// the command writes there outlives the box's own filesystem. It needs a
+	// shell in the box (the redirect is the box's own). A driver whose
+	// CheckDetach refuses returns that same refusal here.
+	Detach(instance string, cmd []string) error
+}
+
 // Image is one built image in a driver's local store: its name (the recipe
 // image name, without any driver-internal prefix) and size in bytes (0 when the
 // driver cannot report it cheaply).
@@ -137,4 +181,21 @@ type ImageStore interface {
 	// RemoveImage deletes one image by the name Images reported. Removing an
 	// absent image is not an error.
 	RemoveImage(name string) error
+}
+
+// Capable is Driver plus EVERY optional capability, in one list. It exists for
+// wrappers: a decorator that stands in front of a driver (see Lazy) must answer
+// for all of them, because a caller reaches the capability by type-asserting the
+// WRAPPER — a forward the wrapper forgets does not fail, it silently reports
+// "this driver cannot", naming a driver that can. Pinning each wrapper to this
+// interface turns that into a compile error, and adding a capability here is
+// what makes the compiler go find every wrapper.
+//
+// Drivers themselves do NOT implement Capable; picking which capabilities to
+// offer is the whole point of an optional one.
+type Capable interface {
+	Driver
+	EgressEnforcer
+	ImageStore
+	Detacher
 }

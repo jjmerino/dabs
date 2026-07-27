@@ -125,21 +125,31 @@ func TestRunDelegatesToActions(t *testing.T) {
 			},
 		},
 		{
-			name: "recipe --detach with a recipe name boots detached",
-			args: []string{"recipe", "m", "--detach"},
+			name: "recipe --no-command with a recipe name boots without running it",
+			args: []string{"recipe", "m", "--no-command"},
 			want: func(t *testing.T, f *fakeActions) {
-				if len(f.recipe) != 1 || !f.recipe[0].Detach ||
+				if len(f.recipe) != 1 || !f.recipe[0].NoCommand || f.recipe[0].Detach ||
 					len(f.recipe[0].Args) != 1 || f.recipe[0].Args[0] != "m" {
-					t.Errorf("got %+v, want one Recipe{Detach:true Args:[m]}", f.recipe)
+					t.Errorf("got %+v, want one Recipe{NoCommand:true Args:[m]}", f.recipe)
 				}
 			},
 		},
 		{
-			name: "recipe --detach with no arg → the default recipe",
-			args: []string{"recipe", "--detach"},
+			name: "recipe --no-command with no arg → the default recipe",
+			args: []string{"recipe", "--no-command"},
 			want: func(t *testing.T, f *fakeActions) {
-				if len(f.recipe) != 1 || !f.recipe[0].Detach || len(f.recipe[0].Args) != 0 {
-					t.Errorf("got %+v, want one Recipe{Detach:true} (default recipe)", f.recipe)
+				if len(f.recipe) != 1 || !f.recipe[0].NoCommand || len(f.recipe[0].Args) != 0 {
+					t.Errorf("got %+v, want one Recipe{NoCommand:true} (default recipe)", f.recipe)
+				}
+			},
+		},
+		{
+			name: "recipe --detach with a recipe name starts its command in the background",
+			args: []string{"recipe", "m", "--detach"},
+			want: func(t *testing.T, f *fakeActions) {
+				if len(f.recipe) != 1 || !f.recipe[0].Detach || f.recipe[0].NoCommand ||
+					len(f.recipe[0].Args) != 1 || f.recipe[0].Args[0] != "m" {
+					t.Errorf("got %+v, want one Recipe{Detach:true Args:[m]}", f.recipe)
 				}
 			},
 		},
@@ -289,7 +299,8 @@ func TestRunErrorsReachNoAction(t *testing.T) {
 	}{
 		{"no command", nil, NoCommandError{}},
 		{"unknown command", []string{"bogus"}, UnknownCommandError{Name: "bogus"}},
-		{"bad args", []string{"recipe", "a", "b", "--detach"}, BadArgsError{Cmd: "recipe", Reason: "recipe --detach takes an optional recipe name or dabs.yaml path and runs no command"}},
+		{"bad args", []string{"recipe", "a", "b", "--no-command"}, BadArgsError{Cmd: "recipe", Reason: "recipe --no-command takes an optional recipe name or dabs.yaml path and runs no command"}},
+		{"both boot flags", []string{"recipe", "m", "--no-command", "--detach"}, BadArgsError{Cmd: "recipe", Reason: "--no-command and --detach ask for opposite things: one runs no command, the other starts the recipe's"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -314,7 +325,7 @@ func TestCommandHelpShowsOwnUsage(t *testing.T) {
 		want []string // substrings that must appear in the command's own help
 	}{
 		{"rm", []string{"dabs rm", "--keep", "--dry", "--force", "--clean-worktrees", "<node>"}},
-		{"recipe", []string{"dabs recipe", "--detach", "--worktree"}},
+		{"recipe", []string{"dabs recipe", "--no-command", "--detach", "--worktree"}},
 		{"worktrees", []string{"dabs worktrees", "diff <name>"}},
 		{"recipes", []string{"dabs recipes", "--print"}},
 		{"ls", []string{"dabs ls", "--inactive", "git signal (in STATE):", "staged", "unstaged", "untracked"}},
@@ -394,18 +405,24 @@ func TestAliasesDispatch(t *testing.T) {
 	}
 }
 
-// The glossary names --no-command as the successor of --detach, and the
-// deprecation rule tells everyone to use successors — so the successor must
-// actually parse. Both spellings boot a detached box.
-func TestNoCommandIsDetach(t *testing.T) {
-	for _, flag := range []string{"--no-command", "--detach"} {
+// CONTRACT: --no-command and --detach are two different asks and must never
+// collapse into one param. --no-command boots a box and runs nothing; --detach
+// boots one and starts the recipe's command in the background.
+func TestNoCommandAndDetachAreDistinct(t *testing.T) {
+	for _, tt := range []struct {
+		flag              string
+		noCommand, detach bool
+	}{
+		{"--no-command", true, false},
+		{"--detach", false, true},
+	} {
 		f := &fakeActions{}
 		c := New(f)
-		if err := c.Run([]string{"recipe", "m", flag}); err != nil {
-			t.Fatalf("recipe m %s: %v", flag, err)
+		if err := c.Run([]string{"recipe", "m", tt.flag}); err != nil {
+			t.Fatalf("recipe m %s: %v", tt.flag, err)
 		}
-		if len(f.recipe) != 1 || !f.recipe[0].Detach {
-			t.Fatalf("recipe m %s: got %+v, want Detach:true", flag, f.recipe)
+		if len(f.recipe) != 1 || f.recipe[0].NoCommand != tt.noCommand || f.recipe[0].Detach != tt.detach {
+			t.Fatalf("recipe m %s: got %+v, want NoCommand:%v Detach:%v", tt.flag, f.recipe, tt.noCommand, tt.detach)
 		}
 	}
 }

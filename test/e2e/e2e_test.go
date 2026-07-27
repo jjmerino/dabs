@@ -246,7 +246,7 @@ func clean(t *testing.T) {
 // up starts a fresh base instance and returns its full name.
 func up(t *testing.T) string {
 	t.Helper()
-	out, code := run("dabs recipe " + baseDir + " --detach")
+	out, code := run("dabs recipe " + baseDir + " --no-command")
 	if code != 0 {
 		t.Fatalf("up failed (%d): %s", code, out)
 	}
@@ -335,7 +335,7 @@ func TestUnknownCommand(t *testing.T) {
 
 func TestUpPrintsInstance(t *testing.T) {
 	clean(t)
-	out, code := run("dabs recipe " + baseDir + " --detach")
+	out, code := run("dabs recipe " + baseDir + " --no-command")
 	wantExit(t, 0, code)
 	wantContains(t, out, sandboxName+"-")
 	wantContains(t, out, "recipe booted:")
@@ -354,21 +354,21 @@ func TestUpCreatesDistinctInstances(t *testing.T) {
 
 // dabs's own flags end at the first bare `--`: everything after it is the
 // appended command, verbatim. The flag scan used to keep reading past it and eat
-// the command's OWN `--detach`/`--worktree` tokens — `recipe sh -- mytool
+// the command's OWN `--no-command`/`--worktree` tokens — `recipe sh -- mytool
 // --worktree x` silently lost two of mytool's arguments to dabs, and a trailing
-// `--detach` flipped the whole run into a detached boot.
+// `--no-command` flipped the whole run into a boot that ran nothing.
 func TestRecipeDashDashShieldsTheCommandsOwnFlags(t *testing.T) {
 	clean(t)
 	dir := filepath.Join(home, "e2e-dashdash")
 	bugRecipe(t, dir, "echoer", "")
 
-	// `--detach` after `--` is the command's: sh -c 'echo tok-ok' --detach runs
-	// (the token lands in $0, unused) — it must NOT boot a detached box.
-	out, code := runInStdin(dir, "y\n", "dabs recipe echoer -- -c 'echo tok-ok' --detach")
+	// `--no-command` after `--` is the command's: sh -c 'echo tok-ok' --no-command runs
+	// (the token lands in $0, unused) — it must NOT boot a commandless box.
+	out, code := runInStdin(dir, "y\n", "dabs recipe echoer -- -c 'echo tok-ok' --no-command")
 	wantExit(t, 0, code)
 	wantContains(t, out, "tok-ok")
 	if containsFold(out, "detached") || containsFold(out, "runs no command") {
-		t.Fatalf("a --detach after -- was eaten by dabs instead of reaching the command:\n%s", out)
+		t.Fatalf("a --no-command after -- was eaten by dabs instead of reaching the command:\n%s", out)
 	}
 
 	// A trailing `--worktree` after `--` is the command's too — it used to error
@@ -377,8 +377,8 @@ func TestRecipeDashDashShieldsTheCommandsOwnFlags(t *testing.T) {
 	wantExit(t, 0, code)
 	wantContains(t, out, "wt-ok")
 
-	// And before the `--`, flags are still dabs's: --detach boots, runs nothing.
-	out, code = runInStdin(dir, "", "dabs recipe echoer --detach")
+	// And before the `--`, flags are still dabs's: --no-command boots, runs nothing.
+	out, code = runInStdin(dir, "", "dabs recipe echoer --no-command")
 	wantExit(t, 0, code)
 	wantContains(t, out, "instance:")
 }
@@ -612,7 +612,7 @@ func TestSharedLoginDirIsCreatedCapturedAndReusedByEveryBox(t *testing.T) {
 // so a test can look inside a box the recipe provisioned.
 func upRecipeBox(t *testing.T, dir string) string {
 	t.Helper()
-	out, code := runIn(dir, "dabs recipe claude-mounted --detach")
+	out, code := runIn(dir, "dabs recipe claude-mounted --no-command")
 	if code != 0 {
 		t.Fatalf("up: %s", out)
 	}
@@ -661,6 +661,14 @@ const e2eRecipes = `recipes:
   shellhang:
     image: dabs-e2e
     command: [sh]
+  # For the boot flags: a command that leaves a TRACE and then never exits — the
+  # honest shape of something you would detach. The tick file's existence says
+  # the command ran, its growth says it is still running, and the endless loop
+  # says the caller was never made to wait for it. It needs no in-box tooling
+  # (a slim image carries no ps).
+  longrunner:
+    image: dabs-e2e
+    command: [sh, -c, "while true; do echo tick >> /tmp/ticks; sleep 1; done"]
   # For --worktree: a worktree-source recipe whose command DOES git — proving the
   # bound worktree made the box git-capable. It commits (empty) and records the new
   # HEAD into /work (the live-mounted worktree), so the host can confirm the commit
@@ -1099,7 +1107,7 @@ func TestWorktreeFlagAttachesWorktreeAndGivesGit(t *testing.T) {
 }
 
 // instanceFrom pulls the base-box driver instance name out of `dabs recipe
-// --detach` output — the value on the `instance:` line. The NODE ID shares the
+// --no-command` output — the value on the `instance:` line. The NODE ID shares the
 // recipe's `dabs-e2e-` prefix, so scanning for the prefix is ambiguous; the
 // labelled line is not.
 func instanceFrom(t *testing.T, out string) string {
@@ -1114,7 +1122,7 @@ func instanceFrom(t *testing.T, out string) string {
 }
 
 // TestWorktreeBoxLifecycleLog drives the append-only journal end to end: bring
-// up a worktree-backed box (`dabs recipe --detach` on a `worktree:` recipe), confirm
+// up a worktree-backed box (`dabs recipe --no-command` on a `worktree:` recipe), confirm
 // log.jsonl gains an `up` and `dabs worktrees` shows the box live under the
 // worktree's absolute path, then `dabs rm --keep` and confirm a `down` entry and that
 // the worktree reads as having no box. The log is the sole instance→worktree
@@ -1126,8 +1134,8 @@ func TestWorktreeBoxLifecycleLog(t *testing.T) {
 	repo := filepath.Join(home, "wtlogrepo")
 	gitRepo(t, repo)
 
-	// Bring up a worktree-backed box detached (--detach runs no command, keeps the box).
-	out, code := runIn(repo, "dabs recipe claude-new-worktree --detach")
+	// Bring up a worktree-backed box with --no-command (runs no command, keeps the box).
+	out, code := runIn(repo, "dabs recipe claude-new-worktree --no-command")
 	wantExit(t, 0, code)
 	wantContains(t, out, "kept:")
 	inst := instanceFrom(t, out)
@@ -1262,13 +1270,13 @@ func bundledOnly(t *testing.T) {
 	}
 }
 
-// bootBundled boots a bundled box recipe detached from dir and returns its
+// bootBundled boots a bundled box recipe from dir with --no-command and returns its
 // instance name, reaping the box when the test ends.
 func bootBundled(t *testing.T, dir, name string) string {
 	t.Helper()
-	out, code := runIn(dir, "dabs recipe "+name+" --detach")
+	out, code := runIn(dir, "dabs recipe "+name+" --no-command")
 	if code != 0 {
-		t.Fatalf("bundled recipe %s --detach failed (%d): %s", name, code, out)
+		t.Fatalf("bundled recipe %s --no-command failed (%d): %s", name, code, out)
 	}
 	for _, line := range strings.Split(out, "\n") {
 		if inst, ok := strings.CutPrefix(strings.TrimSpace(line), "instance: "); ok {
@@ -1277,7 +1285,7 @@ func bootBundled(t *testing.T, dir, name string) string {
 			return inst
 		}
 	}
-	t.Fatalf("recipe %s --detach printed no instance line: %q", name, out)
+	t.Fatalf("recipe %s --no-command printed no instance line: %q", name, out)
 	return ""
 }
 
@@ -1453,11 +1461,11 @@ func TestHelpRendersAndPointsToFull(t *testing.T) {
 	wantContains(t, full, "dabs box") // the bundled AGENTS.md guide
 }
 
-// TestUpUnknownRecipeLists: `dabs recipe <bogus> --detach` (not a recipe, not a
+// TestUpUnknownRecipeLists: `dabs recipe <bogus> --no-command` (not a recipe, not a
 // path) fails clearly, listing the known recipes and pointing at the
 // recipe/path/default forms — build/detach resolve a recipe now, not a manifest.
 func TestUpUnknownRecipeLists(t *testing.T) {
-	out, code := run("dabs recipe not-a-recipe --detach")
+	out, code := run("dabs recipe not-a-recipe --no-command")
 	if code == 0 {
 		t.Fatalf("want non-zero exit; got 0\n%s", out)
 	}
@@ -1465,7 +1473,7 @@ func TestUpUnknownRecipeLists(t *testing.T) {
 	wantContains(t, out, "dabs.yaml path") // the hint naming the accepted forms
 }
 
-// TestUpFromDabsYamlPath: `dabs recipe <path/to/dabs.yaml> --detach` loads that
+// TestUpFromDabsYamlPath: `dabs recipe <path/to/dabs.yaml> --no-command` loads that
 // file and boots its recipe — proving the "a path is a dabs.yaml to load" form.
 // The recipe reuses the prebuilt base image by BARE name, so detach needs no
 // builder in-box.
@@ -1480,7 +1488,7 @@ func TestUpFromDabsYamlPath(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out, code := run("dabs recipe " + filepath.Join(dir, "dabs.yaml") + " --detach") // a FILE path
+	out, code := run("dabs recipe " + filepath.Join(dir, "dabs.yaml") + " --no-command") // a FILE path
 	wantExit(t, 0, code)
 	wantContains(t, out, sandboxName+"-")
 	wantContains(t, out, "recipe booted:")
@@ -1509,7 +1517,7 @@ func TestRecipeNodeIDExpandsInWorkdirInBox(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, code := runIn(dir, "dabs recipe "+dir+" --name "+name+" --detach")
+	out, code := runIn(dir, "dabs recipe "+dir+" --name "+name+" --no-command")
 	wantExit(t, 0, code)
 
 	// The in-box cwd is the interpolated id, never the literal token.

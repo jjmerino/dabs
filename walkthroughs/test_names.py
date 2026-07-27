@@ -17,7 +17,7 @@ def test_name_your_work_and_reach_it(tut, dabs_home, repo):
     check(tut, "dabs recipe wt --name login-fix", "names/cut")
 
     # Name a box over the repo: the boot line carries `id: dev`.
-    check(tut, "dabs recipe sh --name dev --detach", "names/boot")
+    check(tut, "dabs recipe sh --name dev --no-command", "names/boot")
 
     # The name works everywhere an id does — reach into the box by name.
     check(tut, "dabs exec dev -- echo 'reached dev by name'", "names/exec")

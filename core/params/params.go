@@ -110,7 +110,7 @@ type Recipe struct {
 	// EXISTING dabs worktree to the recipe's `.` source instead of the cwd:
 	// `worktree: .`/`mount: .` mount that worktree live (plus its parent .git so
 	// git works in-box) rather than cutting a fresh branch, and `copy: .` snapshots
-	// it. Composes with Detach.
+	// it. Composes with NoCommand and Detach.
 	Worktree string
 	// Args are the positional tokens of `dabs recipe [name] [cmd…]`. If the first
 	// is a KNOWN recipe, it is the recipe and the rest are appended to its
@@ -120,10 +120,17 @@ type Recipe struct {
 	// Default forces the default-recipe path (a leading `--`), so a command whose
 	// first token happens to be a recipe name still runs against the default.
 	Default bool
-	// Detach boots a NEW pristine DETACHED box from the recipe and does NOT run
-	// the recipe's command — it reports the instance and leaves the box up for
+	// NoCommand boots a NEW pristine box from the recipe and does NOT run the
+	// recipe's command — it reports the instance and leaves the box up for
 	// `dabs exec` (and `dabs rm` to reap). Args[0], when present, is the recipe
 	// name or a dabs.yaml path; no command is appended in this mode.
+	NoCommand bool
+	// Detach boots a NEW pristine box from the recipe, STARTS the recipe's
+	// command inside it in the background, and returns without waiting for the
+	// command to exit — the box is left up with its command running, for
+	// `dabs exec` (and `dabs rm` to reap). Args[0], when present, is the recipe
+	// name or a dabs.yaml path; no command is appended in this mode. Mutually
+	// exclusive with NoCommand.
 	Detach bool
 	// NodeName (--name) is the id the boot's LEAF node gets — the box when the
 	// recipe boots one, else the place it provisions — instead of a minted id.

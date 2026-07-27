@@ -126,14 +126,14 @@ func TestPruneKeepsImageOfLiveBoxE2E(t *testing.T) {
 
 // --- Family H: the box's canonical handle and where its bytes live ------------
 
-// E2-12: `--detach` printed `id: <instance>` — the driver instance name — though
+// E2-12: `--no-command` printed `id: <instance>` — the driver instance name — though
 // the NODE ID is the canonical, stable handle rm/exec resolve first. The boot
 // output must show the node id as `id:`, keep the instance on its own line, and
 // the node id must be a REAL handle: `dabs ls` shows it in the NODE column and
 // `dabs rm <id> --yes` reaps the box.
 func TestBootOutputShowsNodeIdE2E(t *testing.T) {
 	clean(t)
-	out, code := run("dabs recipe " + baseDir + " --detach")
+	out, code := run("dabs recipe " + baseDir + " --no-command")
 	if code != 0 {
 		t.Fatalf("up failed (%d): %s", code, out)
 	}
@@ -153,7 +153,7 @@ func TestBootOutputShowsNodeIdE2E(t *testing.T) {
 	}
 }
 
-// nodeIDFrom pulls the canonical node id off the `id:` line of `--detach` output.
+// nodeIDFrom pulls the canonical node id off the `id:` line of `--no-command` output.
 func nodeIDFrom(t *testing.T, out string) string {
 	t.Helper()
 	for _, line := range strings.Split(out, "\n") {
@@ -276,7 +276,7 @@ func TestDuplicateMountPathRejectedE2E(t *testing.T) {
 		"      - mkmount: $NODE_VOLUME/a\n        path: /work/dup\n"+
 			"      - mkmount: $NODE_VOLUME/b\n        path: /work/dup\n")
 
-	out, code := run("dabs recipe " + dir + " --detach")
+	out, code := run("dabs recipe " + dir + " --no-command")
 	if code == 0 {
 		t.Fatalf("two sources at the same box path were accepted (E2-15):\n%s", out)
 	}
@@ -335,7 +335,7 @@ func TestExecForwardsStdinE2E(t *testing.T) {
 
 // --- Family B: `up` succeeds but the box cannot run its command ----------------
 
-// E2-16/45/49: `dabs recipe <r> --detach` printed success (recipe booted / id:)
+// E2-16/45/49: `dabs recipe <r> --no-command` printed success (recipe booted / id:)
 // even when the box could not be ENTERED — a source over `/`, a `workdir:`
 // missing from the image, or an ro parent masking an rw child. Every later exec
 // then failed `bwrap: Can't chdir`. A boot that cannot enter is not up: it must
@@ -355,7 +355,7 @@ func TestBootFailsWhenBoxUnusableE2E(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, code := run("dabs recipe " + dir + " --detach")
+	out, code := run("dabs recipe " + dir + " --no-command")
 	if code == 0 {
 		t.Fatalf("boot into a missing workdir reported success (E2-45):\n%s", out)
 	}
@@ -385,7 +385,7 @@ func TestEmptyHeldSpaceNotMarkedHeldE2E(t *testing.T) {
 	dir := filepath.Join(home, "e2e-eph")
 	bugRecipe(t, dir, "eph", "      - mkmount: $NODE_HELD/e\n        path: /work/e\n")
 
-	out, code := run("dabs recipe " + dir + " --detach")
+	out, code := run("dabs recipe " + dir + " --no-command")
 	if code != 0 {
 		t.Fatalf("up failed (%d): %s", code, out)
 	}
@@ -447,7 +447,7 @@ func TestRecipeSourcePathCannotEscapeNodeTreeE2E(t *testing.T) {
 	bugRecipe(t, dir, "esc",
 		"      - mkmount: $NODE_VOLUME/../../../../../../tmp/dabs-escape-e2e14\n        path: /work/x\n")
 
-	out, code := run("dabs recipe " + dir + " --detach")
+	out, code := run("dabs recipe " + dir + " --no-command")
 	if code == 0 {
 		t.Fatalf("a space path escaping the node tree was accepted (E2-14):\n%s", out)
 	}
@@ -459,7 +459,7 @@ func TestRecipeSourcePathCannotEscapeNodeTreeE2E(t *testing.T) {
 	}
 }
 
-// E2-31: several `dabs recipe --detach` boots racing in the SAME directory each
+// E2-31: several `dabs recipe --no-command` boots racing in the SAME directory each
 // scanned the node store, saw no project node for the cwd, and each minted one —
 // duplicate project nodes for a single path. The resolve-or-create must be
 // atomic: however many boots race, exactly ONE project node marks the directory.
@@ -476,7 +476,7 @@ func TestConcurrentDetachMintsOneProjectNode(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			outs[i], codes[i] = runIn(dir, "dabs recipe race --detach")
+			outs[i], codes[i] = runIn(dir, "dabs recipe race --no-command")
 		}(i)
 	}
 	wg.Wait()
@@ -544,11 +544,11 @@ func TestRecipeToUnreachableServerFailsFastE2E(t *testing.T) {
 	// The fix bounds the ssh connect at the same 6s `dabs ls` uses, so a
 	// generous 30s deadline separates "returned with an error" from "hung".
 	start := time.Now()
-	out, hung := runTimeout(30*time.Second, "dabs recipe "+dir+" --detach")
+	out, hung := runTimeout(30*time.Second, "dabs recipe "+dir+" --no-command")
 	if hung {
-		t.Fatalf("recipe --detach to an unreachable target hung past 30s (E2-32):\n%s", out)
+		t.Fatalf("recipe --no-command to an unreachable target hung past 30s (E2-32):\n%s", out)
 	}
-	t.Logf("recipe --detach returned in %s", time.Since(start).Round(time.Second))
+	t.Logf("recipe --no-command returned in %s", time.Since(start).Round(time.Second))
 	if !containsFold(out, "203.0.113.1") ||
 		!(containsFold(out, "timed out") || containsFold(out, "unreachable")) {
 		t.Fatalf("unreachable-target error names neither the host nor a timeout (E2-32):\n%s", out)
@@ -642,17 +642,17 @@ func TestRelativeRecipePathResolvesE2E(t *testing.T) {
 	dir := filepath.Join(home, "e2e-relpath")
 	bugRecipe(t, dir, "relbox", "")
 
-	// A path shape that is exactly ".": --detach boots the box from ./dabs.yaml.
-	out, code := runIn(dir, "dabs recipe . --detach")
+	// A path shape that is exactly ".": --no-command boots the box from ./dabs.yaml.
+	out, code := runIn(dir, "dabs recipe . --no-command")
 	if code != 0 {
-		t.Fatalf("`recipe . --detach` did not resolve ./dabs.yaml (H3 relative path):\n%s", out)
+		t.Fatalf("`recipe . --no-command` did not resolve ./dabs.yaml (H3 relative path):\n%s", out)
 	}
 	run("dabs rm relbox --multiple --yes")
 
 	// A path shape that ends in dabs.yaml resolves the same file.
-	out, code = runIn(dir, "dabs recipe ./dabs.yaml --detach")
+	out, code = runIn(dir, "dabs recipe ./dabs.yaml --no-command")
 	if code != 0 {
-		t.Fatalf("`recipe ./dabs.yaml --detach` did not resolve the file:\n%s", out)
+		t.Fatalf("`recipe ./dabs.yaml --no-command` did not resolve the file:\n%s", out)
 	}
 	run("dabs rm relbox --multiple --yes")
 
@@ -742,7 +742,7 @@ func TestEphemeralVarAliasStillWorksE2E(t *testing.T) {
 	dir := filepath.Join(home, "e2e-alias")
 	bugRecipe(t, dir, "alias", "      - mkmount: $NODE_EPHEMERAL/e\n        path: /work/e\n")
 
-	out, code := run("dabs recipe " + dir + " --detach")
+	out, code := run("dabs recipe " + dir + " --no-command")
 	if code != 0 {
 		t.Fatalf("up failed (%d): %s", code, out)
 	}
@@ -764,10 +764,9 @@ func TestEphemeralVarAliasStillWorksE2E(t *testing.T) {
 	}
 }
 
-// The glossary names --no-command as --detach's successor, and the deprecation
-// rule says successors are what new work types — so the successor must be a
-// real flag, end to end: it boots a detached box exactly as --detach does.
-func TestNoCommandFlagBootsDetachedE2E(t *testing.T) {
+// CONTRACT: --no-command boots a box from a recipe PATH and leaves it up,
+// reporting the instance and saying plainly that no command was run.
+func TestNoCommandFlagBootsBoxE2E(t *testing.T) {
 	clean(t)
 	out, code := run("dabs recipe " + baseDir + " --no-command")
 	wantExit(t, 0, code)

@@ -64,7 +64,7 @@ recipes:
 def test_none_cuts_the_network(tut, dabs_home):
     (dabs_home / "myproj" / "dabs.yaml").write_text(NONE)
 
-    run(tut, "dabs recipe offline --detach --name offline", timeout=20000)
+    run(tut, "dabs recipe offline --no-command --name offline", timeout=20000)
     # A box with no egress cannot even resolve a name.
     check(tut, "dabs exec offline 'curl -sS -m 8 https://example.com 2>&1 | head -1'", "egress/none", timeout=20000)
     run(tut, "dabs rm offline -y", timeout=15000)
@@ -73,7 +73,7 @@ def test_none_cuts_the_network(tut, dabs_home):
 def test_allow_gates_by_host(tut, dabs_home):
     (dabs_home / "myproj" / "dabs.yaml").write_text(GATED)
 
-    run(tut, "dabs recipe gated --detach --name gated", timeout=20000)
+    run(tut, "dabs recipe gated --no-command --name gated", timeout=20000)
     # The allowlist is a CONNECT gate: an allowed host reaches, any other is
     # refused before a byte leaves.
     check(
@@ -91,7 +91,7 @@ def test_a_hook_rewrites_egress(tut, dabs_home):
     (proj / "dabs.yaml").write_text(HOOKED)
     (proj / "broker.ts").write_text(BROKER_TS)
 
-    run(tut, "dabs recipe hooked --detach --name hooked", timeout=25000)
+    run(tut, "dabs recipe hooked --no-command --name hooked", timeout=25000)
     # The box's request is terminated, handed to the hook, then re-originated —
     # what returns is whatever the hook chose to emit.
     check(tut, "dabs exec hooked 'curl -s -m 20 http://example.com/'", "egress/broker", timeout=25000)

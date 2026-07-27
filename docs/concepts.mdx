@@ -10,7 +10,7 @@ every command's output reads naturally.
 
 The disposable, host-isolated environment a command or agent runs in — a
 pristine machine that sees only what its recipe put in it. Booting is
-`dabs recipe <name> --detach`; a **new box every time**, never a reused one.
+`dabs recipe <name> --no-command`; a **new box every time**, never a reused one.
 
 A running box also has an **instance** name (`shell-a1b2c3d4e5f6`) minted by
 the driver. You will see it in parentheses in `dabs ls`; both the node id and

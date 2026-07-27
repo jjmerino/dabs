@@ -14,7 +14,7 @@ phone home.
 
 ## Boxes accumulate
 
-Every `dabs recipe … --detach` is a **new** box, and nothing reaps it for you.
+Every `dabs recipe … --no-command` is a **new** box, and nothing reaps it for you.
 Agents are the worst offenders: a driver that boots a box per task — or aborts
 mid-task before its own `dabs rm` — leaves live boxes (and their processes)
 piling up behind it. Hundreds of leftover boxes will eventually destabilize
@@ -53,8 +53,9 @@ practice:
 
 - `git log` inside a minimal box opens a pager and appears to hang a driven
   terminal — use `git --no-pager`.
-- A detached box's PID 1 never reaps children, so processes killed inside a
-  box linger as **zombies** until the box itself is reaped.
+- A box left up (`--no-command`, `--detach`) has a PID 1 that never reaps
+  children, so processes killed inside it — and a `--detach` command that exits
+  on its own — linger as **zombies** until the box itself is reaped.
 
 ## Appending to a recipe is literal
 
@@ -65,11 +66,14 @@ the exact final command — read it before you say yes. And a `default:` naming
 an agent turns a bare append into arguments *to that agent*; set no default
 unless one recipe is the obvious choice.
 
-## `--detach` is an unstable alias
+## `--detach` does not mean "boot and run nothing"
 
-Today it means `--no-command` (boot, run nothing) — and the boot message says
-so in `--no-command` terms. Its intended future is a true background detach,
-so scripts that must not break should spell `--no-command`.
+`--no-command` boots a box and runs nothing. `--detach` boots one and STARTS the
+recipe's command in the background, with its output going to the node's own
+`tmp/detached.log` rather than your terminal. They are different asks, and passing both is
+an error. `--detach` also needs a driver whose box carries a process of its own
+(docker, apple); on one that enters its box afresh per command (bwrap) it is
+refused rather than quietly run in the foreground.
 
 ## Instance names don't say which recipe made them
 

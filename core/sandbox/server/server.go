@@ -182,7 +182,7 @@ func (d *Driver) writeRecipe(name string, env map[string]string, workdir string)
 }
 
 // Up rewrites the staged recipe with the spec's runtime fields and runs
-// `dabs recipe … --detach` remotely, returning the instance name the remote
+// `dabs recipe … --no-command` remotely, returning the instance name the remote
 // printed on its `instance:` line.
 func (d *Driver) Up(spec sandbox.Spec) (string, error) {
 	if err := d.writeRecipe(spec.Name, spec.Env, spec.Workdir); err != nil {
@@ -192,9 +192,9 @@ func (d *Driver) Up(spec sandbox.Spec) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	out, err := d.remote(nil, dabs, "recipe", d.stagingDir(spec.Name), "--detach").Output()
+	out, err := d.remote(nil, dabs, "recipe", d.stagingDir(spec.Name), "--no-command").Output()
 	if err != nil {
-		return "", fmt.Errorf("ssh: dabs recipe --detach on %s: %s", d.host, execx.Stderr(err))
+		return "", fmt.Errorf("ssh: dabs recipe --no-command on %s: %s", d.host, execx.Stderr(err))
 	}
 	// printUp emits the instance on its own line: "instance: <name>".
 	for _, line := range strings.Split(string(out), "\n") {
@@ -204,7 +204,7 @@ func (d *Driver) Up(spec sandbox.Spec) (string, error) {
 			}
 		}
 	}
-	return "", fmt.Errorf("ssh: unexpected dabs recipe --detach output on %s: %q", d.host, string(out))
+	return "", fmt.Errorf("ssh: unexpected dabs recipe --no-command output on %s: %q", d.host, string(out))
 }
 
 // Run executes remotely, streams wired through ssh. A TTY is requested when

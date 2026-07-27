@@ -102,7 +102,7 @@ recipes:
       - mount: .
         path: /work
 
-  # dabs recipe fresh-claude — a DETACHED, logged-OUT Claude Code box. It mounts
+  # dabs recipe fresh-claude — an ISOLATED, logged-OUT Claude Code box. It mounts
   # NOTHING from ~/.dabs/shared/claude: the box boots with an empty /root/.claude,
   # so `claude` reports "Not logged in" and forces a fresh `/login`. That login —
   # and everything else the box writes — is box-local and dies with the box; it
@@ -111,7 +111,7 @@ recipes:
   # Agents: use when you want an isolated agent with throwaway/fresh auth — e.g.
   # reviewing UNTRUSTED code, where you must not expose your real Claude session.
   fresh-claude:
-    description: detached logged-out Claude box with throwaway auth
+    description: isolated logged-out Claude box with throwaway auth
     image: claude                         # same bundled image as `claude` (has Claude Code)
     command: [claude]                     # drops straight into the box → the /login flow
     env:
@@ -160,7 +160,7 @@ recipes:
   # so you (or an agent) drive that dabs from the host by reaching in:
   #
   #   dabs recipe dabseption                     # → box kept; note the instance name
-  #   dabs exec <instance> 'dabs recipe sh --detach' # the dabs in the box boots its OWN box
+  #   dabs exec <instance> 'dabs recipe sh --no-command' # the dabs in the box boots its OWN box
   #   dabs exec <instance> -- dabs ls
   #
   # They differ in ONE thing — what lands at /work:
@@ -177,7 +177,7 @@ recipes:
   # the driver (you, an agent) stays OUTSIDE on the host, unsandboxed.
   #
   # The box can boot NESTED boxes: the image stages a ready-built `shell` rootfs
-  # (see the Dockerfile's COPY --from), so `dabs recipe sh --detach` / `dabs recipe sh`
+  # (see the Dockerfile's COPY --from), so `dabs recipe sh --no-command` / `dabs recipe sh`
   # work inside with no builder. `dabs build` still cannot run in there — it shells out to
   # docker, which the box has none of — and does not need to.
   dabseption:

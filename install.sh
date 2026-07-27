@@ -49,7 +49,10 @@ fetch() { # fetch <url> <dest>
   case "$downloader" in
     curl) curl -fsSL -o "$2" "$1" ;;
     wget) wget -qO "$2" "$1" ;;
-  esac
+  esac || {
+    echo "Could not download $1" >&2
+    return 1
+  }
 }
 
 # One checksum tool, picked once. A release publishes SHA256SUMS beside the
@@ -62,6 +65,23 @@ elif command -v shasum >/dev/null 2>&1; then
 else
   echo "Need sha256sum or shasum to verify the download; refusing to install unverified." >&2
   echo "Install one of them (coreutils or perl), or build from source: https://github.com/$REPO" >&2
+  exit 1
+fi
+
+# Where the binary goes, and whether reaching it needs sudo — settled before
+# anything is downloaded, so an unusable destination fails in a second.
+if [ ! -d "$INSTALL_DIR" ]; then
+  echo "Install directory $INSTALL_DIR does not exist." >&2
+  echo "Create it, or point DABS_INSTALL_DIR at a directory that exists." >&2
+  exit 1
+fi
+if [ -w "$INSTALL_DIR" ]; then
+  sudo_cmd=""
+elif command -v sudo >/dev/null 2>&1; then
+  sudo_cmd="sudo"
+else
+  echo "$INSTALL_DIR is not writable and sudo is not installed." >&2
+  echo "Set DABS_INSTALL_DIR to a directory you can write, e.g. DABS_INSTALL_DIR=\$HOME/.local/bin" >&2
   exit 1
 fi
 
@@ -84,7 +104,15 @@ fi
 
 echo "dabs $tag → $os/$arch"
 tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
+staged=""
+cleanup() {
+  rm -rf "$tmp"
+  if [ -n "$staged" ]; then
+    $sudo_cmd rm -f "$staged" 2>/dev/null || true
+  fi
+  return 0
+}
+trap cleanup EXIT
 
 base="https://github.com/$REPO/releases/download/$tag"
 fetch "$base/$asset" "$tmp/dabs"
@@ -104,14 +132,20 @@ if [ "$got" != "$want" ]; then
   exit 1
 fi
 
-chmod +x "$tmp/dabs"
-
-if [ -w "$INSTALL_DIR" ]; then
-  mv "$tmp/dabs" "$INSTALL_DIR/dabs"
-else
+if [ -n "$sudo_cmd" ]; then
   echo "Installing to $INSTALL_DIR (needs sudo)…"
-  sudo mv "$tmp/dabs" "$INSTALL_DIR/dabs"
 fi
+
+# Copy into the destination directory first, then rename within it. A rename
+# inside one directory is atomic, so an interrupted install leaves the previous
+# dabs whole instead of half-overwritten by a cross-device copy.
+staged="$INSTALL_DIR/dabs.tmp.$$"
+$sudo_cmd cp "$tmp/dabs" "$staged"
+# An explicit mode, not chmod +x: +x is umask-relative and under umask 077
+# would install a binary only its owner can read or run.
+$sudo_cmd chmod 755 "$staged"
+$sudo_cmd mv "$staged" "$INSTALL_DIR/dabs"
+staged=""
 
 # Check the file that is now on disk, not merely that some dabs answers: a
 # failed move would otherwise leave an older binary reporting success.
@@ -123,13 +157,14 @@ fi
 echo "Installed $tag to $INSTALL_DIR/dabs"
 
 # What the user's shell will actually run may be a different dabs, or none.
+# Compared by content, so a symlinked or trailing-slash INSTALL_DIR that
+# resolves to the same binary does not read as a mismatch.
 found="$(command -v dabs 2>/dev/null || true)"
-if [ "$found" != "$INSTALL_DIR/dabs" ]; then
-  if [ -z "$found" ]; then
-    echo "Note: $INSTALL_DIR is not on your PATH — run $INSTALL_DIR/dabs, or add the directory to PATH."
-  else
-    echo "Note: typing dabs runs $found, not the one just installed."
-  fi
+if [ -z "$found" ]; then
+  echo "Note: $INSTALL_DIR is not on your PATH — run $INSTALL_DIR/dabs, or add the directory to PATH."
+  echo "      An open shell may also have cached an older path; run: hash -r"
+elif [ "$(checksum "$found" 2>/dev/null || true)" != "$want" ]; then
+  echo "Note: typing dabs runs $found, not the one just installed."
   echo "      An open shell may also have cached an older path; run: hash -r"
 fi
 

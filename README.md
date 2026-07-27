@@ -46,8 +46,8 @@ It is [`install.sh`](install.sh) in this repo, so you can read it before you
 run it:
 
 ```bash
-curl -fsSL https://dabs.dev/install.sh -o install.sh
-less install.sh && sh install.sh
+curl -fsSL https://dabs.dev/install.sh -o dabs-install.sh
+less dabs-install.sh && sh dabs-install.sh
 ```
 
 Or prebuilt binary — download from

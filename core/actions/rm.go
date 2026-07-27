@@ -192,11 +192,10 @@ func (r Real) rmResolved(p params.Rm, nodes []Node, states func() driversAnswer)
 // rmCleanWorktrees sweeps EVERY worktree node in one shot, reaping the ones that
 // hold no unreviewed git work and keeping the rest. It is the batch `dabs rm`
 // over worktrees: each node reaps through the ordinary Rm path, so the same
-// space rules and the same unreviewed-work guard apply. A worktree that holds
-// work is refused (its reap returns an error) and reported at the end, unless
-// --force approves discarding it; one carrying a LIVE box is kept and reported
-// unless -y consents to stopping it. --dry previews each without removing
-// anything.
+// space rules apply. A worktree that holds unreviewed work is kept and reported
+// at the end, unless --force approves discarding it; one carrying a LIVE box is
+// kept and reported unless -y consents to stopping it. --dry previews the nodes
+// the sweep would take, and only those, without removing anything.
 func (r Real) rmCleanWorktrees(p params.Rm) error {
 	nodes, err := r.listNodes()
 	if err != nil {
@@ -218,12 +217,18 @@ func (r Real) rmCleanWorktrees(p params.Rm) error {
 			keptLive = append(keptLive, n.ID)
 			continue
 		}
+		// The unreviewed-work guard decides membership BEFORE the reap, so a --dry
+		// sweep — which removes nothing and therefore raises nothing — previews
+		// exactly the set a real sweep takes.
+		if err := r.guardWorktreeWork(n, p.Force); err != nil {
+			if !strings.Contains(err.Error(), "unreviewed work") {
+				return fmt.Errorf("rm %s: %w", n.ID, err)
+			}
+			kept = append(kept, n.ID)
+			continue
+		}
 		one := params.Rm{Node: n.ID, Yes: true, Dry: p.Dry, Volume: false, Force: p.Force}
 		if err := r.rmResolved(one, nodes, states); err != nil {
-			if strings.Contains(err.Error(), "unreviewed work") {
-				kept = append(kept, n.ID)
-				continue
-			}
 			return fmt.Errorf("rm %s: %w", n.ID, err)
 		}
 	}

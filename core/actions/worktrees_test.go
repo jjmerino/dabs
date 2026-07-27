@@ -163,6 +163,34 @@ func TestWorktreeCleanSweepKeepsWork(t *testing.T) {
 	}
 }
 
+// CONTRACT: `rm --clean-worktrees --dry` previews the set the real sweep takes
+// and nothing else. A worktree holding unreviewed work is named as KEPT, never
+// previewed as doomed — a preview that overstates the sweep is the one lie the
+// safety story cannot afford.
+func TestWorktreeCleanSweepDryPreviewsOnlyWhatItTakes(t *testing.T) {
+	fd := baseData()
+	seedWorktreeNode(fd, "clean1", wtState{})
+	seedWorktreeNode(fd, "dirty1", wtState{ahead: 1})
+
+	out := captureStdout(t, func() {
+		if err := newReal("", fd, &fakeDriver{}).Rm(params.Rm{CleanWorktrees: true, Dry: true}); err != nil {
+			t.Fatalf("rm --clean-worktrees --dry: %v", err)
+		}
+	})
+	if len(fd.removed) != 0 {
+		t.Fatalf("--dry removed something: %v", fd.removed)
+	}
+	if !strings.Contains(out, "clean1") {
+		t.Fatalf("dry preview must show the worktree the sweep takes; got:\n%s", out)
+	}
+	if strings.Contains(out, "Removing dirty1") {
+		t.Fatalf("dry preview offered to reap a worktree the sweep keeps; got:\n%s", out)
+	}
+	if !strings.Contains(out, "unreviewed work") || !strings.Contains(out, "dirty1") {
+		t.Fatalf("dry preview must report the kept worktree by name; got:\n%s", out)
+	}
+}
+
 // seedChildBoxNode makes fd look as if dabs had booted a box ON another node:
 // a box record bound to instance, with parent as the node it stands on.
 func seedChildBoxNode(fd *fakeData, id, instance, parent string) {

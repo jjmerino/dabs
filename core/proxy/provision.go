@@ -49,8 +49,9 @@ type Provisioned struct {
 // proxy egress — a box that asked for a proxied wall is never silently left
 // open. expandPath resolves ~ and $VAR in module paths (the caller owns path
 // semantics); recipeEnv is the recipe's own env, which wins over the proxy/CA
-// env on conflict.
-func Provision(drv sandbox.Driver, recipeName string, egress recipe.Egress, recipeEnv map[string]string, expandPath func(string) (string, error)) (*Provisioned, error) {
+// env on conflict; suppliedForwarder, when non-empty, is a forwarder binary the
+// caller provides in place of dabs's embedded copy.
+func Provision(drv sandbox.Driver, recipeName string, egress recipe.Egress, recipeEnv map[string]string, suppliedForwarder string, expandPath func(string) (string, error)) (*Provisioned, error) {
 	ee, ok := drv.(sandbox.EgressEnforcer)
 	if !ok {
 		return nil, fmt.Errorf("recipe %q: target driver cannot enforce proxy egress — refusing to boot", recipeName)
@@ -74,9 +75,10 @@ func Provision(drv sandbox.Driver, recipeName string, egress recipe.Egress, reci
 		return nil, fmt.Errorf("recipe %q: %w", recipeName, err)
 	}
 	// The forwarder binary lands in the engine's dir (reaped with it) and is
-	// mounted into the box by the driver. It comes from dabs's embedded copy; a
-	// dabs built without it fails here rather than booting an open box.
-	forwarderBin, err := forwarder.Materialize(eng.Dir)
+	// mounted into the box by the driver. It comes from the caller's supplied
+	// forwarder, else dabs's embedded copy; with neither, this fails rather than
+	// booting an open box.
+	forwarderBin, err := forwarder.Materialize(eng.Dir, suppliedForwarder)
 	if err != nil {
 		eng.Stop()
 		os.RemoveAll(dir)

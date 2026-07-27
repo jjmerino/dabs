@@ -666,7 +666,7 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID, tip string, rec re
 	proxyPID, proxyDir := 0, ""
 	switch rec.EgressMode() {
 	case recipe.EgressProxy:
-		p, perr := proxy.Provision(drv, recipeName, rec.Egress, rec.Env, r.expandPath)
+		p, perr := proxy.Provision(drv, recipeName, rec.Egress, rec.Env, r.forwarder, r.expandPath)
 		if perr != nil {
 			return "", perr
 		}

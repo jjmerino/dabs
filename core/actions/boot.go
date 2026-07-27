@@ -32,6 +32,12 @@ type BootSpec struct {
 	// Worktree, when set, binds an EXISTING dabs worktree to the recipe's `.`
 	// source (mounting its parent .git so git works in-box) instead of the cwd —
 	// what `dabs recipe --worktree <wt>` does.
+	//
+	// Empty does not mean "no worktree". When the calling process's CWD lies
+	// inside a dabs worktree's own checkout, that worktree is INHERITED: the box
+	// is parented on it and it is bound as the `.` source, exactly as naming it
+	// here would. Set this explicitly (it wins) when the boot must not depend on
+	// where the caller happens to be running.
 	Worktree string
 	// NodeName is the id the box node gets instead of a minted one — what `--name`
 	// does. It must be unique across known nodes; an INACTIVE holder is reaped on
@@ -42,12 +48,18 @@ type BootSpec struct {
 // Boot brings a NEW pristine box up from a recipe VALUE and returns its
 // identity. It is the Go entry point behind `dabs recipe --no-command`, for
 // callers that embed dabs rather than shell out to it: the recipe never touches
-// disk and needs no registry entry, nothing is printed, and the box's node id
-// and instance come back as values to drive with Exec and reap with Rm.
+// disk and needs no registry entry, and the box's node id and instance come back
+// as values to drive with Exec and reap with Rm rather than as text to scrape.
 //
 // Like `--no-command`, it does NOT run the recipe's command and does NOT tear
 // the box down — the box is the caller's to reap. The caller runs what it wants
 // through Exec, so no Detacher is needed and any driver can hold the box.
+//
+// The boot itself reports nothing: no success line, no kept places, no identity
+// — those are the return value. It writes to stdout in ONE case, reaping: a
+// NodeName held by an inactive node is reaped to free the name, and the reap
+// says so and names each node it removes, as `dabs rm` does. A caller that must
+// own its stdout should pick a NodeName no node holds.
 //
 // An error returns the zero Box, and a boot that died after minting its node
 // leaves that node behind. Set NodeName to have a handle to reap it by: a minted

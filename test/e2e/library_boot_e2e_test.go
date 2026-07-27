@@ -21,8 +21,10 @@ import (
 	"github.com/jjmerino/dabs/core/sandbox/bwrap"
 )
 
-// embedded wires the actions an embedding program gets: the platform driver and
-// the repo's bundled build recipes, exactly as main.go assembles them.
+// embedded wires the actions an embedding program gets. It is the shape of
+// main.go's wiring — one lazy local driver, an images FS, the OS data layer —
+// with this box's platform driver and the repo's images dir named directly,
+// since neither the build-tagged selection nor the embed lives in this package.
 func embedded(t *testing.T) actions.Real {
 	t.Helper()
 	drv := sandbox.Lazy("bwrap", func() (sandbox.Driver, error) { return bwrap.New() })
@@ -37,6 +39,9 @@ func embedded(t *testing.T) actions.Real {
 func TestLibraryBootFromInMemoryRecipe(t *testing.T) {
 	clean(t)
 	const node = "dabs-e2e-inmem"
+	// A string that exists nowhere but in the value below, so finding it anywhere
+	// on disk means something serialized the recipe.
+	const marker = "FROM_MEMORY"
 	t.Cleanup(func() { run("dabs rm " + node + " --yes") })
 
 	a := embedded(t)
@@ -47,7 +52,7 @@ func TestLibraryBootFromInMemoryRecipe(t *testing.T) {
 			Image:   recipe.ImageRef{Name: sandboxName},
 			Workdir: "/work",
 			Command: []string{"sh"},
-			Env:     map[string]string{"FROM_MEMORY": "yes"},
+			Env:     map[string]string{marker: "yes"},
 		},
 	})
 	if err != nil {
@@ -62,15 +67,23 @@ func TestLibraryBootFromInMemoryRecipe(t *testing.T) {
 	// The returned identity is usable: both handles reach the same live box, and
 	// the recipe's env — which only ever existed as a Go value — is in it.
 	for _, handle := range []string{box.ID, box.Instance} {
-		out, code := run("dabs exec " + handle + " -- printenv FROM_MEMORY")
+		out, code := run("dabs exec " + handle + " -- printenv " + marker)
 		if code != 0 || !strings.Contains(out, "yes") {
 			t.Fatalf("exec via %q (%d): %s", handle, code, out)
 		}
 	}
-	// Nothing was written to disk to make this recipe: the cwd holds no dabs.yaml
-	// naming it, and the registry does not know the box's name.
-	if out, _ := run("dabs recipes"); strings.Contains(out, node) {
-		t.Fatalf("recipes lists the in-memory recipe: %s", out)
+	// Nothing was serialized to make this recipe: no dabs.yaml appeared beside the
+	// caller, and the merged registry — every layer of it — carries no trace of the
+	// recipe's own marker.
+	for _, f := range []string{filepath.Join(baseDir, "dabs.yaml"), filepath.Join(home, ".dabs", "recipes.yaml")} {
+		if b, err := os.ReadFile(f); err == nil && strings.Contains(string(b), marker) {
+			t.Fatalf("the boot wrote the recipe into %s", f)
+		}
+	}
+	// `recipes --print` dumps the whole MERGED registry — bundled, ~/.dabs, and
+	// the cwd's dabs.yaml — so the marker's absence covers every layer.
+	if out, _ := run("dabs recipes --print"); strings.Contains(out, marker) {
+		t.Fatalf("the in-memory recipe reached the registry: %s", out)
 	}
 	// Detached: Boot never runs the recipe's command, and the box stays up.
 	out, code := run("dabs ls")

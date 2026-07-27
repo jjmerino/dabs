@@ -5,9 +5,32 @@ All notable changes to dabs are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+There is no `Unreleased` section: each release's entry is written when the
+release is cut, from the commit log since the previous tag.
+
+## [0.5.0] - 2026-07-27
 
 ### Added
+- **`dabs info <node>`** — one node's full model in one screen: kind and id, the
+  working place it marks, its three spaces with each one's presence, and the
+  recipe that provisioned it. The recipe comes from a snapshot taken when the
+  node was created, so `info` shows what actually built the box rather than
+  whatever the registry says today; nodes made before this release fall back to
+  the registry, said plainly. `info` is also where a box's on-disk location
+  now lives, and where its boot command is shown (below).
+- **A box's boot command is persisted on its node.** `dabs recipe <name>
+  <extra…>` appended tokens to the recipe's command and recorded them nowhere,
+  so the inventory could say a box's recipe, when, and where — never WHAT it was
+  asked to do. The appended argv is now stored on the box node and shown by
+  `dabs info` alone: an appended command can carry a prompt or a secret, so it
+  is never surfaced in the fleet-wide `dabs ls`.
+- **`$NODE_ID` in a recipe's box paths.** A mount's destination `path:` and the
+  recipe's `workdir:` may now name the box's own id. A recipe that mounts
+  `. -> /work` gives every box the same cwd, so every agent session inside
+  derives the same transcript slug and they all collide; `path: /$NODE_ID`
+  namespaces the in-box workdir per box. `$NODE_ID` is the only variable a box
+  path may name (space vars still name host origins only) and is validated as a
+  slug, so it cannot become a traversal escape.
 - **`dabs recipe --detach`** — boot a box with the recipe's command RUNNING in
   the background. The call returns as soon as the command is started, nothing is
   wired to the terminal, and the box is left up with its command alive — so a
@@ -34,10 +57,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so a newly declared capability missing from the list fails too.
 
 ### Changed
+- **`dabs ls` is one flat local tree.** All local drivers collapse into a single
+  heading-less tree, so a project hosting boxes on more than one local driver
+  (apple + docker) renders once instead of duplicated per driver; remote servers
+  keep their own section, and each box names its driver in KIND — `box (apple)`,
+  `box (docker)`. The old `(location)` continuation row is gone: WHERE becomes a
+  per-kind INFO column — a project's source repo, a worktree's checkout, a box's
+  copy-pasteable `dabs exec <instance> bash` — with the git signal riding the
+  STATE column, and empty space cells render blank rather than a dash.
+- **`dabs cd` resolves per kind** — a project to its source repo, a worktree to
+  its checkout, a box to its node dir, instead of one uniform path.
 - **`--detach` now means what detach means everywhere else.** The flag that
   booted a box and deliberately did NOT run the recipe's command is now
-  **`--no-command`** — the name its own success line already printed, and the
-  successor the glossary had named. `--detach` is not an alias of it; it is the
+  **`--no-command`** — the name its own success line already printed, the
+  successor the glossary had named, and, since 0.4.1, an accepted alias of the
+  old `--detach`, so a script already passing `--no-command` is unaffected by
+  this release. `--detach` is not an alias of it; it is the
   true detach described above. Pre-1.0, the old spelling is gone rather than
   deprecated: a script passing `--detach` now STARTS the recipe's command instead
   of skipping it, and must move to `--no-command`.
@@ -67,6 +102,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   grant, optionally restricted to named `hosts:`; a token string appearing in
   message content instead passes through unchanged (a real one is rewritten
   back to the dummy) and is recorded to an optional host-side `alerts:` file.
+- **`dabseption` boxes drop you into bash.** The command tail was `exec sh`,
+  inherited from the bundled recipes where `sh` is the safe
+  lowest-common-denominator; these boxes run a fixed Debian image that ships
+  bash, so the prompt had no history, completion, or line editing for no reason.
+  `TERM` is set too, so the shell has a real terminal.
+
+### Fixed
+- **`rm --clean-worktrees --dry` previews only what the sweep would take.** The
+  sweep decided a worktree's fate by running the reap and reading its error, and
+  `--dry` never errors — so the preview announced the removal of worktrees the
+  real sweep keeps, and omitted the "kept N worktree(s) with unreviewed work"
+  summary. Dry and real now select the same set.
+- **The look-before-run confirmation no longer hangs on a stdin nobody can
+  answer.** `dabs recipe <name> <cmd…>` read a line from stdin whenever stdin
+  was not a terminal; an agent harness or CI step passes an inherited pipe that
+  is open but never written, so the scripted form of the command hung forever
+  with the prompt on stderr. The wait is bounded when no terminal is attached:
+  `echo y | dabs …` still approves, an empty stream gets the default deny.
+- **A kept box is offered back by its node id**, not the generated instance
+  handle — so a box booted with `--name api` is reaped as `dabs rm api`.
+- **A resolved recipe survives a JSON round-trip.** An open (unset) `egress`
+  marshalled to a bare `{}`, which its own unmarshaler rejects; since a node now
+  persists its recipe snapshot, that made every newly-provisioned node's record
+  unreadable and `dabs ls` silently dropped it.
+
+### Security
+- Weekly Dependabot updates for gomod and github-actions, a `SECURITY.md`
+  routing reports through GitHub private vulnerability reporting, `contents:
+  read` on the test workflow, and third-party actions pinned to full-length
+  commit SHAs.
 
 ## [0.4.1] - 2026-07-18
 
@@ -236,6 +301,7 @@ Initial release. Minimum to bootstrap dabs.
   `target`) + Dockerfile-based images.
 - `dabash` MCP tool, curried to a single instance via `dabs mcp <instance>`.
 
+[0.5.0]: https://github.com/jjmerino/dabs/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/jjmerino/dabs/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/jjmerino/dabs/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/jjmerino/dabs/compare/v0.2.0...v0.3.0

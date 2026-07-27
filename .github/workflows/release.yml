@@ -2,7 +2,9 @@ name: release
 
 # Pushing a version tag builds the four release binaries and attaches them to
 # the tag's GitHub release — the install script downloads these, so nothing is
-# ever compiled on a user's machine.
+# ever compiled on a user's machine. install.sh rides along as an asset of the
+# same release: it is served from releases/latest/download/install.sh, so the
+# script a user pipes is the one that shipped with the binaries it installs.
 on:
   push:
     tags: ["v*"]
@@ -42,6 +44,17 @@ jobs:
                 -o "dist/dabs_${os}_${arch}" .
           done; done
           (cd dist && shasum -a 256 dabs_* > SHA256SUMS)
+          # SHA256SUMS covers the binaries only — it is what install.sh checks
+          # its download against. The script itself is not listed: it is the
+          # thing doing the checking, so a checksum of it beside it proves
+          # nothing. Copied after SHA256SUMS is written so it stays out of it.
+          # Tags older than the vendored installer carry no install.sh; say so
+          # and ship their binaries rather than failing their asset rebuild.
+          if [ -f install.sh ]; then
+            cp install.sh dist/install.sh
+          else
+            echo "no install.sh at this tag — publishing binaries only"
+          fi
           ls -la dist/
       - name: Publish the release
         env:

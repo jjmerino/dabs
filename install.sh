@@ -2,6 +2,13 @@
 # dabs installer — https://dabs.dev
 # Downloads a prebuilt release binary; nothing is compiled on your machine.
 # The source of this script lives at https://github.com/jjmerino/dabs/blob/main/install.sh
+#
+# What dabs.dev serves is the copy attached to the LATEST RELEASE
+# (releases/latest/download/install.sh), never the copy on main. This script
+# fetches a release's binaries and that same release's SHA256SUMS, so it is
+# only correct about releases that exist; a copy from main can describe assets
+# no published release carries. Serve it from the release, and the script and
+# the assets it names ship together.
 set -eu
 
 REPO="jjmerino/dabs"

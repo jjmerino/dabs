@@ -43,8 +43,8 @@ system-wide; set `DABS_INSTALL_DIR` to install it elsewhere.
 curl -fsSL https://dabs.dev/install.sh | sh
 ```
 
-It is [`install.sh`](install.sh) in this repo, so you can read it before you
-run it:
+That URL redirects to [`install.sh`](install.sh) as attached to the latest
+release, so you can read it before you run it:
 
 ```bash
 curl -fsSL https://dabs.dev/install.sh -o dabs-install.sh

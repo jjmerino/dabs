@@ -8,6 +8,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 There is no `Unreleased` section: each release's entry is written when the
 release is cut, from the commit log since the previous tag.
 
+## [0.6.0] - 2026-07-27
+
+### Added
+- **The install script lives in this repo** — `install.sh`, the script users are
+  told to pipe into `sh`, was published from nowhere in the tree, so nobody
+  could read or review what they were running. It is now a file here, and the
+  release workflow attaches it as an asset of the release whose binaries it
+  installs: `releases/latest/download/install.sh` serves the script that shipped
+  with those binaries, rather than whatever `main` happens to say about assets no
+  published release carries. It is deliberately NOT listed in `SHA256SUMS` — a
+  digest fetched by the same script it describes verifies nothing. Tags cut
+  before this release carry no `install.sh`, and an asset rebuild for one
+  publishes their binaries and says so instead of failing.
+- **`actions.Real.WithForwarder(path)`** — a program embedding dabs as a Go
+  module can now supply the box-side egress forwarder. `forward.bin` is
+  generated at build time, so it is in neither the repo nor the module zip: the
+  only source was the copy embedded behind `-tags withforwarder`, which a
+  library consumer could never obtain, and every proxy recipe was refused with an
+  instruction it had no way to follow. An explicitly supplied path wins over any
+  embed, so a caller gets exactly the binary it named whatever the build it links
+  against carries; what is required of that binary is the forwarder PROTOCOL
+  (`<bin> <sock> <port> -- <argv…>`, binding loopback before exec'ing the argv),
+  not particular bytes — a superset is fine, and nothing compares it to the embed
+  or pins its version. dabs checks only that the path is an existing regular
+  file, and reports a missing one at boot. The linux drivers mount the binary
+  into the box, so it is the one that runs; the apple driver mounts no host
+  binary (a host binary cannot run in the linux micro-VM) and the box image's own
+  copy at `/run/dabs/forward` is what serves there. The CLI's embed is untouched,
+  and with neither supply nor embed the refusal now names both doors, since which
+  one applies depends on who is reading it.
+
+### Changed
+- **The installer needs no root, and installs to `~/.local/bin`.** It creates
+  the directory if it is absent, checks it is writable AND enterable before
+  downloading anything, and `DABS_INSTALL_DIR` still overrides it. Nothing is
+  written system-wide and `sudo` is never invoked — an existing install under a
+  system directory is left exactly where it is until you remove it. Because that
+  older binary may still be what a bare `dabs` finds, the installer compares the
+  content of whatever is first on `PATH` against what it just installed and, when
+  they differ, names both paths and how to fix the order; when the install
+  directory is not on `PATH` at all it says so and prints the line to add.
+- **The installer reports what actually landed** — the resolved release tag and
+  the install path — after re-checking the on-disk file's digest, so a move that
+  did not happen cannot be reported as success by an older binary answering in
+  its place.
+- `github.com/mattn/go-isatty` 0.0.23 → 0.0.24.
+
+### Security
+- **The installer verifies its download against the release's `SHA256SUMS`**, and
+  refuses to install at all when no checksum tool (`sha256sum`/`shasum`) is
+  present rather than silently skipping the check. Both the binary and its
+  checksums come from the same GitHub release, so this defends against a
+  corrupted or truncated download and a bad mirror — it is NOT a provenance
+  proof, and an attacker who can publish the release can publish both.
+- **An interrupted install cannot leave a truncated binary over a working one.**
+  The download is staged inside the destination directory and renamed into place
+  (a rename within one directory is atomic), the staging path is deleted before
+  the copy so a symlink left there cannot redirect the bytes, the mode is set
+  explicitly rather than with umask-relative `chmod +x`, and signals are turned
+  into exits so `dash`/`ash` still run the cleanup trap.
+
 ## [0.5.0] - 2026-07-27
 
 ### Added
@@ -301,6 +362,7 @@ Initial release. Minimum to bootstrap dabs.
   `target`) + Dockerfile-based images.
 - `dabash` MCP tool, curried to a single instance via `dabs mcp <instance>`.
 
+[0.6.0]: https://github.com/jjmerino/dabs/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/jjmerino/dabs/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/jjmerino/dabs/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/jjmerino/dabs/compare/v0.3.0...v0.4.0

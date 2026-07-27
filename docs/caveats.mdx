@@ -16,8 +16,9 @@ strength of the filesystem boundary alone.
 Confine it in the recipe: `egress: none` (no network at all), or an `egress:`
 mapping with `allow`/`deny` (a CONNECT gate for every protocol) and an optional
 `http_proxy` content chain. See [Egress](/guides/egress). Proxy egress needs
-`bun` and `openssl` on the host PATH and a dabs built with the forwarder
-embedded; `open` and `none` need neither.
+`bun` and `openssl` on the host PATH and a forwarder binary — embedded in the
+CLI, supplied by a program embedding dabs as a module
+([recipe schema](/reference/recipe-schema)); `open` and `none` need neither.
 
 ## Boxes accumulate
 

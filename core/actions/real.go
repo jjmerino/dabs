@@ -19,6 +19,9 @@ type Real struct {
 	images  fs.FS                     // bundled build recipes (…)
 	data    data.Data                 // host effects (fs/env/git) — the testable seam
 	confirm func(string) bool         // look-before-run gate; defaults to tui.Confirm
+	// forwarder is a caller-supplied egress forwarder binary; empty means dabs's
+	// embedded copy (see WithForwarder).
+	forwarder string
 }
 
 // New returns actions backed by the given drivers (listed in order), the
@@ -31,6 +34,31 @@ func New(drivers map[string]sandbox.Driver, order []string, images fs.FS, d data
 // answer the confirmation without a terminal.
 func (r Real) WithConfirm(fn func(string) bool) Real {
 	r.confirm = fn
+	return r
+}
+
+// WithForwarder returns a copy of r that boots proxy-egress boxes with the
+// forwarder binary at path instead of dabs's embedded copy, which a program
+// embedding dabs as a module has no way to obtain — forward.bin is generated at
+// build time and ships in neither the repo nor the module zip. An explicit path
+// wins over any embed, so a caller that supplies one gets exactly that binary
+// whatever the build tags say.
+//
+// The contract is the forwarder PROTOCOL — `<bin> <sockPath> <port> -- <argv…>`,
+// binding loopback before exec'ing the argv, as egressforwarder/cmd/forward
+// implements it — not a particular build of it. A superset speaking that
+// protocol is fine: dabs mounts the binary into the box and never compares it to
+// the embedded copy or pins its version. It must run on the box's platform, the
+// same requirement the embed carries; dabs checks only that the path is an
+// existing regular file, and reports a missing one at boot.
+//
+// The linux drivers mount this binary into the box, so it is the one that runs.
+// The apple driver mounts no host binary — a host binary cannot run in the linux
+// micro-VM, so on that driver the box image must carry a forwarder at
+// /run/dabs/forward and the image's copy is what runs; the supplied path only
+// satisfies provisioning there.
+func (r Real) WithForwarder(path string) Real {
+	r.forwarder = path
 	return r
 }
 

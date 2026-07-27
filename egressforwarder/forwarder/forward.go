@@ -44,11 +44,20 @@ func WrapCommand(argv []string) []string {
 	return append([]string{ForwardPath, SockPath, strconv.Itoa(Port), "--"}, argv...)
 }
 
-// Materialize writes the embedded forwarder binary into dir as an executable and
-// returns its path, ready for a driver to mount at ForwardPath. It fails if this
-// dabs was built without the forwarder embedded (see EmbeddedBinary).
-func Materialize(dir string) (string, error) {
-	b, err := EmbeddedBinary()
+// Materialize writes a forwarder binary into dir as an executable and returns
+// its path, ready for a driver to mount at ForwardPath. A non-empty supplied
+// path names a forwarder the caller provides and wins over the embedded copy;
+// empty takes the copy embedded at build time, and a dabs built without one
+// fails here rather than booting an open box.
+//
+// What a supplied binary must satisfy is the forwarder PROTOCOL — invoked as
+// `<bin> <sockPath> <port> -- <argv...>`, binding loopback before exec'ing the
+// argv, as cmd/forward implements it — not any particular bytes. It may be a
+// superset with extra behavior; nothing compares it to the embedded copy or
+// pins its version, and matching the box's architecture is the supplier's
+// business, exactly as it is for the embed.
+func Materialize(dir, supplied string) (string, error) {
+	b, err := forwarderBytes(supplied)
 	if err != nil {
 		return "", err
 	}
@@ -57,6 +66,28 @@ func Materialize(dir string) (string, error) {
 		return "", err
 	}
 	return path, nil
+}
+
+// forwarderBytes reads the supplied forwarder, or falls back to the embedded
+// copy when no path is supplied. A supplied path must name an existing regular
+// file; a directory or a missing path is a caller mistake worth naming, since
+// the alternative is a box that mounts something unrunnable.
+func forwarderBytes(supplied string) ([]byte, error) {
+	if supplied == "" {
+		return EmbeddedBinary()
+	}
+	info, err := os.Stat(supplied)
+	if err != nil {
+		return nil, fmt.Errorf("supplied forwarder %s: %w", supplied, err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("supplied forwarder %s: not a regular file", supplied)
+	}
+	b, err := os.ReadFile(supplied)
+	if err != nil {
+		return nil, fmt.Errorf("supplied forwarder %s: %w", supplied, err)
+	}
+	return b, nil
 }
 
 // Run binds 127.0.0.1:port, serves the bridge to the unix socket at sockPath,

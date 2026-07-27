@@ -220,7 +220,8 @@ func (d Driver) enter(instance string, cmd []string) (*exec.Cmd, error) {
 		// read-only at the forwarder's fixed paths — bound AFTER the recipe
 		// mounts, since bwrap binds in argv order and a recipe source at /run
 		// listed later would silently mask them. The forwarder is a static linux
-		// binary dabs materialized from its embedded copy.
+		// binary dabs materialized on the host — the caller's supplied one, else
+		// its embedded copy.
 		args = append(args,
 			"--ro-bind", meta.ProxySock, forwarder.SockPath,
 			"--ro-bind", meta.ForwarderBin, forwarder.ForwardPath)

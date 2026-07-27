@@ -18,6 +18,10 @@ Screens below are verified by `walkthroughs/test_quickstart.py`. Generated names
 curl -fsSL https://dabs.dev/install.sh | sh
 ```
 
+That puts the binary in `~/.local/bin` — no root, nothing system-wide. Set
+`DABS_INSTALL_DIR` to install it elsewhere. If the script says that directory
+is not on your PATH, add it and reopen your shell.
+
 dabs drives platform tools you install yourself — Apple's `container` on
 macOS, `bubblewrap` + `docker` on Linux. It detects what is missing and
 prints the install command; it never installs anything for you.

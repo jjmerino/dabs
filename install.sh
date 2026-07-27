@@ -5,7 +5,9 @@
 set -eu
 
 REPO="jjmerino/dabs"
-INSTALL_DIR="${DABS_INSTALL_DIR:-/usr/local/bin}"
+# A user-owned directory: dabs needs no root. It drives docker, bwrap or
+# apple's container as the invoking user and keeps its state in ~/.dabs.
+INSTALL_DIR="${DABS_INSTALL_DIR:-$HOME/.local/bin}"
 
 os="$(uname -s 2>/dev/null || echo unknown)"
 arch="$(uname -m 2>/dev/null || echo unknown)"
@@ -68,20 +70,16 @@ else
   exit 1
 fi
 
-# Where the binary goes, and whether reaching it needs sudo — settled before
-# anything is downloaded, so an unusable destination fails in a second.
-if [ ! -d "$INSTALL_DIR" ]; then
-  echo "Install directory $INSTALL_DIR does not exist." >&2
-  echo "Create it, or point DABS_INSTALL_DIR at a directory that exists." >&2
+# Settle the destination before anything is downloaded, so an unusable one
+# fails in a second. ~/.local/bin frequently does not exist yet.
+if ! mkdir -p "$INSTALL_DIR" 2>/dev/null; then
+  echo "Could not create the install directory $INSTALL_DIR." >&2
+  echo "Point DABS_INSTALL_DIR at a directory you can write, e.g. DABS_INSTALL_DIR=\$HOME/bin" >&2
   exit 1
 fi
-if [ -w "$INSTALL_DIR" ]; then
-  sudo_cmd=""
-elif command -v sudo >/dev/null 2>&1; then
-  sudo_cmd="sudo"
-else
-  echo "$INSTALL_DIR is not writable and sudo is not installed." >&2
-  echo "Set DABS_INSTALL_DIR to a directory you can write, e.g. DABS_INSTALL_DIR=\$HOME/.local/bin" >&2
+if [ ! -w "$INSTALL_DIR" ]; then
+  echo "The install directory $INSTALL_DIR is not writable by $(id -un 2>/dev/null || echo "this user")." >&2
+  echo "Point DABS_INSTALL_DIR at a directory you can write, e.g. DABS_INSTALL_DIR=\$HOME/bin" >&2
   exit 1
 fi
 
@@ -108,11 +106,17 @@ staged=""
 cleanup() {
   rm -rf "$tmp"
   if [ -n "$staged" ]; then
-    $sudo_cmd rm -f "$staged" 2>/dev/null || true
+    rm -f "$staged" || true
   fi
   return 0
 }
 trap cleanup EXIT
+# dash and ash run the EXIT trap only on exit, not on a signal, so an
+# interrupted install would leave the staging file behind. Turn each signal
+# into an exit.
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 
 base="https://github.com/$REPO/releases/download/$tag"
 fetch "$base/$asset" "$tmp/dabs"
@@ -132,19 +136,20 @@ if [ "$got" != "$want" ]; then
   exit 1
 fi
 
-if [ -n "$sudo_cmd" ]; then
-  echo "Installing to $INSTALL_DIR (needs sudo)…"
-fi
-
 # Copy into the destination directory first, then rename within it. A rename
 # inside one directory is atomic, so an interrupted install leaves the previous
 # dabs whole instead of half-overwritten by a cross-device copy.
 staged="$INSTALL_DIR/dabs.tmp.$$"
-$sudo_cmd cp "$tmp/dabs" "$staged"
-# An explicit mode, not chmod +x: +x is umask-relative and under umask 077
+# rm -f first: cp opens an existing path through a symlink, so without it a
+# link left at the staging path would send these bytes, and this mode, wherever
+# it points. Deleting the path first means cp always creates a fresh regular
+# file. The mv is a rename within one directory, which never follows a link.
+rm -f "$staged"
+cp "$tmp/dabs" "$staged"
+# An explicit mode, not chmod +x, which is umask-relative and under umask 077
 # would install a binary only its owner can read or run.
-$sudo_cmd chmod 755 "$staged"
-$sudo_cmd mv "$staged" "$INSTALL_DIR/dabs"
+chmod 755 "$staged"
+mv "$staged" "$INSTALL_DIR/dabs"
 staged=""
 
 # Check the file that is now on disk, not merely that some dabs answers: a
@@ -156,16 +161,42 @@ fi
 
 echo "Installed $tag to $INSTALL_DIR/dabs"
 
+# Where the user's shell keeps its PATH, for the line they need to add.
+# SHELL is unset in a container build, where there is no login shell at all.
+user_shell="${SHELL:-}"
+case "${user_shell##*/}" in
+  zsh)  profile="~/.zshrc" ;;
+  bash) profile="~/.bashrc" ;;
+  fish) profile="" ;;
+  *)    profile="your shell profile" ;;
+esac
+
+path_line() {
+  if [ -z "$profile" ]; then
+    echo "    fish_add_path $INSTALL_DIR"
+  else
+    echo "    export PATH=\"$INSTALL_DIR:\$PATH\""
+    echo "  Add that line to $profile to keep it."
+  fi
+}
+
 # What the user's shell will actually run may be a different dabs, or none.
 # Compared by content, so a symlinked or trailing-slash INSTALL_DIR that
 # resolves to the same binary does not read as a mismatch.
 found="$(command -v dabs 2>/dev/null || true)"
 if [ -z "$found" ]; then
-  echo "Note: $INSTALL_DIR is not on your PATH — run $INSTALL_DIR/dabs, or add the directory to PATH."
-  echo "      An open shell may also have cached an older path; run: hash -r"
+  echo
+  echo "$INSTALL_DIR is not on your PATH, so typing dabs will not find it yet."
+  echo "  Fix it for this shell:"
+  path_line
 elif [ "$(checksum "$found" 2>/dev/null || true)" != "$want" ]; then
-  echo "Note: typing dabs runs $found, not the one just installed."
-  echo "      An open shell may also have cached an older path; run: hash -r"
+  echo
+  echo "Careful: typing dabs does NOT run what was just installed."
+  echo "  typing dabs runs:  $found  (an older or different dabs, earlier in PATH)"
+  echo "  just installed:    $INSTALL_DIR/dabs  ($tag)"
+  echo "  Remove $found, or put $INSTALL_DIR ahead of it:"
+  path_line
+  echo "  Then run: hash -r   (shells cache the path of a command they have run)"
 fi
 
 echo "Start with: dabs recipes"

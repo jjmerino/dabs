@@ -229,8 +229,11 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 	for _, k := range kept {
 		fmt.Fprintln(os.Stdout, "\n"+tui.Success("kept: %s", k))
 	}
+	// The handle offered is the NODE ID — what `--name` set, and the name rm/exec
+	// resolve first. The instance rides along so the mapping to the driver's own
+	// name is not lost.
 	if rec.Keep {
-		fmt.Fprintf(os.Stdout, "\nbox kept: %s (dabs rm %s to delete it)\n", instance, instance)
+		fmt.Fprintf(os.Stdout, "\nbox kept: %s · instance %s (dabs rm %s to delete it)\n", boxID, instance, boxID)
 	}
 	return nil
 }

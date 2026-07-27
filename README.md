@@ -35,11 +35,28 @@ at the install command; it never installs anything for you.
 
 ## Install
 
-Prebuilt binary — download from
+Install script — picks the right prebuilt binary, checks it against the
+release's SHA256SUMS, and puts it in `~/.local/bin`. No root, nothing
+system-wide; set `DABS_INSTALL_DIR` to install it elsewhere.
+
+```bash
+curl -fsSL https://dabs.dev/install.sh | sh
+```
+
+That URL redirects to [`install.sh`](install.sh) as attached to the latest
+release, so you can read it before you run it:
+
+```bash
+curl -fsSL https://dabs.dev/install.sh -o dabs-install.sh
+less dabs-install.sh && sh dabs-install.sh
+```
+
+Or prebuilt binary — download from
 [Releases](https://github.com/jjmerino/dabs/releases), then put it on your
 PATH:
 
 ```bash
+mkdir -p ~/.local/bin
 chmod +x dabs && mv dabs ~/.local/bin/   # or anywhere on PATH
 ```
 
@@ -232,6 +249,11 @@ empty, you log in once inside, and every later box that mounts it is logged in.
 - The image is the frozen fresh machine — rebuild it to change what a box
   carries. What crosses the boundary at runtime is exactly what the recipe's
   `sources` declare, and nothing else.
+
+## Privacy
+
+The dabs CLI runs locally and has no telemetry or cloud features. Fetching the
+install script from the website is counted anonymously.
 
 ## License
 

@@ -468,9 +468,13 @@ core/sandbox/<kind>/   one driver per kind (apple, bwrap, server). Drivers
 
 A release is a CHANGELOG cut plus a `v*` tag — pushing the tag drives
 `.github/workflows/release.yml` to build the four binaries
-(darwin/linux × amd64/arm64) and attach them to the tag's GitHub release,
-which is what the install script downloads. No version is embedded in the Go
-source. Release changes go through a PR like any other change — never straight
+(darwin/linux × amd64/arm64) and attach them, `SHA256SUMS`, and `install.sh` to
+the tag's GitHub release — the binaries are what the install script downloads.
+No version is embedded in the Go source. `install.sh` is an asset of the
+release because it names that release's binaries and verifies them against that
+release's `SHA256SUMS`; dabs.dev serves
+`releases/latest/download/install.sh`, and must never be repointed at the copy
+on `main`, which can describe assets no published release carries. Release changes go through a PR like any other change — never straight
 to `main`.
 
 1. On a branch, WRITE the release's section in `CHANGELOG.md` at cut time: read

@@ -13,7 +13,7 @@ recipes:
   myproj:
     description: one-line summary shown by `dabs recipes`
     image: { dockerfile: Dockerfile, context: . }   # or a bare image name
-    workdir: /work                 # cwd inside the box (default /work)
+    workdir: /work                 # cwd inside the box (default /work); may name $NODE_ID
     command: [sh]                  # argv to run; appended-to by `dabs recipe myproj <cmd…>`
     keep: true                     # keep the box after the command exits (default: delete)
     env: { KEY: value }            # environment inside the box
@@ -42,9 +42,17 @@ recipes:
   callers prompt.
 - **sources** — exactly one origin kind per entry (`mount` / `mkmount` /
   `copy` / `worktree`). Space variables `$NODE_VOLUME|HELD|TMP` and
-  `$PARENT_VOLUME|HELD|TMP` substitute in source paths only.
-  (`$NODE_EPHEMERAL`/`$PARENT_EPHEMERAL` are permanent aliases for the held
-  variants.) Mounts land parent-before-child regardless of declaration order.
+  `$PARENT_VOLUME|HELD|TMP` name HOST origins, and substitute in a source's
+  origin path only. (`$NODE_EPHEMERAL`/`$PARENT_EPHEMERAL` are permanent
+  aliases for the held variants.) Mounts land parent-before-child regardless of
+  declaration order.
+- **`$NODE_ID` in box paths** — a source's destination `path:` and the recipe's
+  `workdir:` may name `$NODE_ID` (or `${NODE_ID}`), which expands to the id of
+  the box being provisioned, so a recipe can auto-namespace what it mounts per
+  box (`path: /$NODE_ID`). It is the **only** variable a box path may name — a
+  space variable mixed into one is still rejected — and the id is validated as a
+  slug before it is substituted, so `$NODE_ID` can never become a traversal out
+  of the directory the path names. See [Sources](/guides/sources).
 - **target** — `""` (local) or a server from `dabs servers`. The reserved
   `INTERNAL-docker-privileged-for-nested-sandboxing` target exists for boxes
   that must boot nested sandboxes.

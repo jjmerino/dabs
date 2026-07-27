@@ -6,11 +6,18 @@ description: "The sharp edges, honestly listed — read this before handing dabs
 Everything here was hit for real while producing this manual. Each caveat says
 what happens, why, and what to do about it.
 
-## Isolation is filesystem and process — NOT network
+## A box has open network BY DEFAULT
 
-A box has open outbound network access; there is no `--no-network` switch yet.
-Do not rely on a box to contain code that must not reach the network — it can
-phone home.
+Isolation is filesystem and process; the network is opt-in confinement. A recipe
+that says nothing about `egress` gets full outbound access — so an unconfined
+box can phone home, and code you do not trust must not be run in one on the
+strength of the filesystem boundary alone.
+
+Confine it in the recipe: `egress: none` (no network at all), or an `egress:`
+mapping with `allow`/`deny` (a CONNECT gate for every protocol) and an optional
+`http_proxy` content chain. See [Egress](/guides/egress). Proxy egress needs
+`bun` and `openssl` on the host PATH and a dabs built with the forwarder
+embedded; `open` and `none` need neither.
 
 ## Boxes accumulate
 
@@ -71,9 +78,25 @@ unless one recipe is the obvious choice.
 `--no-command` boots a box and runs nothing. `--detach` boots one and STARTS the
 recipe's command in the background, with its output going to the node's own
 `tmp/detached.log` rather than your terminal. They are different asks, and passing both is
-an error. `--detach` also needs a driver whose box carries a process of its own
-(docker, apple); on one that enters its box afresh per command (bwrap) it is
-refused rather than quietly run in the foreground.
+an error.
+
+`--detach` also needs a driver whose box carries a process of its own (docker,
+apple). dabs ASKS the driver before it provisions anything, so a driver that
+cannot hold one refuses with its own reason and points at the pair that does
+work everywhere:
+
+```text
+dabs: recipe "sh": the bwrap driver cannot hold a detached command: it enters the box with a fresh bwrap per command, so a command cannot outlive the call that started it — use `dabs recipe sh --no-command` and `dabs exec`
+```
+
+A recipe with no command of its own has nothing to detach, which is a different
+refusal — and it names the flag that boots the box anyway:
+
+```text
+dabs: recipe "quiet": no command to run — `dabs recipe quiet --no-command` boots the box without one
+```
+
+<Info>The `--detach` screens are verified by `walkthroughs/test_detach.py`.</Info>
 
 ## Instance names don't say which recipe made them
 
@@ -90,8 +113,11 @@ For the same ambiguous prefix, `rm` lists **node ids** while `exec` lists
 
 ## Places dabs won't work
 
-- `dabs recipe`/`build` refuse to run from inside `~/.dabs` — provisioning
-  from dabs's own storage would mark the node store itself as a project.
+- `dabs recipe` refuses to make a project, worktree, or scratch node from
+  inside `~/.dabs` — marking dabs's own node store as a project would re-render
+  dabs's tree inside itself. The exception is a dabs **worktree's checkout**: a
+  boot from in there parents the box on that worktree (and mounts its parent
+  `.git`), so working inside one is a supported place to run from.
 - Keep build contexts under your home directory; contexts under system temp
   dirs have failed `dabs build` on macOS with cache-key errors.
 - (Nested/bwrap setups) dabs's state cannot sit on overlayfs — bwrap cannot

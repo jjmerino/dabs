@@ -66,7 +66,62 @@ dabs ls [--inactive]
 ```
 
 List the active subtrees as a tree; `--inactive` lists only the hidden empty
-markers instead.
+markers instead. Columns: NODE · KIND · VOL/HELD/TMP · STATE · INFO. A box's
+KIND carries the driver that runs it (`box (bwrap)`), and INFO is per kind — a
+project's source repo, a worktree's checkout, and for a box the `dabs exec
+<instance> bash` line that shells into it. Every local driver draws in one flat
+tree with no heading; a registered server gets a heading of its own.
+
+## info
+
+```text
+dabs info <node>
+```
+
+One node's full model, where `ls` gives the fleet a row each. The node resolves
+like every other handle (exact id, id prefix, then a box instance name), and an
+ambiguous one is refused.
+
+```text
+keeper-________ (box)
+  location  ~/.dabs/nodes/keeper-________
+  instance  shell-____________
+  appended  boxed hello
+
+spaces:
+  VOL   holds files
+  HELD  empty
+  TMP   empty
+
+recipe:
+  keeper (snapshot at creation)
+  image    shell
+  command  echo
+  env:
+    GREETING=hello-info
+  mounts:
+    mount    .                   →  /work
+    mkmount  $NODE_VOLUME/cache  →  /cache
+```
+
+- **kind and id** on the first line.
+- **location** — the node's working place, resolved per kind exactly as
+  `dabs cd` resolves it: a project's source repo, a worktree's checkout, and for
+  a box its own node dir.
+- **instance** — the running box's own identity (boxes only).
+- **appended** — the argv `dabs recipe <name> <cmd…>` appended to the recipe's
+  command at boot, persisted on the node and shown here **only**. It is never in
+  `dabs ls`: an appended command can carry a prompt or a secret, and the
+  fleet-wide listing is the wrong place to spill either.
+- **spaces** — `holds files` / `empty` per space, by the same predicate `ls`
+  and the `rm` confirmation use.
+- **recipe** — the snapshot captured when the node was provisioned, so it stays
+  truthful after the registry drifts. A node written without one falls back to
+  the current registry definition of its recipe name and says so
+  (`sh (current registry definition — no snapshot on this node)`); a name the
+  registry no longer knows says that plainly.
+
+<Info>Screens verified by `walkthroughs/test_info.py`.</Info>
 
 ## rm
 
@@ -97,21 +152,24 @@ files. Reaping is `dabs rm`.
 dabs cd <node>
 ```
 
-Print a node's own directory (`~/.dabs/nodes/<id>`, the WHERE `ls` shows) as a
-bare path. A shell can't be moved by a child process, so wrap it:
-`cd "$(dabs cd <node>)"`. Accepts names and unambiguous prefixes. The node's
-three spaces are its `volume/`, `held/`, `tmp/` subdirectories. See
-[Named nodes](/guides/names).
+Print a node's WORKING place as a bare path, resolved per kind — a project to
+its source repo, a worktree to its checkout
+(`~/.dabs/nodes/<id>/held/worktree`), a box to its own node dir
+(`~/.dabs/nodes/<id>`). A shell can't be moved by a child process, so wrap it:
+`cd "$(dabs cd <node>)"`. Accepts names and unambiguous prefixes; an ambiguous
+one is refused. A box's node dir holds its three spaces as the `volume/`,
+`held/`, `tmp/` subdirectories. See [Named nodes](/guides/names).
 
 ## recipes
 
 ```text
-dabs recipes [--print]
+dabs recipes [--print [name]]
 ```
 
 List the known recipes one line each — name, description, and origin
 (`bundled` / global / `project`); `--print` dumps the merged registry as YAML,
-each recipe marked with its origin.
+each recipe marked with its origin, and `--print <name>` dumps just that
+recipe, mounts and all.
 
 ## prune
 
@@ -141,4 +199,8 @@ demo-server  ssh    demo@example.com
 
 - `DABS_NAME` — set inside every box to the box's instance name.
 - dabs state lives under `~/.dabs/` (nodes, images, config, shared dirs).
-  `dabs recipe`/`build` refuse to run from inside `~/.dabs`.
+  Running from inside `~/.dabs` never marks a new project: `dabs recipe`
+  refuses to make a project, worktree, or scratch node there. The one exception
+  is a dabs **worktree's own checkout** — a boot from inside one parents the box
+  on that worktree and mounts its parent `.git`, exactly as `--worktree` would.
+  See [Worktrees](/guides/worktrees).

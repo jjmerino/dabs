@@ -56,8 +56,8 @@ Or prebuilt binary — download from
 PATH:
 
 ```bash
-mkdir -p ~/.local/bin                    # or anywhere on PATH
-chmod +x dabs && mv dabs ~/.local/bin/
+mkdir -p ~/.local/bin
+chmod +x dabs && mv dabs ~/.local/bin/   # or anywhere on PATH
 ```
 
 Or build from source (needs Go 1.23+):

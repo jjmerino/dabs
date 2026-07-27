@@ -91,8 +91,18 @@ if [ ! -w "$INSTALL_DIR" ]; then
   exit 1
 fi
 # Absolute and without a trailing slash, so every path printed from here reads
-# cleanly and the PATH line offered at the end is one a shell can use.
-INSTALL_DIR="$(cd "$INSTALL_DIR" && pwd)"
+# cleanly and the PATH line offered at the end is one a shell can use. An empty
+# CDPATH keeps cd from resolving a relative name against some other tree, and
+# from echoing where it landed into this substitution; -- keeps a leading-dash
+# name an operand. A directory can pass the two checks above and still not be
+# enterable: mode 600 is writable but not searchable.
+if ! resolved="$(CDPATH='' cd -- "$INSTALL_DIR" 2>/dev/null && pwd)"; then
+  echo "Could not enter the install directory $INSTALL_DIR." >&2
+  echo "A directory needs execute permission to be entered; check its mode, or point" >&2
+  echo "DABS_INSTALL_DIR at another directory, e.g. DABS_INSTALL_DIR=\$HOME/bin" >&2
+  exit 1
+fi
+INSTALL_DIR="$resolved"
 
 # Resolve /releases/latest to the tag it currently points at, so the binary and
 # the SHA256SUMS come from ONE release even if a new one publishes mid-install,

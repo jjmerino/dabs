@@ -69,8 +69,10 @@ release is cut, from the commit log since the previous tag.
   its checkout, a box to its node dir, instead of one uniform path.
 - **`--detach` now means what detach means everywhere else.** The flag that
   booted a box and deliberately did NOT run the recipe's command is now
-  **`--no-command`** — the name its own success line already printed, and the
-  successor the glossary had named. `--detach` is not an alias of it; it is the
+  **`--no-command`** — the name its own success line already printed, the
+  successor the glossary had named, and, since 0.4.1, an accepted alias of the
+  old `--detach`, so a script already passing `--no-command` is unaffected by
+  this release. `--detach` is not an alias of it; it is the
   true detach described above. Pre-1.0, the old spelling is gone rather than
   deprecated: a script passing `--detach` now STARTS the recipe's command instead
   of skipping it, and must move to `--no-command`.

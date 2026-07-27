@@ -361,13 +361,21 @@ dabseptionwt` cuts a new worktree but does NOT mount the parent `.git`, so git i
 blind in-box; use `--worktree` when a test needs in-box git.
 
 This covers CLI behaviour, recipe resolution, worktree/keep/rm logic, git
-in-box, nested boots, and error paths — the fast inner loop for changing dabs.
-The FULL e2e suite also runs in there: `dabs exec <box> 'cd /work && go build
--o /usr/local/bin/dabs . && go test -tags e2e ./test/e2e'` — the suite builds
-its fixture image from the staged `shell` when its own is not staged. One
-suite run per box: the suite assumes a pristine $HOME, and a kept box
-accumulates state — boot a fresh box (`--worktree <wt>` rebinds the same
-checkout) for each run. `./run_e2e.sh` remains the one-command form.
+in-box, nested boots, and error paths — the fast inner loop for changing dabs,
+alongside `go test ./...`.
+
+**The FULL `-tags e2e` suite runs in its own box — `./run_e2e.sh`.** The suite
+needs more than dabseption carries: `bun` for the proxy engine, `openssl` to
+mint its CA, and a dabs built `-tags withforwarder` so proxy egress has a
+forwarder to mount. That is the `test/e2e/box` recipe, whose Dockerfile builds
+FROM the dabseption image and adds exactly those. `./run_e2e.sh` is the whole
+procedure: build `dabseption`, build `test/e2e/box`, boot it (`egress: none`,
+so the run is hermetic), and `go test -tags e2e -v ./test/e2e` inside. Running
+the suite in a plain dabseption box instead fails every proxy test with
+`bun must be on PATH`.
+
+One suite run per box: the suite assumes a pristine `$HOME`, and a box
+accumulates state — each run gets a fresh box.
 
 **How a box boots its own boxes.** Three things, all declared in the recipe and
 its Dockerfile (`contrib/recipes/dabseption.Dockerfile`) — no host script, no

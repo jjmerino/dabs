@@ -38,12 +38,30 @@ func (r Real) upDetached(arg, worktree, nodeName string) error {
 	if boxless {
 		return r.provisionNodes(name, rec, worktree, nodeName)
 	}
+	box, kept, err := r.bootDetached(name, rec, worktree, nodeName)
+	if err != nil {
+		return err
+	}
+	// `--detach` is DETACHED: it never runs the recipe's command and never tears
+	// the box down — keep is implicit. The box is the user's to reap with `dabs rm`.
+	for _, k := range kept {
+		fmt.Fprintln(os.Stdout, tui.Success("kept: %s", k))
+	}
+	printUp(name, box.ID, box.Instance, rec)
+	return nil
+}
+
+// bootDetached brings a NEW pristine DETACHED box up from an already-resolved
+// recipe VALUE and hands the caller back the box's identity plus the places the
+// boot kept. It runs no command, tears nothing down, and prints nothing — every
+// user-facing message belongs to the caller.
+func (r Real) bootDetached(name string, rec recipe.Recipe, worktree, nodeName string) (Box, []string, error) {
 	// Booting a box from inside a dabs worktree's own checkout parents the box on
 	// that worktree, exactly as an explicit --worktree would (which wins).
 	if worktree == "" {
 		owner, oerr := r.resolveOwningWorktree()
 		if oerr != nil {
-			return oerr
+			return Box{}, nil, oerr
 		}
 		worktree = owner
 	}
@@ -53,17 +71,18 @@ func (r Real) upDetached(arg, worktree, nodeName string) error {
 	if worktree != "" {
 		full, werr := r.resolveWorktreeArg(worktree)
 		if werr != nil {
-			return werr
+			return Box{}, nil, werr
 		}
 		worktree = full
-		sources, err = r.bindWorktree(name, rec.Sources, worktree)
-		if err != nil {
-			return err
+		bound, berr := r.bindWorktree(name, rec.Sources, worktree)
+		if berr != nil {
+			return Box{}, nil, berr
 		}
+		sources = bound
 	}
 	drv, err := r.driverFor(rec.Target)
 	if err != nil {
-		return err
+		return Box{}, nil, err
 	}
 	// The image is resolved first — WITHOUT building the recipe's own
 	// Dockerfile: `--detach` boots an image a prior `dabs build` produced (it
@@ -73,30 +92,30 @@ func (r Real) upDetached(arg, worktree, nodeName string) error {
 	// path above).
 	image, err := r.resolveBuiltImage(drv, name, rec.Image, rec.Target)
 	if err != nil {
-		return err
+		return Box{}, nil, err
 	}
 	if nodeName != "" {
 		if err := r.claimNodeName(nodeName); err != nil {
-			return err
+			return Box{}, nil, err
 		}
 	}
 	// Cut the PLACE first: a box names its parent's spaces ($PARENT_VOLUME), and a
 	// parent must exist to be named.
 	_, tip, hosts, kept, cut, err := r.provisionPlaces(name, snapshotRecipe(rec), sources, worktree)
 	if err != nil {
-		return err
+		return Box{}, nil, err
 	}
 	boxID, vars, err := r.mintBoxNode(name, tip, nodeName)
 	if err != nil {
-		return err
+		return Box{}, nil, err
 	}
 	resolved, err := r.validateSources(name, sources, vars, hosts)
 	if err != nil {
-		return err
+		return Box{}, nil, err
 	}
 	instance, err := r.buildBox(drv, name, boxID, tip, rec, image, sources, resolved, cut, nil)
 	if err != nil {
-		return err
+		return Box{}, nil, err
 	}
 	// A box that cannot be ENTERED is not up: a source mounted over `/`, a
 	// `workdir:` missing from the image, or a read-only parent masking an rw child
@@ -106,7 +125,7 @@ func (r Real) upDetached(arg, worktree, nodeName string) error {
 	if _, serr := drv.Exec(instance, []string{"true"}); serr != nil {
 		proxy.Reap(r.boxProxy(instance)) // the box is abandoned; reap its engine too, not just the box
 		_ = drv.Down(instance)
-		return fmt.Errorf("boot failed: box is not usable: %w", serr)
+		return Box{}, nil, fmt.Errorf("boot failed: box is not usable: %w", serr)
 	}
 	// A bound worktree is mounted, not cut, so buildBox never journals it — record
 	// its box→worktree link here so `worktrees ls` shows the box as live.
@@ -115,13 +134,7 @@ func (r Real) upDetached(arg, worktree, nodeName string) error {
 			r.logWorktreeUp(instance, worktree, data, name)
 		}
 	}
-	// `--detach` is DETACHED: it never runs the recipe's command and never tears
-	// the box down — keep is implicit. The box is the user's to reap with `dabs rm`.
-	for _, k := range kept {
-		fmt.Fprintln(os.Stdout, tui.Success("kept: %s", k))
-	}
-	printUp(name, boxID, instance, rec)
-	return nil
+	return Box{ID: boxID, Instance: instance}, kept, nil
 }
 
 // printUp reports what `--detach` did and what to do next. The box has two names:

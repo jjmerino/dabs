@@ -51,13 +51,17 @@ func main() {
 }
 `
 
-// buildSuppliedForwarder builds the marker forwarder and returns its path. It
-// compiles inside the dabs module, since the forwarder plumbing is a dabs
-// package; the source dir is removed once the binary exists.
+// buildSuppliedForwarder builds the marker forwarder and returns its path. The
+// source dir sits in the module root, because the forwarder plumbing is a dabs
+// package and this box has no network to resolve the module from anywhere else.
+// Its name begins with a dot, the root's convention for build scaffolding
+// (.e2e-stage): the go tool skips dot dirs when matching `./...` and still
+// builds one named explicitly, so a dir a killed run leaves behind is invisible
+// to a later `go build ./...`, and .gitignore keeps it out of the tree's status.
 func buildSuppliedForwarder(t *testing.T) string {
 	t.Helper()
 	repo := filepath.Join(baseDir, "..", "..")
-	src := filepath.Join(repo, "e2e-supplied-forwarder")
+	src := filepath.Join(repo, ".e2e-supplied-forwarder")
 	if err := os.MkdirAll(src, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +70,7 @@ func buildSuppliedForwarder(t *testing.T) string {
 		t.Fatal(err)
 	}
 	bin := filepath.Join(t.TempDir(), "supplied-forward")
-	cmd := exec.Command("go", "build", "-o", bin, "./e2e-supplied-forwarder")
+	cmd := exec.Command("go", "build", "-o", bin, "./.e2e-supplied-forwarder")
 	cmd.Dir = repo
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
 	if out, err := cmd.CombinedOutput(); err != nil {

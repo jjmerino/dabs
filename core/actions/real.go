@@ -51,6 +51,12 @@ func (r Real) WithConfirm(fn func(string) bool) Real {
 // the embedded copy or pins its version. It must run on the box's platform, the
 // same requirement the embed carries; dabs checks only that the path is an
 // existing regular file, and reports a missing one at boot.
+//
+// The linux drivers mount this binary into the box, so it is the one that runs.
+// The apple driver mounts no host binary — a host binary cannot run in the linux
+// micro-VM, so on that driver the box image must carry a forwarder at
+// /run/dabs/forward and the image's copy is what runs; the supplied path only
+// satisfies provisioning there.
 func (r Real) WithForwarder(path string) Real {
 	r.forwarder = path
 	return r

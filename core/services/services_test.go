@@ -216,10 +216,13 @@ func TestIndexLinksWebUIsOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadPorts: %v", err)
 	}
+	web, db := filepath.Join(dir, "web.sock"), filepath.Join(dir, "db.sock")
+	serveBody(t, web, "web")
+	serveBody(t, db, "db")
 	src := func() ([]services.Service, error) {
 		return []services.Service{
-			{Name: "web", Type: forwarder.TypeWebUI, Socket: filepath.Join(dir, "web.sock")},
-			{Name: "db", Type: forwarder.TypeGeneral, Socket: filepath.Join(dir, "db.sock")},
+			{Name: "web", Type: forwarder.TypeWebUI, Socket: web},
+			{Name: "db", Type: forwarder.TypeGeneral, Socket: db},
 		}, nil
 	}
 	srv := services.NewServer(src, ports, io.Discard)
@@ -501,10 +504,13 @@ func TestIndexNamesConflictsWithoutLinkingThem(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadPorts: %v", err)
 	}
+	first, second := filepath.Join(dir, "a.sock"), filepath.Join(dir, "b.sock")
+	serveBody(t, first, "first box")
+	serveBody(t, second, "second box")
 	src := func() ([]services.Service, error) {
 		return services.MarkConflicts([]services.Service{
-			{Name: "web", Type: forwarder.TypeWebUI, Node: "box-a", Socket: filepath.Join(dir, "a.sock")},
-			{Name: "web", Type: forwarder.TypeWebUI, Node: "box-b", Socket: filepath.Join(dir, "b.sock")},
+			{Name: "web", Type: forwarder.TypeWebUI, Node: "box-a", Socket: first},
+			{Name: "web", Type: forwarder.TypeWebUI, Node: "box-b", Socket: second},
 		}), nil
 	}
 	srv := services.NewServer(src, ports, io.Discard)
@@ -517,5 +523,138 @@ func TestIndexNamesConflictsWithoutLinkingThem(t *testing.T) {
 	}
 	if strings.Count(page, "<a href=") != 1 {
 		t.Errorf("the index links something it does not serve:\n%s", page)
+	}
+}
+
+// serveBodyTCP runs an HTTP server on 127.0.0.1 answering body, and returns its
+// address — the stand-in for a box the host reaches over the network rather
+// than through a mounted socket.
+func serveBodyTCP(t *testing.T, body string) (host string, port int) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go http.Serve(ln, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, body)
+	}))
+	addr := ln.Addr().(*net.TCPAddr)
+	return "127.0.0.1", addr.Port
+}
+
+// CONTRACT: the mounted socket is the route whenever it answers, even when the
+// box also carries a network door — it is the direct one, and it is what a
+// host sharing the box's kernel should use.
+func TestRoutePrefersTheSocketWhenItAnswers(t *testing.T) {
+	dir := shortTempDir(t)
+	sock := filepath.Join(dir, "web.sock")
+	serveBody(t, sock, "through the socket")
+	host, port := serveBodyTCP(t, "through the box network")
+	svc := services.Service{Name: "web", Socket: sock, BoxAddr: host, BridgePort: port}
+	route, ok := svc.Route()
+	if !ok || route.Network != "unix" || route.Addr != sock {
+		t.Fatalf("Route = %+v,%v; want the socket", route, ok)
+	}
+}
+
+// CONTRACT: a box whose socket the host cannot dial — its filesystem crosses a
+// VM boundary — is still reachable at its own address, on the port the
+// publisher opened across the box's interfaces.
+func TestRouteFallsBackToTheBoxNetworkWhenTheSocketIsUndialable(t *testing.T) {
+	dir := shortTempDir(t)
+	sock := filepath.Join(dir, "web.sock")
+	// A socket FILE that is not a listener: exactly what the host sees when the
+	// box created it on the far side of a VM boundary.
+	if err := os.WriteFile(sock, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	host, port := serveBodyTCP(t, "through the box network")
+	svc := services.Service{Name: "web", Socket: sock, BoxAddr: host, BridgePort: port}
+	route, ok := svc.Route()
+	if !ok {
+		t.Fatalf("Route reported nothing reachable; want the box network at %s:%d", host, port)
+	}
+	if route.Network != "tcp" || route.Addr != net.JoinHostPort(host, strconv.Itoa(port)) {
+		t.Errorf("Route = %+v, want tcp %s:%d", route, host, port)
+	}
+	if !svc.Up() {
+		t.Error("Up() = false for a service reachable over the box network")
+	}
+}
+
+// CONTRACT: no socket and no box address (an apple box with its network cut, a
+// driver that cannot say) is honestly unreachable — not a route that fails at
+// the first byte.
+func TestRouteReportsNothingWhenNeitherDoorAnswers(t *testing.T) {
+	dir := shortTempDir(t)
+	sock := filepath.Join(dir, "web.sock")
+	if err := os.WriteFile(sock, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, svc := range []services.Service{
+		{Name: "web", Socket: sock},                       // no address at all
+		{Name: "web", Socket: sock, BoxAddr: "192.0.2.1"}, // address, publisher opened no door
+		{Name: "web", Socket: sock, BridgePort: 6000},     // door, no address
+	} {
+		if _, ok := svc.Route(); ok {
+			t.Errorf("Route(%+v) reported something reachable", svc)
+		}
+		if svc.Up() {
+			t.Errorf("Up(%+v) = true", svc)
+		}
+	}
+}
+
+// CONTRACT: the server forwards over whichever door is live — a box reached
+// only over its network round-trips through the same stable host port.
+func TestServerForwardsOverTheBoxNetworkWhenTheSocketIsUndialable(t *testing.T) {
+	dir := shortTempDir(t)
+	sock := filepath.Join(dir, "web.sock")
+	if err := os.WriteFile(sock, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	host, port := serveBodyTCP(t, "through the box network")
+	ports, err := services.LoadPorts(filepath.Join(dir, "ports.json"))
+	if err != nil {
+		t.Fatalf("LoadPorts: %v", err)
+	}
+	src := func() ([]services.Service, error) {
+		return []services.Service{{Name: "web", Type: forwarder.TypeWebUI, Socket: sock, BoxAddr: host, BridgePort: port}}, nil
+	}
+	srv := services.NewServer(src, ports, io.Discard)
+	if err := srv.Sync(); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	serving := srv.Serving()
+	if len(serving) != 1 {
+		t.Fatalf("Serving = %+v, want the service forwarded over the box network", serving)
+	}
+	if got := getBody(t, serving[0].URL()); got != "through the box network" {
+		t.Errorf("through the host port = %q, want the box's answer", got)
+	}
+}
+
+// CONTRACT: a service nothing can reach is not given a host port that would
+// answer and deliver nothing.
+func TestUnreachableServiceIsNotForwarded(t *testing.T) {
+	dir := shortTempDir(t)
+	sock := filepath.Join(dir, "web.sock")
+	if err := os.WriteFile(sock, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ports, err := services.LoadPorts(filepath.Join(dir, "ports.json"))
+	if err != nil {
+		t.Fatalf("LoadPorts: %v", err)
+	}
+	src := func() ([]services.Service, error) {
+		return []services.Service{{Name: "web", Type: forwarder.TypeWebUI, Socket: sock}}, nil
+	}
+	srv := services.NewServer(src, ports, io.Discard)
+	if err := srv.Sync(); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if got := srv.Serving(); len(got) != 0 {
+		t.Errorf("Serving = %+v, want nothing forwarded for an unreachable service", got)
 	}
 }

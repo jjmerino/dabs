@@ -24,11 +24,17 @@ const (
 )
 
 // Descriptor is the JSON a published service writes beside its socket, at
-// <ServicesDir>/<name>.json. It states what the service is and which box-local
-// loopback port the socket leads to.
+// <ServicesDir>/<name>.json. It states what the service is, which box-local
+// loopback port both doors lead to, and the port of the box's OUTWARD-facing
+// door — the one a host reaches when it cannot dial the socket.
 type Descriptor struct {
 	Type string `json:"type"`
 	Port int    `json:"port"`
+	// Bridge is the port the publisher listens on across ALL the box's
+	// interfaces. A box whose network namespace has a host-dialable address of
+	// its own is reached there; the service's own port stays loopback-private,
+	// so the publisher remains the only door into it.
+	Bridge int `json:"bridge,omitempty"`
 }
 
 // DescriptorName is the descriptor file a service of the given name writes.
@@ -92,9 +98,18 @@ func Publish(dir, name, typ string, port int) error {
 	// Closing the listener unlinks the socket it created, so a descriptor that
 	// cannot be written leaves no socket behind describing nothing.
 	defer ln.Close()
-	if err := writeDescriptor(dir, name, typ, port); err != nil {
+	// The second door: a socket is only dialable by a host that shares the box's
+	// kernel. Where it does not, the box's own network address is what the host
+	// has, and only a listener bound across every interface answers there.
+	bridge, err := net.Listen("tcp", "0.0.0.0:0")
+	if err != nil {
 		return err
 	}
+	defer bridge.Close()
+	if err := writeDescriptor(dir, name, typ, port, bridge.Addr().(*net.TCPAddr).Port); err != nil {
+		return err
+	}
+	go servePublished(bridge, port)
 	servePublished(ln, port)
 	return nil
 }
@@ -102,8 +117,8 @@ func Publish(dir, name, typ string, port int) error {
 // writeDescriptor writes the service's descriptor by rename, so a host scanning
 // the directory reads either the whole file or no file — never the truncated
 // middle of one.
-func writeDescriptor(dir, name, typ string, port int) error {
-	b, err := json.Marshal(Descriptor{Type: typ, Port: port})
+func writeDescriptor(dir, name, typ string, port, bridge int) error {
+	b, err := json.Marshal(Descriptor{Type: typ, Port: port, Bridge: bridge})
 	if err != nil {
 		return err
 	}

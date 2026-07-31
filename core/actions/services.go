@@ -9,6 +9,7 @@ import (
 	"syscall"
 
 	"github.com/jjmerino/dabs/core/params"
+	"github.com/jjmerino/dabs/core/sandbox"
 	"github.com/jjmerino/dabs/core/services"
 	"github.com/jjmerino/dabs/core/tui"
 )
@@ -60,6 +61,7 @@ func (r Real) scanServices() ([]services.Service, error) {
 		return nil, err
 	}
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].ID < nodes[j].ID })
+	addrs := boxAddrs{}
 	var out []services.Service
 	for _, n := range nodes {
 		if n.Kind != KindBox {
@@ -75,12 +77,48 @@ func (r Real) scanServices() ([]services.Service, error) {
 		}
 		for _, s := range found {
 			s.Node, s.Instance = n.ID, n.Instance
+			// The mounted socket is the direct door and needs nothing from the
+			// driver. Only when it does not answer is the box's own address worth
+			// asking for — the question costs a vendor-CLI call per box.
+			if _, reachable := s.Route(); !reachable {
+				s.BoxAddr = addrs.of(r, n)
+			}
 			out = append(out, s)
 		}
 	}
 	// One name means one host port. Nodes are walked in id order, so which box
 	// owns a name is the same answer here and in the serving process.
 	return services.MarkConflicts(out), nil
+}
+
+// boxAddrs remembers each box's host-dialable address for the length of one
+// scan, so a box publishing several services is asked about once.
+type boxAddrs map[string]string
+
+// of returns the address the host can dial to reach the node's box, or "" when
+// it has none, the driver cannot say, or the driver has no such notion. A box
+// nobody can address is a normal answer here: the socket is the other way in.
+func (a boxAddrs) of(r Real, n Node) string {
+	if n.Instance == "" {
+		return ""
+	}
+	if addr, ok := a[n.Instance]; ok {
+		return addr
+	}
+	target := ""
+	if n.RecipeSpec != nil {
+		target = n.RecipeSpec.Target
+	}
+	addr := ""
+	if drv, err := r.driverFor(target); err == nil {
+		if ba, can := drv.(sandbox.BoxAddresser); can {
+			if got, err := ba.BoxAddress(n.Instance); err == nil {
+				addr = got
+			}
+		}
+	}
+	a[n.Instance] = addr
+	return addr
 }
 
 // listServices prints one row per published service: what it is called, what

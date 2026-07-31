@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -27,10 +28,17 @@ import (
 // published under, its type, the box-local port the socket leads to, the host
 // path of that socket, and which box published it.
 type Service struct {
-	Name     string
-	Type     string
-	BoxPort  int
-	Socket   string // host path of the unix socket the box listens on
+	Name    string
+	Type    string
+	BoxPort int
+	Socket  string // host path of the unix socket the box listens on
+	// BridgePort is the port the publisher listens on across every interface of
+	// the box, from the descriptor. Zero when the publisher opened no such door.
+	BridgePort int
+	// BoxAddr is an address the HOST can dial to reach the box's own network
+	// namespace, supplied by the caller (which knows the driver). Empty when the
+	// box has none, or the driver cannot say.
+	BoxAddr  string
 	Node     string // id of the node whose services directory holds it
 	Instance string // the driver's name for that node's box
 	// Conflict marks a service whose name another box claimed first. One name
@@ -122,17 +130,53 @@ func ScanDir(dir string) ([]Service, error) {
 		}
 		// The descriptor's own fields are box-written too, and unlike the name they
 		// key nothing — printable is enough.
-		out = append(out, Service{Name: name, Type: Printable(d.Type), BoxPort: d.Port, Socket: sock})
+		out = append(out, Service{Name: name, Type: Printable(d.Type), BoxPort: d.Port, BridgePort: d.Bridge, Socket: sock})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
 }
 
-// Up reports whether the service answers: its socket accepts a connection. A
-// socket file left behind by a dead publisher refuses, which is the difference
-// between a listed service and a reachable one.
+// Route is where the host dials to reach one service.
+type Route struct {
+	Network string // "unix" or "tcp"
+	Addr    string // socket path, or host:port
+}
+
+// dialTimeout is how long a reachability probe waits. Both candidates are on
+// this machine or one hop into a local VM, so slow means unreachable.
+const dialTimeout = 500 * time.Millisecond
+
+// Route reports where to reach the service, and whether anything answers. The
+// mounted socket is tried first: it is the direct door, and it is the only one
+// where the host shares the box's kernel. Where it does not answer, the box's
+// own address plus the publisher's outward port is the other way in — a box
+// whose filesystem crosses a VM boundary hands the host a socket file it cannot
+// dial, but its network is still reachable.
+//
+// A socket file left behind by a dead publisher refuses, which is the
+// difference between a listed service and a reachable one.
+func (s Service) Route() (Route, bool) {
+	if dials("unix", s.Socket) {
+		return Route{Network: "unix", Addr: s.Socket}, true
+	}
+	if s.BoxAddr != "" && s.BridgePort != 0 {
+		addr := net.JoinHostPort(s.BoxAddr, strconv.Itoa(s.BridgePort))
+		if dials("tcp", addr) {
+			return Route{Network: "tcp", Addr: addr}, true
+		}
+	}
+	return Route{}, false
+}
+
+// Up reports whether the service answers on any route.
 func (s Service) Up() bool {
-	conn, err := net.DialTimeout("unix", s.Socket, 500*time.Millisecond)
+	_, ok := s.Route()
+	return ok
+}
+
+// dials reports whether a connection can be opened.
+func dials(network, addr string) bool {
+	conn, err := net.DialTimeout(network, addr, dialTimeout)
 	if err != nil {
 		return false
 	}

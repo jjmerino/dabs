@@ -272,11 +272,15 @@ the box node's `tmp` space, bound into EVERY box, so a service dies with
 the box that published it and nothing has to be deregistered. The type
 decides only how the index renders the service (a **webui** is a link),
 never how bytes are routed. One name is one host port: a second box
-claiming a live name is reported as a **conflict** and is not served. The
-host dials the box's socket through the bound directory, so host and box
-must share a kernel — on the Linux (bwrap) driver they do; on the macOS
-drivers the box's filesystem crosses a VM boundary and the socket, though
-visible, does not accept, so the service lists as **down**.
+claiming a live name is reported as a **conflict** and is not served.
+
+The host reaches a service by whichever door answers: the mounted socket
+first, else the box's own network address on the publisher's `bridge`
+port. The socket dials on the Linux (bwrap) driver; on **apple** it does
+not cross the micro-VM, and the box's vmnet address (from the
+`BoxAddresser` capability) is the way in — unless the box runs with
+`egress: none`/`proxy`, which leaves it with no network and no address, so
+it lists **down**. On **docker**, neither door answers yet.
 *Where:* `core/services`, `forwarder.Publish`, `forwarder.ServicesDir`.
 
 ### services

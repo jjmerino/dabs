@@ -45,7 +45,7 @@ func TestDescriptorIsNeverReadableHalfWritten(t *testing.T) {
 		}
 	}()
 	for i := 0; i < 3000; i++ {
-		if err := writeDescriptor(dir, "web", TypeWebUI, 5000+i%100); err != nil {
+		if err := writeDescriptor(dir, "web", TypeWebUI, 5000+i%100, 6000+i%100); err != nil {
 			t.Fatalf("writeDescriptor: %v", err)
 		}
 	}

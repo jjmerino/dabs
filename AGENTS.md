@@ -248,11 +248,18 @@ dabs services              # NAME TYPE BOX INSTANCE HOST STATE (up | down | conf
 dabs services serve        # forward each one from a stable 127.0.0.1 port; index on 127.0.0.1:28080
 ```
 
-The host reaches a service by dialing the box's socket through that bound
-directory, so host and box must share a kernel: this works on the Linux (bwrap)
-driver. On macOS the box's filesystem crosses a VM boundary — the socket file
-appears on the host but does not accept — so `dabs services` lists the service
-**down** and serving it returns nothing.
+**Where a service is reachable.** The host dials the box's socket through that
+bound directory when it can; where it cannot, it dials the box's own network
+address on the port the publisher opened across the box's interfaces (a
+`bridge` field in the descriptor). That gives:
+
+- **bwrap (Linux)** — the socket dials; reachable.
+- **apple** — the socket does not dial across the micro-VM, but the box has a
+  vmnet address of its own; reachable. A box with `egress: none` or `proxy`
+  runs with no network and so has no address — it stays **down**, honestly.
+- **docker** — neither door yet; a published service reads **down**.
+
+`dabs services` reports whichever door is live, and forwards over it.
 
 A name keeps its port (42000–42999, persisted in `~/.dabs/service-ports.json`),
 so n worktrees of one web project each get their own address and never fight

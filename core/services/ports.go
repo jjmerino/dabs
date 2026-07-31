@@ -147,7 +147,11 @@ func (p *Ports) save() error {
 		_ = os.Remove(tmp.Name())
 		return err
 	}
-	return os.Rename(tmp.Name(), p.path)
+	if err := os.Rename(tmp.Name(), p.path); err != nil {
+		_ = os.Remove(tmp.Name())
+		return err
+	}
+	return nil
 }
 
 // FreeOnLoopback reports whether port can be bound on 127.0.0.1 right now —

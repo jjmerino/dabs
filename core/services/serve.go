@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sort"
 	"sync"
 	"time"
 
@@ -45,6 +46,10 @@ type Server struct {
 	// told records the socket each conflicting name was last reported for, so a
 	// collision is named once instead of once per scan.
 	told map[string]string
+	// conflicted is the services a name's owner shut out, as of the last scan —
+	// the index shows them, because a service that is published and unreachable
+	// is exactly what someone comes to the index to find out about.
+	conflicted []Service
 }
 
 // forward is one live loopback listener standing in front of a service's
@@ -122,8 +127,10 @@ func (s *Server) Sync() error {
 	}
 	found = MarkConflicts(found)
 	live := map[string]bool{}
+	var conflicted []Service
 	for _, svc := range found {
 		if svc.Conflict {
+			conflicted = append(conflicted, svc)
 			s.tell(svc)
 			continue
 		}
@@ -154,6 +161,7 @@ func (s *Server) Sync() error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.conflicted = conflicted
 	for name, f := range s.serving {
 		if live[name] {
 			continue
@@ -215,6 +223,15 @@ func (s *Server) Serving() []Served {
 		out = append(out, f.snapshot())
 	}
 	sortServed(out)
+	return out
+}
+
+// Conflicts lists the services shut out by a name's owner, as of the last scan.
+func (s *Server) Conflicts() []Service {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := append([]Service{}, s.conflicted...)
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
 

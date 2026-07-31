@@ -241,7 +241,7 @@ it — running it IS the registration, and the socket dying with the process is
 the deregistration. On the host:
 
 ```bash
-dabs services              # what the boxes publish: name, type, box, host address, up/down
+dabs services              # NAME TYPE BOX INSTANCE HOST STATE (up | down | conflict)
 dabs services serve        # forward each one from a stable 127.0.0.1 port; index on 127.0.0.1:28080
 ```
 

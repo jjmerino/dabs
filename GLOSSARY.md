@@ -277,8 +277,10 @@ visible, does not accept, so the service lists as **down**.
 *Where:* `core/services`, `forwarder.Publish`, `forwarder.ServicesDir`.
 
 ### services
-List what the boxes publish — name, type, box, host address, and whether the
-socket answers. `services serve` forwards each service from its stable
+List what the boxes publish, one row each: NAME, TYPE, the BOX node and its
+INSTANCE, the HOST address, and STATE — `up` when the socket answers, `down`
+when it does not, `conflict` when another box owns the name (then the row
+carries no address, because nothing reaches that service). `services serve` forwards each service from its stable
 127.0.0.1 port (42000–42999, persisted per name in `~/.dabs/service-ports.json`,
 so a URL survives a re-up) and serves an index of them at `127.0.0.1:28080`
 until interrupted.

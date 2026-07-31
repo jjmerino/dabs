@@ -21,17 +21,27 @@ var indexPage = template.Must(template.New("index").Parse(`<!doctype html>
 <meta charset="utf-8">
 <title>dabs services</title>
 <h1>dabs services</h1>
-{{if not .}}<p>No box is publishing a service.</p>{{end}}
+{{if and (not .Served) (not .Conflicts)}}<p>No box is publishing a service.</p>{{end}}
 <ul>
-{{range .}}<li>
+{{range .Served}}<li>
 {{if .IsWebUI}}<a href="{{.URL}}">{{.Name}}</a>{{else}}{{.Name}}{{end}}
 — {{.Addr}} — {{.Type}}{{if .Instance}} — {{.Instance}}{{end}}
+</li>
+{{end}}{{range .Conflicts}}<li>
+{{.Name}} — conflict: also published by {{.Node}}, not served — {{.Type}}{{if .Instance}} — {{.Instance}}{{end}}
 </li>
 {{end}}</ul>
 `))
 
 // IsWebUI reports whether the service is one a browser opens.
 func (s Served) IsWebUI() bool { return s.Type == forwarder.TypeWebUI }
+
+// indexData is what the index page renders: what the host forwards, and what it
+// cannot because the name is taken.
+type indexData struct {
+	Served    []Served
+	Conflicts []Service
+}
 
 // ServeHTTP renders the index of everything the server currently forwards.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -40,5 +50,5 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_ = indexPage.Execute(w, s.Serving())
+	_ = indexPage.Execute(w, indexData{Served: s.Serving(), Conflicts: s.Conflicts()})
 }

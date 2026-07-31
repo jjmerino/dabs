@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/jjmerino/dabs/egressforwarder/forwarder"
 )
@@ -54,6 +55,27 @@ func MarkConflicts(found []Service) []Service {
 	return out
 }
 
+// MaxCellLen caps how much of a box-written string the host prints.
+const MaxCellLen = 64
+
+// Printable is a box-written string reduced to what is safe to print: the box
+// is the untrusted side, and a name carrying newlines or escape sequences would
+// otherwise forge rows in the host's listing. Anything unprintable becomes a
+// question mark, and the result is capped.
+func Printable(s string) string {
+	var b strings.Builder
+	for i, r := range []rune(s) {
+		if i >= MaxCellLen {
+			break
+		}
+		if !unicode.IsPrint(r) {
+			r = '?'
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
 // ScanDir returns the services published into one box's services directory. A
 // descriptor without its socket is a service whose publisher died; it is not
 // reported, because nothing can be dialed. An absent directory holds no
@@ -84,7 +106,9 @@ func ScanDir(dir string) ([]Service, error) {
 		if _, err := os.Stat(sock); err != nil {
 			continue
 		}
-		out = append(out, Service{Name: name, Type: d.Type, BoxPort: d.Port, Socket: sock})
+		// The socket keeps the raw filename — it has to be dialable — while what
+		// the host PRINTS is reduced to printable characters.
+		out = append(out, Service{Name: Printable(name), Type: Printable(d.Type), BoxPort: d.Port, Socket: sock})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil

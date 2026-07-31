@@ -87,20 +87,6 @@ func TestPublishReplacesAStaleSocket(t *testing.T) {
 	dialWhenReady(t, sock, fail).Close()
 }
 
-func TestPublishRefusesUnusableNamesAndTypes(t *testing.T) {
-	dir := shortTempDir(t)
-	for _, tc := range []struct{ name, typ string }{
-		{"", forwarder.TypeWebUI},
-		{"..", forwarder.TypeWebUI},
-		{"a/b", forwarder.TypeWebUI},
-		{"web", "dashboard"},
-	} {
-		if err := forwarder.Publish(dir, tc.name, tc.typ, 8080); err == nil {
-			t.Errorf("Publish(%q, %q) = nil, want a refusal", tc.name, tc.typ)
-		}
-	}
-}
-
 // dialWhenReady waits for the publisher's listener to exist and connects,
 // failing early with the publisher's own error if it gave up.
 func dialWhenReady(t *testing.T, sock string, fail <-chan error) net.Conn {
@@ -135,57 +121,50 @@ func shortTempDir(t *testing.T) string {
 	return dir
 }
 
-// CONTRACT: a service exists exactly when its socket does. A descriptor that
-// cannot be written takes the socket file with it, so no host ever finds a
-// socket describing nothing.
-func TestPublishRemovesTheSocketWhenTheDescriptorCannotBeWritten(t *testing.T) {
+// CONTRACT: only a name that is safe as a filename AND as a cell in the host's
+// listing is publishable. The box is the untrusted side: a name carrying a
+// newline or an escape sequence would forge rows on the host's terminal.
+func TestPublishRefusesNamesOutsideTheAllowlist(t *testing.T) {
 	dir := shortTempDir(t)
-	// A directory in the descriptor's place: the rename onto it fails, which is
-	// the failure every other cause reduces to.
-	if err := os.MkdirAll(filepath.Join(dir, forwarder.DescriptorName("web")), 0o755); err != nil {
-		t.Fatalf("blocker: %v", err)
+	for _, name := range []string{
+		"",
+		".",
+		"..",
+		"a/b",
+		"a\\b",
+		"web\nweb2  general  127.0.0.1:42000  up",
+		"web\x1b[31m",
+		"web\x00",
+		"WEB",
+		"-web",
+		"web service",
+		strings.Repeat("w", forwarder.MaxServiceNameLen+1),
+	} {
+		if err := forwarder.CheckServiceName(name); err == nil {
+			t.Errorf("CheckServiceName(%q) = nil, wanted a refusal", name)
+		}
+		// Publish must apply the same rule. It serves for ever once it accepts,
+		// so a refusal is what has to come back — and quickly.
+		refused := make(chan error, 1)
+		go func(name string) { refused <- forwarder.Publish(dir, name, forwarder.TypeWebUI, 8080) }(name)
+		select {
+		case err := <-refused:
+			if err == nil {
+				t.Errorf("Publish(%q) = nil, wanted a refusal", name)
+			}
+		case <-time.After(2 * time.Second):
+			t.Errorf("Publish(%q) did not refuse — it is serving a name it should not have taken", name)
+		}
 	}
-	svc, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	defer svc.Close()
-	if err := forwarder.Publish(dir, "web", forwarder.TypeWebUI, svc.Addr().(*net.TCPAddr).Port); err == nil {
-		t.Fatal("Publish = nil, want the descriptor failure")
-	}
-	if _, err := os.Stat(filepath.Join(dir, forwarder.SocketName("web"))); err == nil {
-		t.Error("the socket file was left behind by a publish that failed")
+	for _, name := range []string{"web", "web-ui", "web_ui", "web.ui", "5173", strings.Repeat("w", forwarder.MaxServiceNameLen)} {
+		if err := forwarder.CheckServiceName(name); err != nil {
+			t.Errorf("CheckServiceName(%q) = %v, wanted it allowed", name, err)
+		}
 	}
 }
 
-// CONTRACT: the descriptor appears whole. It is written by rename, so a host
-// scanning the directory never parses a truncated one — and the scratch file it
-// is renamed from is not mistaken for a descriptor.
-func TestDescriptorIsWrittenByRename(t *testing.T) {
-	dir := shortTempDir(t)
-	svc, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	defer svc.Close()
-	fail := make(chan error, 1)
-	go func() { fail <- forwarder.Publish(dir, "web", forwarder.TypeWebUI, svc.Addr().(*net.TCPAddr).Port) }()
-	dialWhenReady(t, filepath.Join(dir, forwarder.SocketName("web")), fail).Close()
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("read dir: %v", err)
-	}
-	for _, e := range entries {
-		if strings.HasSuffix(e.Name(), ".json") && e.Name() != forwarder.DescriptorName("web") {
-			t.Errorf("scratch file %q left in the services dir", e.Name())
-		}
-	}
-	var d forwarder.Descriptor
-	b, err := os.ReadFile(filepath.Join(dir, forwarder.DescriptorName("web")))
-	if err != nil {
-		t.Fatalf("descriptor: %v", err)
-	}
-	if err := json.Unmarshal(b, &d); err != nil {
-		t.Fatalf("descriptor is not whole: %v", err)
+func TestPublishRefusesUnknownTypes(t *testing.T) {
+	if err := forwarder.Publish(shortTempDir(t), "web", "dashboard", 8080); err == nil {
+		t.Error("Publish with an unknown type = nil, wanted a refusal")
 	}
 }

@@ -7,7 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"strings"
+	"regexp"
 )
 
 // ServicesDir is where a box publishes its services, in dabs's own box-path
@@ -37,17 +37,24 @@ func DescriptorName(name string) string { return name + ".json" }
 // SocketName is the socket file a service of the given name listens on.
 func SocketName(name string) string { return name + ".sock" }
 
-// CheckServiceName reports whether name can be a service's filename: a single
-// path element, non-empty, no separators and no directory shorthand. This is
-// the whole rule — the forwarder is plumbing and takes the name it is given.
+// MaxServiceNameLen is the longest a service name may be.
+const MaxServiceNameLen = 64
+
+// serviceName is what a service may be called: lowercase letters, digits, dot,
+// dash and underscore. The name is a filename AND a cell a host prints, and the
+// box that chooses it is the untrusted side — an allowlist is the only rule that
+// keeps a control byte or an escape sequence out of both.
+var serviceName = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
+
+// CheckServiceName reports whether name may be a service's name.
 func CheckServiceName(name string) error {
 	switch {
 	case name == "":
 		return fmt.Errorf("service name is empty")
-	case name == "." || name == "..":
-		return fmt.Errorf("service name %q is a directory shorthand", name)
-	case strings.ContainsAny(name, "/\\"):
-		return fmt.Errorf("service name %q contains a path separator", name)
+	case len(name) > MaxServiceNameLen:
+		return fmt.Errorf("service name is %d bytes, over the %d allowed", len(name), MaxServiceNameLen)
+	case !serviceName.MatchString(name):
+		return fmt.Errorf("service name %q is not [a-z0-9._-], starting with a letter or digit", name)
 	}
 	return nil
 }
@@ -82,13 +89,10 @@ func Publish(dir, name, typ string, port int) error {
 	if err != nil {
 		return err
 	}
+	// Closing the listener unlinks the socket it created, so a descriptor that
+	// cannot be written leaves no socket behind describing nothing.
 	defer ln.Close()
-	// The socket is what makes the service exist, so a descriptor that cannot be
-	// written takes the socket back down with it — otherwise the box would be
-	// listening on a service nothing can describe.
 	if err := writeDescriptor(dir, name, typ, port); err != nil {
-		ln.Close()
-		_ = os.Remove(sock)
 		return err
 	}
 	servePublished(ln, port)
@@ -120,7 +124,11 @@ func writeDescriptor(dir, name, typ string, port int) error {
 		_ = os.Remove(tmp.Name())
 		return err
 	}
-	return os.Rename(tmp.Name(), filepath.Join(dir, DescriptorName(name)))
+	if err := os.Rename(tmp.Name(), filepath.Join(dir, DescriptorName(name))); err != nil {
+		_ = os.Remove(tmp.Name())
+		return err
+	}
+	return nil
 }
 
 // servePublished accepts connections until the listener fails, giving each one

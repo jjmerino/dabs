@@ -443,3 +443,60 @@ func TestPortsStoreSurvivesConcurrentWritersAndReaders(t *testing.T) {
 		t.Errorf("concurrent store use: %v", err)
 	}
 }
+
+// CONTRACT: the box writes its own descriptor and its own filenames, so what
+// the host prints is reduced to printable characters — a name carrying a
+// newline would otherwise forge a row in the listing, whatever the forwarder
+// allows.
+func TestScanDirStripsUnprintablesFromWhatTheHostPrints(t *testing.T) {
+	dir := shortTempDir(t)
+	forged := "web\n  evil  general  127.0.0.1:1  up"
+	writeDescriptor(t, dir, forged, "webui\x1b[31m", 5173, true)
+	found, err := services.ScanDir(dir)
+	if err != nil {
+		t.Fatalf("ScanDir: %v", err)
+	}
+	if len(found) != 1 {
+		t.Fatalf("ScanDir = %+v, want one service", found)
+	}
+	if strings.ContainsAny(found[0].Name, "\n\r\x1b") {
+		t.Errorf("Name = %q, still carries control characters", found[0].Name)
+	}
+	if strings.ContainsAny(found[0].Type, "\n\r\x1b") {
+		t.Errorf("Type = %q, still carries control characters", found[0].Type)
+	}
+	// The socket keeps the raw name — it is a real path and has to be dialable.
+	if !strings.Contains(found[0].Socket, forged) {
+		t.Errorf("Socket = %q, want the raw filename", found[0].Socket)
+	}
+	if len([]rune(services.Printable(strings.Repeat("w", 200)))) != services.MaxCellLen {
+		t.Errorf("Printable does not cap at %d", services.MaxCellLen)
+	}
+}
+
+// CONTRACT: a service that is published and NOT served is exactly what someone
+// opens the index to find out about — it is named there, without a link.
+func TestIndexNamesConflictsWithoutLinkingThem(t *testing.T) {
+	dir := shortTempDir(t)
+	ports, err := services.LoadPorts(filepath.Join(dir, "ports.json"))
+	if err != nil {
+		t.Fatalf("LoadPorts: %v", err)
+	}
+	src := func() ([]services.Service, error) {
+		return services.MarkConflicts([]services.Service{
+			{Name: "web", Type: forwarder.TypeWebUI, Node: "box-a", Socket: filepath.Join(dir, "a.sock")},
+			{Name: "web", Type: forwarder.TypeWebUI, Node: "box-b", Socket: filepath.Join(dir, "b.sock")},
+		}), nil
+	}
+	srv := services.NewServer(src, ports, io.Discard)
+	if err := srv.Sync(); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	page := renderIndex(t, srv)
+	if !strings.Contains(page, "conflict: also published by box-b") {
+		t.Errorf("the index hides the conflict:\n%s", page)
+	}
+	if strings.Count(page, "<a href=") != 1 {
+		t.Errorf("the index links something it does not serve:\n%s", page)
+	}
+}

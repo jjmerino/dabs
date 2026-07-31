@@ -3,9 +3,11 @@
 package bwrap
 
 import (
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/jjmerino/dabs/core/sandbox"
@@ -69,6 +71,7 @@ func TestEnterOpenEgressRunsBwrapUnderPasta(t *testing.T) {
 		"--udp-ports none",
 		"--tcp-ns none",
 		"--udp-ns none",
+		"--map-guest-addr none",
 		"--no-map-gw",
 		"-- bwrap",
 	} {
@@ -79,6 +82,47 @@ func TestEnterOpenEgressRunsBwrapUnderPasta(t *testing.T) {
 	// pasta owns the namespace, so bwrap must not make a second one.
 	if strings.Contains(line, "--unshare-net") {
 		t.Errorf("open egress must not unshare the net a second time:\n%s", line)
+	}
+}
+
+// dabs is killed far more often than it exits cleanly, and pasta has no bond of
+// its own to the process that started it: without a parent-death signal a killed
+// dabs leaves pasta and its bwrap holding the instance's overlay while the flock
+// is free for the next enter.
+func TestEnterOpenEgressBindsPastaLifetimeToDabs(t *testing.T) {
+	root := fakeTools(t, "bwrap", "pasta")
+	d := Driver{root: root}
+	instance := upInstance(t, d, sandbox.EgressOpen)
+
+	c, err := d.enter(instance, []string{"true"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.SysProcAttr == nil {
+		t.Fatal("pasta is started with no parent-death bond")
+	}
+	if got := c.SysProcAttr.Pdeathsig; got != syscall.SIGKILL {
+		t.Fatalf("parent-death signal is %v, want SIGKILL", got)
+	}
+	// A death bond the process could ignore or trap is not one.
+	if c.SysProcAttr.Setpgid {
+		t.Error("pasta must stay in the caller's process group, so a terminal signal reaches it too")
+	}
+}
+
+// The resolver the box is pointed at must be reachable from the box's OWN
+// namespace: a loopback address there is the box's loopback, not the host's,
+// and answers nothing.
+func TestDNSForwardAddrIsNotLoopback(t *testing.T) {
+	ip := net.ParseIP(dnsForwardAddr)
+	if ip == nil {
+		t.Fatalf("dnsForwardAddr %q is not an address", dnsForwardAddr)
+	}
+	if ip.IsLoopback() {
+		t.Fatalf("dnsForwardAddr %q is loopback, which in the box is the box's own", dnsForwardAddr)
+	}
+	if !ip.IsLinkLocalUnicast() {
+		t.Errorf("dnsForwardAddr %q is not link-local, so it can collide with a real resolver", dnsForwardAddr)
 	}
 }
 
@@ -179,5 +223,25 @@ func TestUpRefusesForRootCaller(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "unprivileged user") {
 		t.Errorf("refusal does not say what to do about it: %v", err)
+	}
+}
+
+// A meta.json written before egress was recorded carries no mode at all, and an
+// instance that named no egress asked for the default. Both mean open, and both
+// must get the namespace open promises rather than the host's network.
+func TestEnterUnsetEgressIsOpen(t *testing.T) {
+	root := fakeTools(t, "bwrap", "pasta")
+	d := Driver{root: root}
+	instance := upInstance(t, d, "")
+
+	c, err := d.enter(instance, []string{"true"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := filepath.Base(c.Path); got != "pasta" {
+		t.Fatalf("an instance with no egress recorded entered via %q, want pasta", got)
+	}
+	if strings.Contains(strings.Join(c.Args, " "), "--unshare-net") {
+		t.Error("an instance with no egress recorded was cut off the network")
 	}
 }

@@ -19,13 +19,16 @@ const pastaBin = "pasta"
 // resolvers, so the box resolves names without any route to a host address.
 const dnsForwardAddr = "169.254.1.1"
 
-// requirePasta reports where pasta is, or the message a host missing it gets.
-// Open egress on this driver IS pasta: there is no shared-host-netns fallback,
-// because a box that silently kept the host's network would not be the box the
-// recipe asked for.
 // geteuid is os.Geteuid, named so a test can pose as an unprivileged caller.
 var geteuid = os.Geteuid
 
+// requirePasta reports the path of the pasta that will build an open-egress
+// box's namespace, or the message a host that cannot have one gets. It reads
+// the two conditions pasta itself cannot be asked about later — a caller that
+// is root, and a pasta that is not installed — so a boot that cannot get the
+// namespace stops here. It does not report on the flags this pasta understands:
+// those the invocation carries, and a pasta too old for one refuses aloud on
+// the first enter.
 func requirePasta() (string, error) {
 	if geteuid() == 0 {
 		return "", fmt.Errorf("bwrap: egress: open needs pasta to build the box's network namespace, and pasta cannot serve a root caller: it drops its capabilities before mapping the namespace's users, so the namespace comes up with no mapping and bwrap cannot enter it. Run dabs as an unprivileged user (the bwrap driver needs no privilege), or give the recipe egress: none or a proxy egress")
@@ -48,12 +51,20 @@ func requirePasta() (string, error) {
 //	--tcp-ns none      and nothing the HOST binds is published in the box, so a
 //	--udp-ns none      host service on loopback stays out of the box's reach
 //	--no-map-gw        the gateway address does not stand in for the host either
+//	--map-guest-addr   and neither does any address standing in for the box
 //	--quiet            pasta's own chatter stays out of the command's output
 //
-// Both port-forwarding directions must be named: pasta's default for each is
-// `auto`, which mirrors bound ports across the namespace boundary and would
-// hand back exactly the port space and the host reachability the namespace is
-// there to take away.
+// Every address and port translation is named, none left to a default: pasta's
+// default for each port direction is `auto`, which mirrors bound ports across
+// the namespace boundary and hands back exactly the port space and the host
+// reachability the namespace is there to take away. A pasta too old for a flag
+// refuses the whole invocation, which is the answer wanted — the alternative is
+// a box quietly built to a weaker shape than the one named here.
+//
+// The exit status the caller sees is the inner command's, except when the inner
+// command dies of a SIGNAL: pasta reports that as its own clean exit. A box
+// command's own exit codes survive; a bwrap killed by OOM or SEGV reads as
+// success.
 func pastaArgs(inner []string) []string {
 	args := []string{
 		"--config-net",
@@ -63,6 +74,7 @@ func pastaArgs(inner []string) []string {
 		"--tcp-ns", "none",
 		"--udp-ns", "none",
 		"--no-map-gw",
+		"--map-guest-addr", "none",
 		"--quiet",
 		"--",
 	}

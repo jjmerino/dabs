@@ -22,6 +22,7 @@ import (
 	"github.com/jjmerino/dabs/core/recipe"
 	"github.com/jjmerino/dabs/core/sandbox"
 	"github.com/jjmerino/dabs/core/tui"
+	"github.com/jjmerino/dabs/egressforwarder/forwarder"
 )
 
 // Recipe runs `dabs recipe [name] [cmd…]`. Three shapes:
@@ -614,6 +615,17 @@ func (r Real) validateSources(recipeName string, sources []recipe.Source, vars m
 	return resolved, nil
 }
 
+// withEnv returns env plus one variable, without writing into the recipe's own
+// map — a recipe value is shared with the node snapshot and the registry.
+func withEnv(env map[string]string, key, value string) map[string]string {
+	out := make(map[string]string, len(env)+1)
+	for k, v := range env {
+		out[k] = v
+	}
+	out[key] = value
+	return out
+}
+
 // buildBox realizes a recipe's already-validated sources into a fresh DETACHED
 // box: it cuts any worktrees, turns sources into driver mounts, brings the box
 // up (image, workdir, env, target-driver), and runs the deferred in-box copies.
@@ -653,6 +665,19 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID, tip string, rec re
 			mounts = append(mounts, sandbox.Mount{Host: rs.origin, Path: boxPath, RO: s.RO})
 		}
 	}
+	// Every box gets the services directory, whatever its recipe says: a program
+	// in the box publishes a named service by writing a socket there, and the host
+	// serves it from a stable loopback port. The directory is the box node's own
+	// tmp space, so a service cannot outlive the box that published it, and no
+	// recipe has to opt in.
+	svcDir, err := r.resolveServicesDir(boxID)
+	if err != nil {
+		return "", err
+	}
+	if err := r.data.MkdirAll(svcDir, 0o755); err != nil {
+		return "", fmt.Errorf("recipe %q: services dir %s: %w", recipeName, svcDir, err)
+	}
+	mounts = append(mounts, sandbox.Mount{Host: svcDir, Path: forwarder.ServicesDir})
 	// A non-empty proxies chain makes the engine's socket the box's only way out:
 	// start it, mount its CA, point the box's HTTP_PROXY at the in-box forwarder.
 	// The engine runs for the box's lifetime; its PID/dir are recorded on the box
@@ -687,6 +712,15 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID, tip string, rec re
 		egressMode = sandbox.EgressNone // driver cuts the box's network
 	case recipe.EgressOpen:
 		egressMode = sandbox.EgressOpen // full outbound; nothing to provision
+	}
+	// Whether a service published in this box needs a door on the box's network
+	// is dabs's question, not the publisher's: the box cannot tell whose network
+	// namespace it is in. A box the driver can address, and that HAS a network,
+	// gets the answer in its environment; every other box publishes on its socket
+	// alone, so no listener of ours ever stands on an interface the box shares
+	// with the host.
+	if boxNeedsNetworkDoor(drv.Kind(), egressMode) {
+		env = withEnv(env, forwarder.BridgeEnv, "1")
 	}
 	sortMountsByDepth(mounts)
 

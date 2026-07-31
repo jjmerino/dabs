@@ -23,6 +23,7 @@ import (
 	"github.com/jjmerino/dabs/core/params"
 	"github.com/jjmerino/dabs/core/recipe"
 	"github.com/jjmerino/dabs/core/sandbox"
+	"github.com/jjmerino/dabs/egressforwarder/forwarder"
 )
 
 // Compile-time proof the fakes satisfy the real seams.
@@ -384,6 +385,19 @@ func onlyUp(t *testing.T, d *fakeDriver) sandbox.Spec {
 	return d.ups[0]
 }
 
+// sourceMounts is a box's mounts WITHOUT the services directory every box gets,
+// so a test can state what the recipe's own sources mounted and nothing else.
+func sourceMounts(mounts []sandbox.Mount) []sandbox.Mount {
+	out := make([]sandbox.Mount, 0, len(mounts))
+	for _, m := range mounts {
+		if m.Path == forwarder.ServicesDir {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
 // --- tests: happy paths -------------------------------------------------------
 
 func TestRecipeMountReachesDriver(t *testing.T) {
@@ -404,8 +418,8 @@ func TestRecipeMountReachesDriver(t *testing.T) {
 	up := onlyUp(t, drv)
 	// Contract: the box is brought up with exactly the declared mount, its
 	// command is run, and it is torn down.
-	if len(up.Mounts) != 1 || up.Mounts[0] != (sandbox.Mount{Host: "/data", Path: "/work"}) {
-		t.Errorf("Up mounts = %+v, want one {/data -> /work}", up.Mounts)
+	if ms := sourceMounts(up.Mounts); len(ms) != 1 || ms[0] != (sandbox.Mount{Host: "/data", Path: "/work"}) {
+		t.Errorf("Up mounts = %+v, want one {/data -> /work}", ms)
 	}
 	if len(drv.runs) != 1 || strings.Join(drv.runs[0], " ") != "run it" {
 		t.Errorf("Run cmd = %v, want [run it]", drv.runs)
@@ -863,8 +877,8 @@ func TestWorktreeFlagAttachesWorktreeAndGitDir(t *testing.T) {
 	}
 	// The SET of mounts is the contract; their order is not — actions order mounts
 	// parent-before-child, which is a separate contract with its own test.
-	if len(up.Mounts) != len(want) {
-		t.Fatalf("mounts = %+v, want %+v", up.Mounts, want)
+	if len(sourceMounts(up.Mounts)) != len(want) {
+		t.Fatalf("mounts = %+v, want %+v", sourceMounts(up.Mounts), want)
 	}
 	for _, w := range want {
 		found := false
@@ -1469,8 +1483,8 @@ func TestRecipeNodeIDExpandsInBoxPath(t *testing.T) {
 		t.Fatalf("Recipe: %v", err)
 	}
 	up := onlyUp(t, drv)
-	if len(up.Mounts) != 1 || up.Mounts[0] != (sandbox.Mount{Host: "/d", Path: "/mybox"}) {
-		t.Errorf("Up mounts = %+v, want one {/d -> /mybox}", up.Mounts)
+	if ms := sourceMounts(up.Mounts); len(ms) != 1 || ms[0] != (sandbox.Mount{Host: "/d", Path: "/mybox"}) {
+		t.Errorf("Up mounts = %+v, want one {/d -> /mybox}", ms)
 	}
 }
 
@@ -1969,12 +1983,13 @@ func TestRelativeSourceOriginReachesDriverAbsolute(t *testing.T) {
 			t.Errorf("driver got relative mount host %q; want absolute", m.Host)
 		}
 	}
-	if len(up.Mounts) != 2 || up.Mounts[0].Host != cwd {
-		t.Errorf("Up mounts = %+v, want `.` mounted as the cwd %s", up.Mounts, cwd)
+	ms := sourceMounts(up.Mounts)
+	if len(ms) != 2 || ms[0].Host != cwd {
+		t.Errorf("Up mounts = %+v, want `.` mounted as the cwd %s", ms, cwd)
 	}
 	// The copy source is staged read-only, then copied in-box.
-	if up.Mounts[1].Host != filepath.Join(cwd, "stage") {
-		t.Errorf("copy source host = %q, want %q", up.Mounts[1].Host, filepath.Join(cwd, "stage"))
+	if ms[1].Host != filepath.Join(cwd, "stage") {
+		t.Errorf("copy source host = %q, want %q", ms[1].Host, filepath.Join(cwd, "stage"))
 	}
 }
 
@@ -2001,8 +2016,8 @@ recipes:
 		t.Fatalf("Up: %v", err)
 	}
 	up := onlyUp(t, drv)
-	if len(up.Mounts) != 1 || up.Mounts[0].Host != "/proj/box/assets" {
-		t.Errorf("Up mounts = %+v, want the source anchored on the dabs.yaml dir (/proj/box/assets)", up.Mounts)
+	if ms := sourceMounts(up.Mounts); len(ms) != 1 || ms[0].Host != "/proj/box/assets" {
+		t.Errorf("Up mounts = %+v, want the source anchored on the dabs.yaml dir (/proj/box/assets)", ms)
 	}
 }
 
@@ -2628,8 +2643,8 @@ func TestBoxFromWorktreeCheckoutParentsOnWorktree(t *testing.T) {
 		{Host: wt, Path: "/work"},                // the checkout, mounted live
 		{Host: "/repo/.git", Path: "/repo/.git"}, // parent store, so git works in-box
 	}
-	if len(up.Mounts) != len(want) {
-		t.Fatalf("mounts = %+v, want %+v", up.Mounts, want)
+	if len(sourceMounts(up.Mounts)) != len(want) {
+		t.Fatalf("mounts = %+v, want %+v", sourceMounts(up.Mounts), want)
 	}
 	for _, w := range want {
 		found := false

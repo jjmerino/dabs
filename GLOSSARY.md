@@ -45,6 +45,7 @@ glossary records where the vocabulary is going so new work simply avoids the old
 | **server** | a registered remote machine with dabs installed, reached over ssh | `dabs servers`, `config` |
 | **driver** | one sandboxing mechanism behind the `sandbox.Driver` contract | `core/sandbox/<kind>` |
 | **fleet** (deprecated) | use **drivers** | `Real.drivers`, `dabs ls` |
+| **service** | a box-local port a box publishes under a name, reached from the host on a stable loopback port | `dabs services`, `forward publish`, `/run/dabs/services` |
 | **worktree** | a fresh git branch off HEAD, cut into a node's held space and mounted live | the `worktree:` source, `dabs worktrees` |
 | **--no-command** | boot a box and leave it up WITHOUT running the recipe's command | `recipe --no-command`, `upDetached` |
 | **--detach** | boot a box, START the recipe's command in the background, and return without waiting for it | `recipe --detach`, `upDetached`, `sandbox.Detacher` |
@@ -258,6 +259,45 @@ exists; `--force` removes even an image a live box depends on.
 Open question: if `prune` only ever reclaims images, the future name is
 **prune-images**.
 *Where:* `Prune`.
+
+### service
+A box-local port a box publishes under a NAME, so the host can reach a program
+that only ever bound the box's own loopback. A box publishes by running the
+in-box forwarder — `forward publish <name> --type webui|general --port <n>` —
+which listens on `/run/dabs/services/<name>.sock` and writes `<name>.json`
+beside it. A name is `[a-z0-9._-]`, starting with a letter or digit, at
+most 64 bytes: it is a filename AND a cell the host prints, and the box
+choosing it is the untrusted side. That directory is the whole registry —
+the box node's `tmp` space, bound into EVERY box, so a service dies with
+the box that published it and nothing has to be deregistered. The type
+decides only how the index renders the service (a **webui** is a link),
+never how bytes are routed. One name is one host port: a second box
+claiming a live name is reported as a **conflict** and is not served.
+
+The host reaches a service by whichever door answers: the mounted socket
+first, else the box's own network address on the publisher's `bridge`
+port. The socket dials on the Linux (bwrap) driver; on **apple** it does
+not cross the micro-VM, and the box's vmnet address (from the
+`BoxAddresser` capability) is the way in — unless the box runs with
+`egress: none`/`proxy`, which leaves it with no network and no address, so
+it lists **down**. On **docker**, neither door answers yet.
+
+The outward door is opt-in — dabs sets `DABS_SERVICE_BRIDGE` only in a box
+it reaches over the network, and `forward publish --bridge` follows that —
+so a box sharing the host's network namespace opens no listener on the
+host's interfaces. Where the door IS open it is not access control:
+anything able to reach the box's address can reach the service.
+*Where:* `core/services`, `forwarder.Publish`, `forwarder.ServicesDir`.
+
+### services
+List what the boxes publish, one row each: NAME, TYPE, the BOX node and its
+INSTANCE, the HOST address, and STATE — `up` when the socket answers, `down`
+when it does not, `conflict` when another box owns the name (then the row
+carries no address, because nothing reaches that service). `services serve`
+forwards each service from its stable 127.0.0.1 port (42000–42999, persisted
+per name in `~/.dabs/service-ports.json`, so a URL survives a re-up) and serves
+an index of them at `127.0.0.1:28080` until interrupted.
+*Where:* `Services`, `services.Server`, `services.Ports`.
 
 ### servers
 Manage registered remote servers: `servers [ls] | add <name> [host] | rm <name>`.

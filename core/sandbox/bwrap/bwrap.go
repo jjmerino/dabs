@@ -9,9 +9,11 @@
 // docker is used as the BUILDER only (Dockerfile → exported rootfs); it
 // never runs instances. Isolation is user-namespace level (config
 // isolation, not a security boundary): shared kernel, and processes do not
-// outlive their Run call. The network is shared under egress open, and
-// unshared (loopback only) under egress none/proxy — proxy reaches the host
-// proxy through a mounted unix socket, which is filesystem, not network.
+// outlive their Run call. The network is a namespace of the box's own under
+// every egress mode: none and proxy unshare it and leave it bare (proxy
+// reaches the host proxy through a mounted unix socket, which is filesystem,
+// not network), and open unshares it and hands it to pasta, which carries
+// outbound traffic as userspace socket translation.
 package bwrap
 
 import (
@@ -152,6 +154,13 @@ func (d Driver) Up(spec sandbox.Spec) (string, error) {
 	if err := readJSON(filepath.Join(d.imageDir(spec.Name), "image.json"), &im); err != nil {
 		return "", fmt.Errorf("bwrap: no image for %q (run dabs build first): %w", spec.Name, err)
 	}
+	// Refuse at boot, not at the first command: a box whose egress cannot be
+	// provisioned must never come up looking healthy.
+	if openEgress(spec.Egress) {
+		if _, err := requirePasta(); err != nil {
+			return "", err
+		}
+	}
 	instance, err := clidriver.InstanceName(spec.Name)
 	if err != nil {
 		return "", fmt.Errorf("bwrap: %w", err)
@@ -173,6 +182,11 @@ func (d Driver) Up(spec sandbox.Spec) (string, error) {
 	return instance, nil
 }
 
+// openEgress reports whether a mode means unrestricted outbound. The empty
+// string is what a Spec carries when no egress was asked for, and open is the
+// default.
+func openEgress(mode string) bool { return mode == "" || mode == sandbox.EgressOpen }
+
 // enter builds the bwrap invocation for an instance. The overlay is mounted
 // by bwrap itself (unprivileged, user namespace); writes land in the
 // instance's upper layer and persist across calls.
@@ -193,19 +207,22 @@ func (d Driver) enter(instance string, cmd []string) (*exec.Cmd, error) {
 		"--chdir", meta.Workdir,
 		"--clearenv",
 	}
-	restricted := meta.Egress == sandbox.EgressNone || meta.Egress == sandbox.EgressProxy
-	if restricted {
+	open := openEgress(meta.Egress)
+	if !open {
 		// None and proxy both start from a box with no network — loopback only.
 		// Proxy's way out is the host socket bound below: a unix socket crosses
 		// the netns because it is filesystem, not network.
 		args = append(args, "--unshare-net")
-	} else if _, err := os.Stat("/etc/resolv.conf"); err == nil {
+	} else {
+		if err := d.writeResolvConf(instance); err != nil {
+			return nil, err
+		}
 		// docker export does not carry the runtime-injected resolv.conf, so the
 		// box's copy is empty and DNS (package installs, downloads) would fail.
-		// The network is shared with the host under egress open; share its DNS
-		// config too. A restricted box has no resolver to reach — names resolve
-		// at the proxy (HTTP CONNECT), or not at all.
-		args = append(args, "--ro-bind", "/etc/resolv.conf", "/etc/resolv.conf")
+		// The box's namespace resolves at pasta, so it is pasta's address the
+		// box's resolv.conf names. A restricted box has no resolver to reach —
+		// names resolve at the proxy (HTTP CONNECT), or not at all.
+		args = append(args, "--ro-bind", d.resolvConfPath(instance), "/etc/resolv.conf")
 	}
 	// Live host mounts: writes pass through to the host and outlive the box.
 	for _, m := range meta.Mounts {
@@ -256,7 +273,19 @@ func (d Driver) enter(instance string, cmd []string) (*exec.Cmd, error) {
 		args = append(args, "--")
 	}
 	args = append(args, cmd...)
-	return exec.Command("bwrap", args...), nil
+	if !open {
+		return exec.Command("bwrap", args...), nil
+	}
+	// Open egress: pasta makes the namespace and runs bwrap inside it, as its
+	// own child. It therefore lives exactly as long as the entered command and
+	// is reaped with it — the same lifetime every other part of a bwrap box
+	// has, since nothing here outlives its Run call. The lock already
+	// serializes entries, so one entered command is one namespace.
+	pasta, err := requirePasta()
+	if err != nil {
+		return nil, err
+	}
+	return exec.Command(pasta, pastaArgs(append([]string{"bwrap"}, args...))...), nil
 }
 
 // imageOf recovers the sandbox name from an instance name (<name>-<hex12>).

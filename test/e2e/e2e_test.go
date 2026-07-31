@@ -658,6 +658,15 @@ const e2eRecipes = `recipes:
         path: /root/.claude
       - worktree: .
         path: /work
+  # For services: a box that carries the suite-built forwarder and the fixture
+  # responder at /opt/bin, so a program inside can bind box-local loopback and
+  # publish it. The image has no Go toolchain; the binaries are mounted in.
+  svcbox:
+    image: dabs-e2e
+    command: [sh]
+    sources:
+      - mkmount: ~/.dabs/e2e-svcbin
+        path: /opt/bin
   shellhang:
     image: dabs-e2e
     command: [sh]

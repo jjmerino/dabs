@@ -45,6 +45,7 @@ glossary records where the vocabulary is going so new work simply avoids the old
 | **server** | a registered remote machine with dabs installed, reached over ssh | `dabs servers`, `config` |
 | **driver** | one sandboxing mechanism behind the `sandbox.Driver` contract | `core/sandbox/<kind>` |
 | **fleet** (deprecated) | use **drivers** | `Real.drivers`, `dabs ls` |
+| **service** | a box-local port a box publishes under a name, reached from the host on a stable loopback port | `dabs services`, `forward publish`, `/run/dabs/services` |
 | **worktree** | a fresh git branch off HEAD, cut into a node's held space and mounted live | the `worktree:` source, `dabs worktrees` |
 | **--no-command** | boot a box and leave it up WITHOUT running the recipe's command | `recipe --no-command`, `upDetached` |
 | **--detach** | boot a box, START the recipe's command in the background, and return without waiting for it | `recipe --detach`, `upDetached`, `sandbox.Detacher` |
@@ -258,6 +259,30 @@ exists; `--force` removes even an image a live box depends on.
 Open question: if `prune` only ever reclaims images, the future name is
 **prune-images**.
 *Where:* `Prune`.
+
+### service
+A box-local port a box publishes under a NAME, so the host can reach a program
+that only ever bound the box's own loopback. A box publishes by running the
+in-box forwarder — `forward publish <name> --type webui|general --port <n>` —
+which listens on `/run/dabs/services/<name>.sock` and writes `<name>.json`
+beside it. That directory is the whole registry: it is the box node's `tmp`
+space, bound into EVERY box, so a service dies with the box that published it
+and nothing has to be deregistered. The type decides only how the index renders
+the service (a **webui** is a link), never how bytes are routed. One name is one
+host port: a second box claiming a live name is reported as a **conflict** and
+is not served. The host dials the box's socket through the bound directory, so
+host and box must share a kernel — on the Linux (bwrap) driver they do; on the
+macOS drivers the box's filesystem crosses a VM boundary and the socket, though
+visible, does not accept, so the service lists as **down**.
+*Where:* `core/services`, `forwarder.Publish`, `forwarder.ServicesDir`.
+
+### services
+List what the boxes publish — name, type, box, host address, and whether the
+socket answers. `services serve` forwards each service from its stable
+127.0.0.1 port (42000–42999, persisted per name in `~/.dabs/service-ports.json`,
+so a URL survives a re-up) and serves an index of them at `127.0.0.1:28080`
+until interrupted.
+*Where:* `Services`, `services.Server`, `services.Ports`.
 
 ### servers
 Manage registered remote servers: `servers [ls] | add <name> [host] | rm <name>`.

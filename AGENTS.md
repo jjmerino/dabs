@@ -226,6 +226,37 @@ straight into the shared store (no push). It composes with `--no-command` and
 point a fresh agent (or a different recipe, e.g. review) at work another agent
 already started, without cutting a new branch.
 
+## Services — reaching a box's port from the host
+
+Every box is bound one extra directory whatever its recipe says: the box node's
+`tmp/services`, at `/run/dabs/services`. A program in the box publishes a
+box-local port under a name by running the in-box forwarder:
+
+```bash
+forward publish <name> --type webui|general --port <n>   # inside the box
+```
+
+That listens on `/run/dabs/services/<name>.sock` and writes `<name>.json` beside
+it — running it IS the registration, and the socket dying with the process is
+the deregistration. On the host:
+
+```bash
+dabs services              # what the boxes publish: name, type, box, host address, up/down
+dabs services serve        # forward each one from a stable 127.0.0.1 port; index on 127.0.0.1:28080
+```
+
+The host reaches a service by dialing the box's socket through that bound
+directory, so host and box must share a kernel: this works on the Linux (bwrap)
+driver. On macOS the box's filesystem crosses a VM boundary — the socket file
+appears on the host but does not accept — so `dabs services` lists the service
+**down** and serving it returns nothing.
+
+A name keeps its port (42000–42999, persisted in `~/.dabs/service-ports.json`),
+so n worktrees of one web project each get their own address and never fight
+over a host port. `webui` only makes the index render a link; routing is raw TCP
+either way, so websockets work. One name is one port: a second box claiming a
+live name is reported as a conflict and is not served — name them per worktree.
+
 ## Notes
 
 - Tell the in-box agent the shape of its world: a fresh machine, no host

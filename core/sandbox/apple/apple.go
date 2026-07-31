@@ -342,6 +342,8 @@ func (Driver) BoxAddress(instance string) (string, error) {
 	if len(inspected) == 0 || len(inspected[0].Status.Networks) == 0 {
 		return "", nil
 	}
+	// The first network is the box's: `container` attaches one by default and
+	// reports them in its own order, which is the order this reads.
 	// The address is reported with its prefix length ("192.168.64.2/24"); what a
 	// dialer needs is the address.
 	addr, _, _ := strings.Cut(inspected[0].Status.Networks[0].IPv4Address, "/")

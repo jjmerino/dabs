@@ -281,6 +281,12 @@ not cross the micro-VM, and the box's vmnet address (from the
 `BoxAddresser` capability) is the way in — unless the box runs with
 `egress: none`/`proxy`, which leaves it with no network and no address, so
 it lists **down**. On **docker**, neither door answers yet.
+
+The outward door is opt-in — dabs sets `DABS_SERVICE_BRIDGE` only in a box
+it reaches over the network, and `forward publish --bridge` follows that —
+so a box sharing the host's network namespace opens no listener on the
+host's interfaces. Where the door IS open it is not access control:
+anything able to reach the box's address can reach the service.
 *Where:* `core/services`, `forwarder.Publish`, `forwarder.ServicesDir`.
 
 ### services

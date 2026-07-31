@@ -73,3 +73,38 @@ func TestABareRecipeStillGetsTheServicesDir(t *testing.T) {
 		t.Errorf("services dir = %q, want it inside the box node's tmp space", up.Mounts[0].Host)
 	}
 }
+
+// CONTRACT: the outward network door is opened only in a box whose driver
+// reaches it over the network. A box that shares the host's network namespace
+// must never be told to open one — that listener would stand on the host's own
+// interfaces, an unauthenticated way into the box's service.
+func TestOnlyANetworkReachedBoxIsToldToOpenTheOutwardDoor(t *testing.T) {
+	y := `recipes:
+  m:
+    image: img
+    command: [sh]
+`
+	for _, tc := range []struct {
+		kind, egress string
+		want         bool
+	}{
+		{kind: "apple", want: true},
+		{kind: "bwrap"},
+		{kind: "docker"},
+		{kind: "apple", egress: "none"},
+	} {
+		recipes := y
+		if tc.egress != "" {
+			recipes += "    egress: " + tc.egress + "\n"
+		}
+		drv := &fakeDriver{built: map[string]bool{"img": true}, kind: tc.kind}
+		if err := newReal(recipes, baseData(), drv).Recipe(params.Recipe{Name: "m"}); err != nil {
+			t.Fatalf("%s/%s: Recipe: %v", tc.kind, tc.egress, err)
+		}
+		up := onlyUp(t, drv)
+		_, told := up.Env[forwarder.BridgeEnv]
+		if told != tc.want {
+			t.Errorf("%s driver, egress %q: %s set = %v, want %v", tc.kind, tc.egress, forwarder.BridgeEnv, told, tc.want)
+		}
+	}
+}

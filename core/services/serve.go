@@ -25,6 +25,10 @@ const ScanEvery = 2 * time.Second
 type Served struct {
 	Service
 	Port int
+	// Down marks a service that is still published but did not answer on the
+	// last scan. Its port keeps standing — the address was handed out — and the
+	// index says so.
+	Down bool
 }
 
 // URL is the address a client reaches the service at.
@@ -64,6 +68,16 @@ type forward struct {
 	route  Route
 }
 
+// markDown records that the service is still published but did not answer this
+// scan. The listener stays: a box under momentary load is not a box that went
+// away, and closing the port would take the address a human is holding.
+func (f *forward) markDown(svc Service) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.served.Service = svc
+	f.served.Down = true
+}
+
 // target is where the forward currently dials.
 func (f *forward) target() Route {
 	f.mu.Lock()
@@ -76,6 +90,7 @@ func (f *forward) retarget(svc Service, route Route) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.served.Service = svc
+	f.served.Down = false
 	f.route = route
 }
 
@@ -136,24 +151,31 @@ func (s *Server) Sync() error {
 			s.tell(svc)
 			continue
 		}
-		// A service nothing can reach is not forwarded: the port would answer and
-		// deliver nothing. It is retried on the next scan.
-		route, ok := svc.Route()
-		if !ok {
-			continue
-		}
+		// Still published — the descriptor and socket are there — so the name keeps
+		// its listener whatever the probe says. Whether it ANSWERS is a separate
+		// question, asked again every scan.
 		live[svc.Name] = true
+		route, reachable := svc.Route()
 		s.mu.Lock()
 		existing, held := s.serving[svc.Name]
 		s.mu.Unlock()
 		if held {
-			// The name is already served. Where it answers may have moved — a re-up
-			// publishes the same name from a new node directory — and the port must
-			// follow it, or it forwards into a dead door for ever.
+			if !reachable {
+				existing.markDown(svc)
+				continue
+			}
+			// Where the name answers may have moved — a re-up publishes it from a
+			// new node directory — and the port must follow it, or it forwards into
+			// a dead door for ever.
 			if existing.target() != route {
 				fmt.Fprintf(s.log, "%s → %s (moved)\n", svc.Name, route.Addr)
 			}
 			existing.retarget(svc, route)
+			continue
+		}
+		// Nothing is listening for this name yet and nothing answers behind it:
+		// there is no address worth handing out. Retried on the next scan.
+		if !reachable {
 			continue
 		}
 		f, err := s.open(svc, route)

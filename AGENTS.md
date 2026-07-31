@@ -259,7 +259,15 @@ address on the port the publisher opened across the box's interfaces (a
   runs with no network and so has no address — it stays **down**, honestly.
 - **docker** — neither door yet; a published service reads **down**.
 
-`dabs services` reports whichever door is live, and forwards over it.
+`dabs services` reports whichever door is live, and forwards over it. The
+outward door is opened only where it is the way in — dabs sets
+`DABS_SERVICE_BRIDGE` in those boxes and `forward publish --bridge` follows it —
+so a box sharing the host's network namespace never opens one.
+
+**That door is not access control.** Isolation is filesystem and process, NOT
+network: on apple, the bridge port answers anything that can reach the box's
+vmnet address, not just this host's `dabs services serve`. Publish nothing from
+a box that you would not put on the local network.
 
 A name keeps its port (42000–42999, persisted in `~/.dabs/service-ports.json`),
 so n worktrees of one web project each get their own address and never fight

@@ -23,6 +23,23 @@ const servicesSubdir = "services"
 // service keeps its port across boxes, so a URL survives a re-up.
 const portsFileName = "service-ports.json"
 
+// networkDoorKinds are the driver kinds whose boxes the host reaches over the
+// network — the ones that carry a network namespace of their own AND an address
+// the host can dial (see sandbox.BoxAddresser). Everywhere else the mounted
+// socket is the way in, and a listener on the box's interfaces would be a door
+// dabs opened for no one: in a box that shares the host's namespace it would
+// stand on the host's own NICs.
+var networkDoorKinds = map[string]bool{"apple": true}
+
+// boxNeedsNetworkDoor reports whether a service published in a box of this kind
+// should open a listener on the box's network. The DRIVER KIND is the form of
+// the question that can be answered before the box exists, which is when the
+// box's environment is built. A box with no network (egress none or proxy) has
+// no address to be reached at, so it gets no door either.
+func boxNeedsNetworkDoor(kind, egress string) bool {
+	return networkDoorKinds[kind] && egress == sandbox.EgressOpen
+}
+
 // resolveServicesDir returns the host directory a box node publishes its
 // services into.
 func (r Real) resolveServicesDir(nodeID string) (string, error) {
@@ -112,7 +129,14 @@ func (a boxAddrs) of(r Real, n Node) string {
 	addr := ""
 	if drv, err := r.driverFor(target); err == nil {
 		if ba, can := drv.(sandbox.BoxAddresser); can {
-			if got, err := ba.BoxAddress(n.Instance); err == nil {
+			got, err := ba.BoxAddress(n.Instance)
+			switch {
+			case err != nil:
+				// A driver that cannot answer is not a box without a network, and
+				// the difference is the difference between "nothing to reach" and
+				// "dabs is broken". Said once per box per scan, on stderr.
+				fmt.Fprintln(os.Stderr, tui.Warn("services: %s: asking the driver where the box is: %v", n.ID, err))
+			default:
 				addr = got
 			}
 		}

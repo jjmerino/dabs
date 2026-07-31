@@ -13,7 +13,7 @@
 //
 // Usage: forward <socket> <port> [-- cmd…]
 //
-//	forward publish <name> --type webui|general --port <n>
+//	forward publish <name> --type webui|general --port <n> [--bridge]
 package main
 
 import (
@@ -67,6 +67,10 @@ func publish(args []string) {
 	typ := fs.String("type", forwarder.TypeGeneral, "service type: webui|general")
 	port := fs.Int("port", 0, "box-local loopback port to serve")
 	dir := fs.String("dir", forwarder.ServicesDir, "directory the socket and descriptor are written to")
+	// The box cannot tell whether a host can dial its socket; dabs, which chose
+	// the driver, says so in the environment. The flag overrides it either way.
+	bridge := fs.Bool("bridge", forwarder.BridgeWanted(os.Getenv(forwarder.BridgeEnv)),
+		"also listen across every interface of the box, for a host that cannot dial the socket")
 	fail := func(msg string) {
 		fmt.Fprintf(os.Stderr, "forward publish: %s\nusage: forward publish <name> --type webui|general --port <n>\n", msg)
 		os.Exit(2)
@@ -87,7 +91,7 @@ func publish(args []string) {
 	if *port <= 0 || *port > 65535 {
 		fail(fmt.Sprintf("--port %d is not a port", *port))
 	}
-	if err := forwarder.Publish(*dir, name, *typ, *port); err != nil {
+	if err := forwarder.Publish(*dir, name, *typ, *port, *bridge); err != nil {
 		fmt.Fprintf(os.Stderr, "forward publish: %v\n", err)
 		os.Exit(1)
 	}

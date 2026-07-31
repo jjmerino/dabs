@@ -658,3 +658,59 @@ func TestUnreachableServiceIsNotForwarded(t *testing.T) {
 		t.Errorf("Serving = %+v, want nothing forwarded for an unreachable service", got)
 	}
 }
+
+// CONTRACT: a service that is still published but did not answer this scan
+// KEEPS its port. The address was handed out; a box busy for one probe is not a
+// box that went away, and closing the listener would flap the port and take the
+// URL out from under whoever is holding it.
+func TestAServiceThatStopsAnsweringKeepsItsPort(t *testing.T) {
+	dir := shortTempDir(t)
+	sock := filepath.Join(dir, "web.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	go http.Serve(ln, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "in the box")
+	}))
+	ports, err := services.LoadPorts(filepath.Join(dir, "ports.json"))
+	if err != nil {
+		t.Fatalf("LoadPorts: %v", err)
+	}
+	published := []services.Service{{Name: "web", Type: forwarder.TypeWebUI, Socket: sock}}
+	var log strings.Builder
+	srv := services.NewServer(func() ([]services.Service, error) { return published, nil }, ports, &log)
+	if err := srv.Sync(); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	port := srv.Serving()[0].Port
+
+	// The publisher stops answering, but its descriptor and socket are still
+	// there: the scan still reports the service.
+	_ = ln.Close()
+	if err := srv.Sync(); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	serving := srv.Serving()
+	if len(serving) != 1 || serving[0].Port != port {
+		t.Fatalf("Serving = %+v, want the same port %d kept", serving, port)
+	}
+	if !serving[0].Down {
+		t.Error("the service is reported up while nothing answers behind it")
+	}
+	if strings.Contains(log.String(), "gone") {
+		t.Errorf("a service that only stopped answering was reported gone: %q", log.String())
+	}
+	if !strings.Contains(renderIndex(t, srv), "down") {
+		t.Error("the index does not say the service is down")
+	}
+
+	// Unpublished — no descriptor, no socket — and the listener goes.
+	published = nil
+	if err := srv.Sync(); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if got := srv.Serving(); len(got) != 0 {
+		t.Errorf("Serving = %+v after the service was unpublished, want none", got)
+	}
+}

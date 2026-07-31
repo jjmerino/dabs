@@ -5,7 +5,9 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -39,7 +41,7 @@ func TestPublishBridgesSocketToLocalPort(t *testing.T) {
 	}()
 	port := svc.Addr().(*net.TCPAddr).Port
 	fail := make(chan error, 1)
-	go func() { fail <- forwarder.Publish(dir, "web", forwarder.TypeWebUI, port) }()
+	go func() { fail <- forwarder.Publish(dir, "web", forwarder.TypeWebUI, port, false) }()
 
 	sock := filepath.Join(dir, forwarder.SocketName("web"))
 	conn := dialWhenReady(t, sock, fail)
@@ -83,7 +85,9 @@ func TestPublishReplacesAStaleSocket(t *testing.T) {
 	}
 	defer svc.Close()
 	fail := make(chan error, 1)
-	go func() { fail <- forwarder.Publish(dir, "api", forwarder.TypeGeneral, svc.Addr().(*net.TCPAddr).Port) }()
+	go func() {
+		fail <- forwarder.Publish(dir, "api", forwarder.TypeGeneral, svc.Addr().(*net.TCPAddr).Port, false)
+	}()
 	dialWhenReady(t, sock, fail).Close()
 }
 
@@ -146,7 +150,7 @@ func TestPublishRefusesNamesOutsideTheAllowlist(t *testing.T) {
 		// Publish must apply the same rule. It serves for ever once it accepts,
 		// so a refusal is what has to come back — and quickly.
 		refused := make(chan error, 1)
-		go func(name string) { refused <- forwarder.Publish(dir, name, forwarder.TypeWebUI, 8080) }(name)
+		go func(name string) { refused <- forwarder.Publish(dir, name, forwarder.TypeWebUI, 8080, false) }(name)
 		select {
 		case err := <-refused:
 			if err == nil {
@@ -164,7 +168,121 @@ func TestPublishRefusesNamesOutsideTheAllowlist(t *testing.T) {
 }
 
 func TestPublishRefusesUnknownTypes(t *testing.T) {
-	if err := forwarder.Publish(shortTempDir(t), "web", "dashboard", 8080); err == nil {
+	if err := forwarder.Publish(shortTempDir(t), "web", "dashboard", 8080, false); err == nil {
 		t.Error("Publish with an unknown type = nil, wanted a refusal")
 	}
+}
+
+// CONTRACT: the outward door is OFF unless it was asked for. A box that shares
+// the host's network namespace would otherwise have this listener standing on
+// the host's own interfaces — an unauthenticated way into the box's service
+// from anything that can reach the host.
+func TestPublishOpensNoNetworkListenerUnlessAsked(t *testing.T) {
+	dir := shortTempDir(t)
+	svc, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer svc.Close()
+	before := listeningPorts(t)
+	fail := make(chan error, 1)
+	go func() {
+		fail <- forwarder.Publish(dir, "web", forwarder.TypeWebUI, svc.Addr().(*net.TCPAddr).Port, false)
+	}()
+	dialWhenReady(t, filepath.Join(dir, forwarder.SocketName("web")), fail).Close()
+
+	var d forwarder.Descriptor
+	b, err := os.ReadFile(filepath.Join(dir, forwarder.DescriptorName("web")))
+	if err != nil {
+		t.Fatalf("descriptor: %v", err)
+	}
+	if err := json.Unmarshal(b, &d); err != nil {
+		t.Fatalf("descriptor: %v", err)
+	}
+	if d.Bridge != 0 {
+		t.Errorf("descriptor carries bridge %d; nothing asked for one", d.Bridge)
+	}
+	if strings.Contains(string(b), "bridge") {
+		t.Errorf("descriptor names a bridge it does not have: %s", b)
+	}
+	for addr := range listeningPorts(t) {
+		if !before[addr] {
+			t.Errorf("a listener appeared at %s; publish opened a door nobody asked for", addr)
+		}
+	}
+}
+
+// CONTRACT: asked for, the door is open and the descriptor says where.
+func TestPublishOpensTheNetworkListenerWhenAsked(t *testing.T) {
+	dir := shortTempDir(t)
+	svc, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer svc.Close()
+	go func() {
+		for {
+			c, err := svc.Accept()
+			if err != nil {
+				return
+			}
+			go func() { defer c.Close(); _, _ = c.Write([]byte("served")) }()
+		}
+	}()
+	fail := make(chan error, 1)
+	go func() {
+		fail <- forwarder.Publish(dir, "web", forwarder.TypeWebUI, svc.Addr().(*net.TCPAddr).Port, true)
+	}()
+	dialWhenReady(t, filepath.Join(dir, forwarder.SocketName("web")), fail).Close()
+	b, err := os.ReadFile(filepath.Join(dir, forwarder.DescriptorName("web")))
+	if err != nil {
+		t.Fatalf("descriptor: %v", err)
+	}
+	var d forwarder.Descriptor
+	if err := json.Unmarshal(b, &d); err != nil {
+		t.Fatalf("descriptor: %v", err)
+	}
+	if d.Bridge == 0 {
+		t.Fatalf("descriptor carries no bridge port: %s", b)
+	}
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(d.Bridge)), 2*time.Second)
+	if err != nil {
+		t.Fatalf("the bridge port does not answer: %v", err)
+	}
+	defer conn.Close()
+	got := make([]byte, len("served"))
+	if _, err := io.ReadFull(conn, got); err != nil || string(got) != "served" {
+		t.Errorf("through the bridge = %q, %v; want the service's answer", got, err)
+	}
+}
+
+// CONTRACT: dabs says in the environment whether the box needs the outward
+// door, and the flag's default follows it — the box cannot know by itself.
+func TestBridgeWantedReadsTheEnvironment(t *testing.T) {
+	for value, want := range map[string]bool{"1": true, "true": true, "": false, "0": false, "no": false} {
+		if got := forwarder.BridgeWanted(value); got != want {
+			t.Errorf("BridgeWanted(%q) = %v, want %v", value, got, want)
+		}
+	}
+}
+
+// listeningPorts is the set of TCP ports this machine is listening on.
+func listeningPorts(t *testing.T) map[string]bool {
+	t.Helper()
+	out, err := exec.Command("netstat", "-an", "-p", "tcp").Output()
+	if err != nil {
+		t.Skipf("cannot list listening ports here: %v", err)
+	}
+	ports := map[string]bool{}
+	for _, line := range strings.Split(string(out), "\n") {
+		if !strings.Contains(line, "LISTEN") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 4 {
+			continue
+		}
+		ports[fields[3]] = true
+	}
+	return ports
 }

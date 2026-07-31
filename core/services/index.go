@@ -25,7 +25,7 @@ var indexPage = template.Must(template.New("index").Parse(`<!doctype html>
 <ul>
 {{range .Served}}<li>
 {{if .IsWebUI}}<a href="{{.URL}}">{{.Name}}</a>{{else}}{{.Name}}{{end}}
-— {{.Addr}} — {{.Type}}{{if .Instance}} — {{.Instance}}{{end}}
+— {{.Addr}} — {{.Type}}{{if .Down}} — down{{end}}{{if .Instance}} — {{.Instance}}{{end}}
 </li>
 {{end}}{{range .Conflicts}}<li>
 {{.Name}} — conflict: also published by {{.Node}}, not served — {{.Type}}{{if .Instance}} — {{.Instance}}{{end}}

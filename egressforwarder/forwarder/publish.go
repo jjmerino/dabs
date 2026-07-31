@@ -10,6 +10,16 @@ import (
 	"regexp"
 )
 
+// BridgeEnv is the environment variable dabs sets in a box whose services the
+// host can only reach over the network. Its presence (a "1" or "true") is the
+// default for `forward publish --bridge`: the forwarder cannot know what kind
+// of box it is in, and the side that does — dabs, which chose the driver — says
+// so here.
+const BridgeEnv = "DABS_SERVICE_BRIDGE"
+
+// BridgeWanted reports whether the environment asks for the outward door.
+func BridgeWanted(value string) bool { return value == "1" || value == "true" }
+
 // ServicesDir is where a box publishes its services, in dabs's own box-path
 // namespace. The host binds a directory here, so the sockets and descriptors a
 // box writes are plain host files: the directory IS the registry, and there is
@@ -31,9 +41,10 @@ type Descriptor struct {
 	Type string `json:"type"`
 	Port int    `json:"port"`
 	// Bridge is the port the publisher listens on across ALL the box's
-	// interfaces. A box whose network namespace has a host-dialable address of
-	// its own is reached there; the service's own port stays loopback-private,
-	// so the publisher remains the only door into it.
+	// interfaces, and is absent unless that door was asked for. A box whose
+	// network namespace has a host-dialable address of its own is reached there;
+	// the service's own port stays loopback-private, so the publisher remains the
+	// only door into it.
 	Bridge int `json:"bridge,omitempty"`
 }
 
@@ -77,7 +88,12 @@ func CheckServiceType(typ string) error {
 // the descriptor into dir, listens on the unix socket beside it, and pipes each
 // accepted connection to 127.0.0.1:port inside the box. Running this IS the
 // registration; the socket dying with the process is the deregistration.
-func Publish(dir, name, typ string, port int) error {
+//
+// bridge additionally opens a listener across every interface of the box, for a
+// host that cannot dial the socket. It is off unless asked for: in a box that
+// shares the host's network namespace, that listener would stand on the host's
+// own interfaces, and the socket is the way in there anyway.
+func Publish(dir, name, typ string, port int, bridge bool) error {
 	if err := CheckServiceName(name); err != nil {
 		return err
 	}
@@ -101,15 +117,19 @@ func Publish(dir, name, typ string, port int) error {
 	// The second door: a socket is only dialable by a host that shares the box's
 	// kernel. Where it does not, the box's own network address is what the host
 	// has, and only a listener bound across every interface answers there.
-	bridge, err := net.Listen("tcp", "0.0.0.0:0")
-	if err != nil {
+	bridgePort := 0
+	if bridge {
+		out, err := net.Listen("tcp", "0.0.0.0:0")
+		if err != nil {
+			return err
+		}
+		defer out.Close()
+		bridgePort = out.Addr().(*net.TCPAddr).Port
+		go servePublished(out, port)
+	}
+	if err := writeDescriptor(dir, name, typ, port, bridgePort); err != nil {
 		return err
 	}
-	defer bridge.Close()
-	if err := writeDescriptor(dir, name, typ, port, bridge.Addr().(*net.TCPAddr).Port); err != nil {
-		return err
-	}
-	go servePublished(bridge, port)
 	servePublished(ln, port)
 	return nil
 }

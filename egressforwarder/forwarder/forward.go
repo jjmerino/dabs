@@ -13,7 +13,6 @@ package forwarder
 import (
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -144,33 +143,17 @@ func serve(ln net.Listener, sockPath string) {
 		if err != nil {
 			return
 		}
-		go pipe(conn.(*net.TCPConn), sockPath)
+		go pipe(conn, sockPath)
 	}
 }
 
-// pipe couples one TCP connection to one fresh unix connection. EOF on one
-// side half-closes the other, and the tunnel stays up until BOTH directions
-// finish — a client that shuts down its write side after the request still
-// receives the whole response.
-func pipe(conn *net.TCPConn, sockPath string) {
+// pipe couples one TCP connection to one fresh unix connection.
+func pipe(conn net.Conn, sockPath string) {
 	defer conn.Close()
 	sock, err := net.Dial("unix", sockPath)
 	if err != nil {
 		return
 	}
-	usock := sock.(*net.UnixConn)
-	defer usock.Close()
-	done := make(chan struct{}, 2)
-	go func() {
-		_, _ = io.Copy(usock, conn)
-		_ = usock.CloseWrite()
-		done <- struct{}{}
-	}()
-	go func() {
-		_, _ = io.Copy(conn, usock)
-		_ = conn.CloseWrite()
-		done <- struct{}{}
-	}()
-	<-done
-	<-done
+	defer sock.Close()
+	Couple(conn, sock)
 }

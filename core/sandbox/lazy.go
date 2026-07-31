@@ -151,6 +151,20 @@ func (l *lazy) Detach(instance string, cmd []string) error {
 	return fmt.Errorf("the %s driver cannot hold a detached command", l.kind)
 }
 
+// BoxAddress builds the driver and forwards the lookup. An inner driver whose
+// boxes have no address of their own reports none, which is not an error — the
+// caller reaches such a box by other means.
+func (l *lazy) BoxAddress(instance string) (string, error) {
+	d, err := l.get()
+	if err != nil {
+		return "", err
+	}
+	if a, ok := d.(BoxAddresser); ok {
+		return a.BoxAddress(instance)
+	}
+	return "", nil
+}
+
 // RemoveImage forwards to the inner driver's image store; with none there is
 // nothing to remove.
 func (l *lazy) RemoveImage(name string) error {

@@ -38,16 +38,17 @@ func TestFlagRowsSingleCharUsesOneDash(t *testing.T) {
 // fakeActions records every delegation so tests can assert the cli parsed
 // argv into the right action call with the right params.
 type fakeActions struct {
-	build   []params.Build
-	exec    []params.Exec
-	ls      []params.Ls
-	rm      []params.Rm
-	prune   []params.Prune
-	recipe  []params.Recipe
-	recipes []params.Recipes
-	cd      []params.Cd
-	info    []params.Info
-	err     error // returned from every action
+	build    []params.Build
+	exec     []params.Exec
+	ls       []params.Ls
+	rm       []params.Rm
+	prune    []params.Prune
+	recipe   []params.Recipe
+	recipes  []params.Recipes
+	cd       []params.Cd
+	info     []params.Info
+	services []params.Services
+	err      error // returned from every action
 }
 
 func (f *fakeActions) Build(p params.Build) error               { f.build = append(f.build, p); return f.err }
@@ -63,6 +64,10 @@ func (f *fakeActions) Prune(p params.Prune) error               { f.prune = appe
 func (f *fakeActions) ServersList(params.ServersList) error     { return f.err }
 func (f *fakeActions) ServersAdd(params.ServersAdd) error       { return f.err }
 func (f *fakeActions) ServersRemove(params.ServersRemove) error { return f.err }
+func (f *fakeActions) Services(p params.Services) error {
+	f.services = append(f.services, p)
+	return f.err
+}
 
 func TestRunDelegatesToActions(t *testing.T) {
 	tests := []struct {
@@ -450,5 +455,35 @@ func TestRecipesNameWithoutPrintRejected(t *testing.T) {
 	err := New(&fakeActions{}).Run([]string{"recipes", "sh"})
 	if _, ok := err.(BadArgsError); !ok {
 		t.Fatalf("recipes sh = %v, want BadArgsError", err)
+	}
+}
+
+// CONTRACT: `services` lists and `services serve` serves; anything else is a
+// usage error rather than a silently-ignored argument.
+func TestServicesParsesItsOneSubcommand(t *testing.T) {
+	for _, tc := range []struct {
+		args      []string
+		wantServe bool
+		wantErr   bool
+	}{
+		{args: nil},
+		{args: []string{"serve"}, wantServe: true},
+		{args: []string{"serve", "extra"}, wantErr: true},
+		{args: []string{"list"}, wantErr: true},
+	} {
+		f := &fakeActions{}
+		err := New(f).Run(append([]string{"services"}, tc.args...))
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("services %v = nil, want a usage error", tc.args)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("services %v: %v", tc.args, err)
+		}
+		if len(f.services) != 1 || f.services[0].Serve != tc.wantServe {
+			t.Errorf("services %v → %+v, want Serve=%v", tc.args, f.services, tc.wantServe)
+		}
 	}
 }

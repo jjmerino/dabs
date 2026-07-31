@@ -226,6 +226,55 @@ straight into the shared store (no push). It composes with `--no-command` and
 point a fresh agent (or a different recipe, e.g. review) at work another agent
 already started, without cutting a new branch.
 
+## Services — reaching a box's port from the host
+
+Every box is bound one extra directory whatever its recipe says: the box node's
+`tmp/services`, at `/run/dabs/services`. A program in the box publishes a
+box-local port under a name by running the in-box forwarder:
+
+```bash
+forward publish <name> --type webui|general --port <n>   # inside the box
+```
+
+That listens on `/run/dabs/services/<name>.sock` and writes `<name>.json` beside
+it — running it IS the registration, and the socket dying with the process is
+the deregistration. A name is `[a-z0-9._-]`, starting with a letter or digit, at
+most 64 bytes (it is a filename and a cell the host prints, and the box choosing
+it is the untrusted side); anything else is refused, and a name the host cannot
+print as written is not listed at all. On the host:
+
+```bash
+dabs services              # NAME TYPE BOX INSTANCE HOST STATE (up | down | conflict)
+dabs services serve        # forward each one from a stable 127.0.0.1 port; index on 127.0.0.1:28080
+```
+
+**Where a service is reachable.** The host dials the box's socket through that
+bound directory when it can; where it cannot, it dials the box's own network
+address on the port the publisher opened across the box's interfaces (a
+`bridge` field in the descriptor). That gives:
+
+- **bwrap (Linux)** — the socket dials; reachable.
+- **apple** — the socket does not dial across the micro-VM, but the box has a
+  vmnet address of its own; reachable. A box with `egress: none` or `proxy`
+  runs with no network and so has no address — it stays **down**, honestly.
+- **docker** — neither door yet; a published service reads **down**.
+
+`dabs services` reports whichever door is live, and forwards over it. The
+outward door is opened only where it is the way in — dabs sets
+`DABS_SERVICE_BRIDGE` in those boxes and `forward publish --bridge` follows
+it — so a box sharing the host's network namespace never opens one.
+
+**That door is not access control.** Isolation is filesystem and process, NOT
+network: on apple, the bridge port answers anything that can reach the box's
+vmnet address, not just this host's `dabs services serve`. Publish nothing from
+a box that you would not put on the local network.
+
+A name keeps its port (42000–42999, persisted in `~/.dabs/service-ports.json`),
+so n worktrees of one web project each get their own address and never fight
+over a host port. `webui` only makes the index render a link; routing is raw TCP
+either way, so websockets work. One name is one port: a second box claiming a
+live name is reported as a conflict and is not served — name them per worktree.
+
 ## Notes
 
 - Tell the in-box agent the shape of its world: a fresh machine, no host

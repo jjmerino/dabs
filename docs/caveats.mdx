@@ -6,19 +6,26 @@ description: "The sharp edges, honestly listed — read this before handing dabs
 Everything here was hit for real while producing this manual. Each caveat says
 what happens, why, and what to do about it.
 
-## A box has open network BY DEFAULT
+## A box has open OUTBOUND network BY DEFAULT
 
-Isolation is filesystem and process; the network is opt-in confinement. A recipe
-that says nothing about `egress` gets full outbound access — so an unconfined
-box can phone home, and code you do not trust must not be run in one on the
-strength of the filesystem boundary alone.
+A box gets a network namespace of its own, but a recipe that says nothing about
+`egress` gets full outbound access through it — so an unconfined box can phone
+home, and code you do not trust must not be run in one on the strength of the
+filesystem boundary alone. What the namespace does give you is separation from
+your host: the box cannot reach a service on your host's loopback, and a port it
+binds is its own.
 
-Confine it in the recipe: `egress: none` (no network at all), or an `egress:`
-mapping with `allow`/`deny` (a CONNECT gate for every protocol) and an optional
-`http_proxy` content chain. See [Egress](/guides/egress). Proxy egress needs
-`bun` and `openssl` on the host PATH and a forwarder binary — embedded in the
-CLI, supplied by a program embedding dabs as a module
-([recipe schema](/reference/recipe-schema)); `open` and `none` need neither.
+Confine the outbound side in the recipe: `egress: none` (no network at all), or
+an `egress:` mapping with `allow`/`deny` (a CONNECT gate for every protocol) and
+an optional `http_proxy` content chain. See [Egress](/guides/egress).
+
+Each mode has its own host dependencies. `egress: none` needs nothing. Proxy
+egress needs `bun` and `openssl` on the host PATH and a forwarder binary —
+embedded in the CLI, or supplied by a program embedding dabs as a module
+([recipe schema](/reference/recipe-schema)). On Linux (the bwrap driver)
+`egress: open` needs **pasta** — install the `passt` package — and dabs running
+as an unprivileged user; a boot that can have neither refuses and says so rather
+than handing the box your host's network.
 
 ## Boxes accumulate
 

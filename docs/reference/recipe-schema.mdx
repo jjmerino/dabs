@@ -102,6 +102,12 @@ with `actions.Real.WithForwarder(path)`, any binary speaking the forwarder
 protocol. An explicit supply wins over an embed. Without either, `open`/`none`
 still work and proxy egress fails clearly at boot.
 
+`egress: open` has a host dependency of its own on Linux (the bwrap driver): the
+box's network namespace is built by **pasta**, so the `passt` package must be
+installed and dabs must run as an unprivileged user. Without either, an
+open-egress boot fails clearly, naming the package. `egress: none` needs
+nothing.
+
 The linux drivers mount that binary into the box. The apple driver mounts no
 host binary — a host one cannot run in the linux micro-VM — so there the image
 carries the forwarder at `/run/dabs/forward` (the boot probes for it, and the

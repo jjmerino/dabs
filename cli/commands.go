@@ -26,6 +26,7 @@ var Commands = map[string]Command{
 	"rm":        {(*CLI).runRm},
 	"prune":     {(*CLI).runPrune},
 	"servers":   {(*CLI).runServers},
+	"services":  {(*CLI).runServices},
 }
 
 // cmdDoc is a command's human-facing help: Help is the one-line description
@@ -53,10 +54,11 @@ var commandDocs = map[string]cmdDoc{
 			"+  staged   *  unstaged   %  untracked\n" +
 			"⇡N ahead    ⇣N behind    (clean = branch name only)",
 	},
-	"info":    {Help: "show one node's full model: its kind and id, the place it marks, its three spaces (volume/held/tmp), and the recipe that provisioned it (from the snapshot taken at creation, else the current registry by name): info <node>", Args: "info <node>"},
-	"rm":      {Help: "stop a box and remove its node and what it holds (--keep keeps the record instead; --clean-worktrees sweeps every worktree with no unreviewed work; --inactive sweeps every inactive subtree): rm <node> [-y] [--keep] [--volume] [--multiple] [--dry] [--force] | rm --clean-worktrees [--force] [--dry] | rm --inactive [--dry]", Args: "rm <node> [-y] [--keep] [--volume] [--multiple] [--dry] [--force] | rm --clean-worktrees [--force] [--dry] | rm --inactive [--dry]"},
-	"prune":   {Help: "reclaim built box images (they rebuild on the next build); --dry lists what exists, --force removes even images a live box uses", Args: "prune [--dry] [--force]"},
-	"servers": {Help: "manage registered servers: servers [ls] | add <name> [host] | rm <name>", Args: "servers [ls | add <name> [host] | rm <name>]"},
+	"info":     {Help: "show one node's full model: its kind and id, the place it marks, its three spaces (volume/held/tmp), and the recipe that provisioned it (from the snapshot taken at creation, else the current registry by name): info <node>", Args: "info <node>"},
+	"rm":       {Help: "stop a box and remove its node and what it holds (--keep keeps the record instead; --clean-worktrees sweeps every worktree with no unreviewed work; --inactive sweeps every inactive subtree): rm <node> [-y] [--keep] [--volume] [--multiple] [--dry] [--force] | rm --clean-worktrees [--force] [--dry] | rm --inactive [--dry]", Args: "rm <node> [-y] [--keep] [--volume] [--multiple] [--dry] [--force] | rm --clean-worktrees [--force] [--dry] | rm --inactive [--dry]"},
+	"prune":    {Help: "reclaim built box images (they rebuild on the next build); --dry lists what exists, --force removes even images a live box uses", Args: "prune [--dry] [--force]"},
+	"services": {Help: "list the services the boxes publish — name, type, box, the host address `services serve` gives it, and whether it answers now. `services serve` forwards each one from a stable 127.0.0.1 port (a name keeps its port across boxes) and serves an index of them at 127.0.0.1:28080 until interrupted. A box publishes by running the in-box forwarder: `forward publish <name> --type webui|general --port <n>`", Args: "services [serve]"},
+	"servers":  {Help: "manage registered servers: servers [ls] | add <name> [host] | rm <name>", Args: "servers [ls | add <name> [host] | rm <name>]"},
 }
 
 func (c *CLI) runRecipe(args []string) error {
@@ -295,4 +297,12 @@ func (c *CLI) runServers(args []string) error {
 	default:
 		return BadArgsError{Cmd: "servers", Reason: "unknown subcommand " + sub + " (ls | add | rm)"}
 	}
+}
+
+func (c *CLI) runServices(args []string) error {
+	p, err := parseServices(args)
+	if err != nil {
+		return err
+	}
+	return c.actions.Services(p)
 }

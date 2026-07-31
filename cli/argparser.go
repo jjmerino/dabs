@@ -163,3 +163,20 @@ func parseLs(args []string) (params.Ls, error) {
 	}
 	return p, nil
 }
+
+// parseServices parses `dabs services [serve]`. Listing is the bare verb;
+// `serve` is the one subcommand, and it takes nothing else.
+func parseServices(args []string) (params.Services, error) {
+	var p params.Services
+	if wantsHelp(args) {
+		return p, HelpRequestedError{helpText("services", newFlagSet("services"))}
+	}
+	switch {
+	case len(args) == 0:
+	case len(args) == 1 && args[0] == "serve":
+		p.Serve = true
+	default:
+		return p, BadArgsError{Cmd: "services", Reason: "usage: services [serve]"}
+	}
+	return p, nil
+}

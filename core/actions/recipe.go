@@ -22,6 +22,7 @@ import (
 	"github.com/jjmerino/dabs/core/recipe"
 	"github.com/jjmerino/dabs/core/sandbox"
 	"github.com/jjmerino/dabs/core/tui"
+	"github.com/jjmerino/dabs/egressforwarder/forwarder"
 )
 
 // Recipe runs `dabs recipe [name] [cmd…]`. Three shapes:
@@ -653,6 +654,19 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID, tip string, rec re
 			mounts = append(mounts, sandbox.Mount{Host: rs.origin, Path: boxPath, RO: s.RO})
 		}
 	}
+	// Every box gets the services directory, whatever its recipe says: a program
+	// in the box publishes a named service by writing a socket there, and the host
+	// serves it from a stable loopback port. The directory is the box node's own
+	// tmp space, so a service cannot outlive the box that published it, and no
+	// recipe has to opt in.
+	svcDir, err := r.resolveServicesDir(boxID)
+	if err != nil {
+		return "", err
+	}
+	if err := r.data.MkdirAll(svcDir, 0o755); err != nil {
+		return "", fmt.Errorf("recipe %q: services dir %s: %w", recipeName, svcDir, err)
+	}
+	mounts = append(mounts, sandbox.Mount{Host: svcDir, Path: forwarder.ServicesDir})
 	// A non-empty proxies chain makes the engine's socket the box's only way out:
 	// start it, mount its CA, point the box's HTTP_PROXY at the in-box forwarder.
 	// The engine runs for the box's lifetime; its PID/dir are recorded on the box

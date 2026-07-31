@@ -165,6 +165,17 @@ type Info struct {
 	Node string // node id/name (or box instance), git-style prefixes accepted
 }
 
+// Services are the inputs to the services action: what the boxes publish. A
+// box publishes a service by running the in-box forwarder's publish mode, which
+// writes a socket into the services directory dabs binds into every box.
+//
+// Serve flips the action from listing to serving: it forwards every published
+// service from a stable loopback port and serves an index of them, until
+// interrupted.
+type Services struct {
+	Serve bool
+}
+
 // Actions is the contract every action provider satisfies: the real
 // implementations in core/actions, fakes in tests, RPC clients later.
 type Actions interface {
@@ -181,4 +192,5 @@ type Actions interface {
 	ServersList(ServersList) error
 	ServersAdd(ServersAdd) error
 	ServersRemove(ServersRemove) error
+	Services(Services) error
 }

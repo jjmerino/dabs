@@ -108,6 +108,10 @@ func TestEnterOpenEgressBindsPastaLifetimeToDabs(t *testing.T) {
 	if c.SysProcAttr.Setpgid {
 		t.Error("pasta must stay in the caller's process group, so a terminal signal reaches it too")
 	}
+	// The other half of the bond — that the command is started on a pinned OS
+	// thread, so the kernel's signal means "dabs is gone" and not "the scheduler
+	// moved on" — leaves no trace on the command to assert. It lives in Run and
+	// Exec (runOnLockedThread), and only a live kill of a real dabs shows it.
 }
 
 // The resolver the box is pointed at must be reachable from the box's OWN

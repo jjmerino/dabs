@@ -252,7 +252,11 @@ already started, without cutting a new branch.
   egress. On the bwrap driver `egress: open` is built by **pasta** (the `passt`
   package) and needs it installed and dabs running as an unprivileged user;
   without either, a boot refuses and says so rather than handing the box the
-  host's network.
+  host's network. pasta must be snapshot `2025_05_03` or newer, for the address
+  flags dabs passes: Debian trixie+ and Fedora 41+ package a new enough one,
+  Ubuntu's and Alpine's current packages refuse those flags, and there you build
+  from https://passt.top at the version `contrib/recipes/dabseption.Dockerfile`
+  pins.
 - The box only contains what the Dockerfile installed. Slim base images
   lack tools like `ps`; if a journey needs one, it belongs in the
   Dockerfile, not worked around.

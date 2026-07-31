@@ -25,7 +25,7 @@ embedded in the CLI, or supplied by a program embedding dabs as a module
 ([recipe schema](/reference/recipe-schema)). On Linux (the bwrap driver)
 `egress: open` needs **pasta** — install the `passt` package — and dabs running
 as an unprivileged user; a boot that can have neither refuses and says so rather
-than handing the box your host's network.
+than handing the box your host's network. pasta must be snapshot `2025_05_03` or newer, for the address flags dabs passes: Debian trixie+ and Fedora 41+ package a new enough one, Ubuntu's and Alpine's current packages refuse those flags, and there you build from [passt.top](https://passt.top) at the version `contrib/recipes/dabseption.Dockerfile` pins.
 
 ## Boxes accumulate
 

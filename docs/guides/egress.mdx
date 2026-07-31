@@ -16,10 +16,9 @@ As a scalar `egress` is `open` (the default) or `none`; as a map it routes
 
 <Info>Screens verified by `walkthroughs/test_egress.py`. The proxy engine runs on
 `bun` (host-side); `egress: none` needs nothing extra. On Linux (the bwrap
-driver) `egress: open` is built by **pasta** — install the `passt` package
-(`apt install passt`, `dnf install passt`, `apk add passt`) and run dabs as an
-unprivileged user; a boot that cannot have pasta refuses and says so instead of
-handing the box your host's network.</Info>
+driver) `egress: open` is built by **pasta** — install the `passt` package and
+run dabs as an unprivileged user; a boot that cannot have pasta refuses and says
+so instead of handing the box your host's network. pasta must be snapshot `2025_05_03` or newer, for the address flags dabs passes: Debian trixie+ and Fedora 41+ package a new enough one, Ubuntu's and Alpine's current packages refuse those flags, and there you build from [passt.top](https://passt.top) at the version `contrib/recipes/dabseption.Dockerfile` pins.</Info>
 
 ## Cut it off
 

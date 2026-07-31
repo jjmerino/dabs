@@ -35,8 +35,10 @@ func requirePasta() (string, error) {
 	}
 	path, err := exec.LookPath(pastaBin)
 	if err != nil {
-		return "", fmt.Errorf("bwrap: 'pasta' not found; egress: open gives a box its own network namespace and needs pasta (the passt project) to carry its traffic out; install the 'passt' package: " +
-			"apt install passt (Debian/Ubuntu) · dnf install passt (Fedora/RHEL) · apk add passt (Alpine) · pacman -S passt (Arch) · zypper install passt (openSUSE)")
+		return "", fmt.Errorf("bwrap: 'pasta' not found; egress: open gives a box its own network namespace and needs pasta (the passt project) to carry its traffic out. " +
+			"It must be snapshot 2025_05_03 or newer, for the address flags dabs passes. " +
+			"apt install passt (Debian trixie or newer) · dnf install passt (Fedora 41 or newer). " +
+			"Ubuntu's and Alpine's current packages are older and refuse those flags: build from https://passt.top instead, at the version contrib/recipes/dabseption.Dockerfile pins")
 	}
 	return path, nil
 }

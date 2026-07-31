@@ -105,7 +105,7 @@ still work and proxy egress fails clearly at boot.
 `egress: open` has a host dependency of its own on Linux (the bwrap driver): the
 box's network namespace is built by **pasta**, so the `passt` package must be
 installed and dabs must run as an unprivileged user. Without either, an
-open-egress boot fails clearly, naming the package. `egress: none` needs
+open-egress boot fails clearly, naming the package. pasta must be snapshot `2025_05_03` or newer, for the address flags dabs passes: Debian trixie+ and Fedora 41+ package a new enough one, Ubuntu's and Alpine's current packages refuse those flags, and there you build from [passt.top](https://passt.top) at the version `contrib/recipes/dabseption.Dockerfile` pins. `egress: none` needs
 nothing.
 
 The linux drivers mount that binary into the box. The apple driver mounts no

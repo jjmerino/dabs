@@ -78,7 +78,9 @@ func (r Real) scanServices() ([]services.Service, error) {
 			out = append(out, s)
 		}
 	}
-	return out, nil
+	// One name means one host port. Nodes are walked in id order, so which box
+	// owns a name is the same answer here and in the serving process.
+	return services.MarkConflicts(out), nil
 }
 
 // listServices prints one row per published service: what it is called, what
@@ -103,17 +105,24 @@ func (r Real) listServices() error {
 	}
 	rows := make([][]string, 0, len(found))
 	for _, s := range found {
-		addr := tui.Muted("unassigned")
-		if port, ok := ports.Port(s.Name); ok {
-			addr = fmt.Sprintf("127.0.0.1:%d", port)
+		// A name another box claimed first is not reachable at any address, so it
+		// gets none — two rows sharing one host port would be a lie about where
+		// the bytes go.
+		addr, state := tui.Muted("unassigned"), tui.Muted("down")
+		switch {
+		case s.Conflict:
+			addr, state = tui.Muted("-"), tui.Warn("conflict")
+		default:
+			if port, ok := ports.Port(s.Name); ok {
+				addr = fmt.Sprintf("127.0.0.1:%d", port)
+			}
+			if s.Up() {
+				state = tui.Success("up")
+			}
 		}
-		state := tui.Muted("down")
-		if s.Up() {
-			state = tui.Success("up")
-		}
-		rows = append(rows, []string{tui.Accent(s.Name), s.Type, s.Node, addr, state})
+		rows = append(rows, []string{tui.Accent(s.Name), s.Type, s.Node, s.Instance, addr, state})
 	}
-	fmt.Fprintln(os.Stdout, tui.Rows([]string{"NAME", "TYPE", "BOX", "HOST", "STATE"}, rows))
+	fmt.Fprintln(os.Stdout, tui.Rows([]string{"NAME", "TYPE", "BOX", "INSTANCE", "HOST", "STATE"}, rows))
 	fmt.Fprintln(os.Stdout, tui.Muted("serve them: dabs services serve"))
 	return nil
 }

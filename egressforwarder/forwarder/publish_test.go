@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -132,4 +133,59 @@ func shortTempDir(t *testing.T) string {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	return dir
+}
+
+// CONTRACT: a service exists exactly when its socket does. A descriptor that
+// cannot be written takes the socket file with it, so no host ever finds a
+// socket describing nothing.
+func TestPublishRemovesTheSocketWhenTheDescriptorCannotBeWritten(t *testing.T) {
+	dir := shortTempDir(t)
+	// A directory in the descriptor's place: the rename onto it fails, which is
+	// the failure every other cause reduces to.
+	if err := os.MkdirAll(filepath.Join(dir, forwarder.DescriptorName("web")), 0o755); err != nil {
+		t.Fatalf("blocker: %v", err)
+	}
+	svc, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer svc.Close()
+	if err := forwarder.Publish(dir, "web", forwarder.TypeWebUI, svc.Addr().(*net.TCPAddr).Port); err == nil {
+		t.Fatal("Publish = nil, want the descriptor failure")
+	}
+	if _, err := os.Stat(filepath.Join(dir, forwarder.SocketName("web"))); err == nil {
+		t.Error("the socket file was left behind by a publish that failed")
+	}
+}
+
+// CONTRACT: the descriptor appears whole. It is written by rename, so a host
+// scanning the directory never parses a truncated one — and the scratch file it
+// is renamed from is not mistaken for a descriptor.
+func TestDescriptorIsWrittenByRename(t *testing.T) {
+	dir := shortTempDir(t)
+	svc, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer svc.Close()
+	fail := make(chan error, 1)
+	go func() { fail <- forwarder.Publish(dir, "web", forwarder.TypeWebUI, svc.Addr().(*net.TCPAddr).Port) }()
+	dialWhenReady(t, filepath.Join(dir, forwarder.SocketName("web")), fail).Close()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read dir: %v", err)
+	}
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".json") && e.Name() != forwarder.DescriptorName("web") {
+			t.Errorf("scratch file %q left in the services dir", e.Name())
+		}
+	}
+	var d forwarder.Descriptor
+	b, err := os.ReadFile(filepath.Join(dir, forwarder.DescriptorName("web")))
+	if err != nil {
+		t.Fatalf("descriptor: %v", err)
+	}
+	if err := json.Unmarshal(b, &d); err != nil {
+		t.Fatalf("descriptor is not whole: %v", err)
+	}
 }

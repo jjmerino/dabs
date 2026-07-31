@@ -32,6 +32,26 @@ type Service struct {
 	Socket   string // host path of the unix socket the box listens on
 	Node     string // id of the node whose services directory holds it
 	Instance string // the driver's name for that node's box
+	// Conflict marks a service whose name another box claimed first. One name
+	// means one host port, so only the first claimant is reachable; the rest are
+	// reported (see MarkConflicts) rather than left silently unreachable behind a
+	// row that claims they share an address.
+	Conflict bool
+}
+
+// MarkConflicts flags every service whose name a box earlier in the list already
+// claimed. The order decides, and it is the caller's stable one (nodes by id),
+// so the listing and the server agree on which box owns a name without talking
+// to each other.
+func MarkConflicts(found []Service) []Service {
+	claimed := map[string]bool{}
+	out := make([]Service, 0, len(found))
+	for _, s := range found {
+		s.Conflict = claimed[s.Name]
+		claimed[s.Name] = true
+		out = append(out, s)
+	}
+	return out
 }
 
 // ScanDir returns the services published into one box's services directory. A

@@ -10,7 +10,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/jjmerino/dabs/core/services"
 	"github.com/jjmerino/dabs/egressforwarder/forwarder"
@@ -255,4 +257,189 @@ func renderIndex(t *testing.T, srv *services.Server) string {
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 	return rec.Body.String()
+}
+
+// serveBody runs an HTTP server answering body on sock, torn down at test end.
+func serveBody(t *testing.T, sock, body string) {
+	t.Helper()
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatalf("listen %s: %v", sock, err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go http.Serve(ln, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, body)
+	}))
+}
+
+// getBody fetches a URL on a connection of its own, so a pooled connection to a
+// socket that has since moved cannot answer for the new one.
+func getBody(t *testing.T, url string) string {
+	t.Helper()
+	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}, Timeout: 5 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		t.Fatalf("GET %s: %v", url, err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	return string(b)
+}
+
+// CONTRACT: a re-upped box publishes the same name from a NEW node directory,
+// and the port a human wrote down follows it there — the old socket is dead and
+// forwarding into it for ever would make the stable port worthless.
+func TestServiceThatMovesSocketKeepsItsPortAndReachesTheNewBox(t *testing.T) {
+	dir := shortTempDir(t)
+	oldSock, newSock := filepath.Join(dir, "a.sock"), filepath.Join(dir, "b.sock")
+	serveBody(t, oldSock, "old box")
+	serveBody(t, newSock, "new box")
+	ports, err := services.LoadPorts(filepath.Join(dir, "ports.json"))
+	if err != nil {
+		t.Fatalf("LoadPorts: %v", err)
+	}
+	sock := oldSock
+	src := func() ([]services.Service, error) {
+		return []services.Service{{Name: "web", Type: forwarder.TypeWebUI, Socket: sock}}, nil
+	}
+	srv := services.NewServer(src, ports, io.Discard)
+	if err := srv.Sync(); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	url := srv.Serving()[0].URL()
+	if got := getBody(t, url); got != "old box" {
+		t.Fatalf("before the move = %q, want %q", got, "old box")
+	}
+	sock = newSock
+	if err := srv.Sync(); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if got := srv.Serving()[0].URL(); got != url {
+		t.Errorf("the port moved with the box: %s, want the same %s", got, url)
+	}
+	if got := getBody(t, url); got != "new box" {
+		t.Errorf("after the move = %q, want %q — the port still forwards into the dead socket", got, "new box")
+	}
+}
+
+// CONTRACT: one name is one host port. A second box claiming a name is REPORTED,
+// and never presented as sharing the first one's address.
+func TestASecondBoxClaimingANameIsReportedAndNotServed(t *testing.T) {
+	dir := shortTempDir(t)
+	first, second := filepath.Join(dir, "a.sock"), filepath.Join(dir, "b.sock")
+	serveBody(t, first, "first box")
+	serveBody(t, second, "second box")
+	marked := services.MarkConflicts([]services.Service{
+		{Name: "web", Node: "box-a", Socket: first},
+		{Name: "web", Node: "box-b", Socket: second},
+	})
+	if marked[0].Conflict || !marked[1].Conflict {
+		t.Fatalf("MarkConflicts = %+v, want only the second flagged", marked)
+	}
+	ports, err := services.LoadPorts(filepath.Join(dir, "ports.json"))
+	if err != nil {
+		t.Fatalf("LoadPorts: %v", err)
+	}
+	var log strings.Builder
+	srv := services.NewServer(func() ([]services.Service, error) { return marked, nil }, ports, &log)
+	if err := srv.Sync(); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	serving := srv.Serving()
+	if len(serving) != 1 || serving[0].Node != "box-a" {
+		t.Fatalf("Serving = %+v, want only the first claimant", serving)
+	}
+	if got := getBody(t, serving[0].URL()); got != "first box" {
+		t.Errorf("served body = %q, want the first claimant's", got)
+	}
+	if !strings.Contains(log.String(), "also published by box-b") {
+		t.Errorf("the collision was not reported: %q", log.String())
+	}
+	// Reported once, not once per scan.
+	before := strings.Count(log.String(), "also published by")
+	if err := srv.Sync(); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if after := strings.Count(log.String(), "also published by"); after != before {
+		t.Errorf("the collision was reported again on the next scan (%d → %d)", before, after)
+	}
+}
+
+// CONTRACT: an assignment that can no longer be bound — something else took the
+// port while nothing was serving — is MOVED and persisted, not retried for ever.
+func TestAnUnbindableAssignmentIsMovedAndPersisted(t *testing.T) {
+	dir := shortTempDir(t)
+	path := filepath.Join(dir, "ports.json")
+	ports, err := services.LoadPorts(path)
+	if err != nil {
+		t.Fatalf("LoadPorts: %v", err)
+	}
+	assigned, err := ports.Assign("web", services.FreeOnLoopback)
+	if err != nil {
+		t.Fatalf("Assign: %v", err)
+	}
+	squatter, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(assigned))
+	if err != nil {
+		t.Fatalf("squat on %d: %v", assigned, err)
+	}
+	defer squatter.Close()
+
+	sock := filepath.Join(dir, "a.sock")
+	serveBody(t, sock, "in the box")
+	src := func() ([]services.Service, error) {
+		return []services.Service{{Name: "web", Type: forwarder.TypeWebUI, Socket: sock}}, nil
+	}
+	srv := services.NewServer(src, ports, io.Discard)
+	if err := srv.Sync(); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	serving := srv.Serving()
+	if len(serving) != 1 {
+		t.Fatalf("Serving = %+v, want the service moved to a free port", serving)
+	}
+	if serving[0].Port == assigned {
+		t.Fatalf("still on the taken port %d", assigned)
+	}
+	if got := getBody(t, serving[0].URL()); got != "in the box" {
+		t.Errorf("moved port = %q, want the service", got)
+	}
+	reloaded, err := services.LoadPorts(path)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if got, _ := reloaded.Port("web"); got != serving[0].Port {
+		t.Errorf("persisted port = %d, want the new one %d", got, serving[0].Port)
+	}
+}
+
+// CONTRACT: the store survives being written and read at once — one dabs
+// process serves while another lists, and a torn file would fail the reader.
+func TestPortsStoreSurvivesConcurrentWritersAndReaders(t *testing.T) {
+	path := filepath.Join(shortTempDir(t), "ports.json")
+	ports, err := services.LoadPorts(path)
+	if err != nil {
+		t.Fatalf("LoadPorts: %v", err)
+	}
+	var wg sync.WaitGroup
+	errs := make(chan error, 64)
+	for i := 0; i < 16; i++ {
+		wg.Add(2)
+		go func(i int) {
+			defer wg.Done()
+			if _, err := ports.Assign("svc"+strconv.Itoa(i), func(int) bool { return true }); err != nil {
+				errs <- err
+			}
+		}(i)
+		go func() {
+			defer wg.Done()
+			if _, err := services.LoadPorts(path); err != nil {
+				errs <- err
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("concurrent store use: %v", err)
+	}
 }

@@ -46,7 +46,7 @@ func CheckServiceName(name string) error {
 		return fmt.Errorf("service name is empty")
 	case name == "." || name == "..":
 		return fmt.Errorf("service name %q is a directory shorthand", name)
-	case strings.ContainsAny(name, "/\\") || strings.ContainsRune(name, os.PathSeparator):
+	case strings.ContainsAny(name, "/\\"):
 		return fmt.Errorf("service name %q contains a path separator", name)
 	}
 	return nil
@@ -83,15 +83,44 @@ func Publish(dir, name, typ string, port int) error {
 		return err
 	}
 	defer ln.Close()
-	b, err := json.Marshal(Descriptor{Type: typ, Port: port})
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(filepath.Join(dir, DescriptorName(name)), append(b, '\n'), 0o644); err != nil {
+	// The socket is what makes the service exist, so a descriptor that cannot be
+	// written takes the socket back down with it — otherwise the box would be
+	// listening on a service nothing can describe.
+	if err := writeDescriptor(dir, name, typ, port); err != nil {
+		ln.Close()
+		_ = os.Remove(sock)
 		return err
 	}
 	servePublished(ln, port)
 	return nil
+}
+
+// writeDescriptor writes the service's descriptor by rename, so a host scanning
+// the directory reads either the whole file or no file — never the truncated
+// middle of one.
+func writeDescriptor(dir, name, typ string, port int) error {
+	b, err := json.Marshal(Descriptor{Type: typ, Port: port})
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, "."+name+"-*")
+	if err != nil {
+		return err
+	}
+	if _, err := tmp.Write(append(b, '\n')); err != nil {
+		tmp.Close()
+		_ = os.Remove(tmp.Name())
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmp.Name())
+		return err
+	}
+	if err := os.Chmod(tmp.Name(), 0o644); err != nil {
+		_ = os.Remove(tmp.Name())
+		return err
+	}
+	return os.Rename(tmp.Name(), filepath.Join(dir, DescriptorName(name)))
 }
 
 // servePublished accepts connections until the listener fails, giving each one

@@ -298,6 +298,31 @@ Recipe flag: keep the box alive after the command finishes (default: delete it).
 A kept box is yours to reap with `dabs rm`.
 *Where:* `recipe.Recipe.Keep`.
 
+### egress
+Recipe field: what a box's OWN network namespace may reach. `open` (the default)
+reaches outward wherever the host can, and nowhere of the host's own — the host's
+loopback services are out of reach, and a port the box binds belongs to that box,
+so boxes do not collide with each other or with the host over `:3000`. `none`
+leaves the namespace bare — loopback and nothing else. A MAP (`allow`/`deny`/
+`http_proxy`) is proxy egress: the namespace is bare too, and the box's one way
+out is the host proxy's unix socket, which crosses the namespace because it is
+filesystem, not network. A driver that cannot enforce a mode says so and the boot
+refuses — a mode is never quietly downgraded.
+*Where:* `recipe.Egress`, `sandbox.EgressEnforcer`, `core/proxy.Provision`.
+
+### pasta
+The `passt` project's namespace tool, and how the **bwrap** driver builds
+`egress: open`: it makes the box's network namespace and carries its traffic out
+as userspace socket translation, needing no privilege. It runs as the PARENT of
+the `bwrap` that enters the box, so it lives exactly as long as the entered
+command — the same lifetime everything else in a bwrap box has. It is a host
+dependency dabs detects, never vendors: no `pasta` on PATH, or dabs running as
+root (pasta drops its capabilities before mapping the namespace it built), and
+the boot REFUSES, naming the package and what installs it. The box's
+`/etc/resolv.conf` names pasta's own resolver address, since a host resolver on
+loopback is not the box's loopback.
+*Where:* `core/sandbox/bwrap/pasta.go`, `requirePasta`, `pastaArgs`.
+
 ### target / server / driver
 **target** is the named driver configuration a recipe uses to bring up a box — `""`
 (local) or a named server/driver kind. A driver can expose multiple named targets,

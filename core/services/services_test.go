@@ -444,33 +444,52 @@ func TestPortsStoreSurvivesConcurrentWritersAndReaders(t *testing.T) {
 	}
 }
 
-// CONTRACT: the box writes its own descriptor and its own filenames, so what
-// the host prints is reduced to printable characters — a name carrying a
-// newline would otherwise forge a row in the listing, whatever the forwarder
-// allows.
-func TestScanDirStripsUnprintablesFromWhatTheHostPrints(t *testing.T) {
+// CONTRACT: a box writes its own filenames, so the host takes as a service name
+// only what it can print AS WRITTEN. A name it would have to shorten or rewrite
+// is dropped, not folded — folding a long name onto a neighbour's is how a
+// hostile box would take the neighbour's name, and its port, from it.
+func TestScanDirDropsNamesTheHostCannotPrintAsWritten(t *testing.T) {
 	dir := shortTempDir(t)
 	forged := "web\n  evil  general  127.0.0.1:1  up"
-	writeDescriptor(t, dir, forged, "webui\x1b[31m", 5173, true)
+	long := strings.Repeat("w", forwarder.MaxServiceNameLen+1)
+	writeDescriptor(t, dir, forged, forwarder.TypeWebUI, 5173, true)
+	writeDescriptor(t, dir, long, forwarder.TypeWebUI, 5173, false)
+	// A plain file stands in for the long name's socket: ScanDir only asks
+	// whether one is there, and a path that long cannot be bound.
+	if err := os.WriteFile(filepath.Join(dir, forwarder.SocketName(long)), nil, 0o644); err != nil {
+		t.Fatalf("long socket: %v", err)
+	}
+	writeDescriptor(t, dir, "web", "webui\x1b[31m", 5173, true)
 	found, err := services.ScanDir(dir)
 	if err != nil {
 		t.Fatalf("ScanDir: %v", err)
 	}
-	if len(found) != 1 {
-		t.Fatalf("ScanDir = %+v, want one service", found)
+	if len(found) != 1 || found[0].Name != "web" {
+		t.Fatalf("ScanDir = %+v, want only the plain name", found)
 	}
-	if strings.ContainsAny(found[0].Name, "\n\r\x1b") {
-		t.Errorf("Name = %q, still carries control characters", found[0].Name)
-	}
+	// The descriptor's fields key nothing, so they are printed, stripped.
 	if strings.ContainsAny(found[0].Type, "\n\r\x1b") {
 		t.Errorf("Type = %q, still carries control characters", found[0].Type)
 	}
-	// The socket keeps the raw name — it is a real path and has to be dialable.
-	if !strings.Contains(found[0].Socket, forged) {
-		t.Errorf("Socket = %q, want the raw filename", found[0].Socket)
-	}
 	if len([]rune(services.Printable(strings.Repeat("w", 200)))) != services.MaxCellLen {
 		t.Errorf("Printable does not cap at %d", services.MaxCellLen)
+	}
+}
+
+// CONTRACT: a usable name keeps its exact bytes — the socket is dialed by that
+// path, and the port is assigned to that key.
+func TestScanDirKeepsAUsableNameExactly(t *testing.T) {
+	dir := shortTempDir(t)
+	writeDescriptor(t, dir, "web-ui_2.0", forwarder.TypeGeneral, 9000, true)
+	found, err := services.ScanDir(dir)
+	if err != nil {
+		t.Fatalf("ScanDir: %v", err)
+	}
+	if len(found) != 1 || found[0].Name != "web-ui_2.0" {
+		t.Fatalf("ScanDir = %+v, want the name as written", found)
+	}
+	if !strings.HasSuffix(found[0].Socket, "/web-ui_2.0.sock") {
+		t.Errorf("Socket = %q, want the name's own socket", found[0].Socket)
 	}
 }
 

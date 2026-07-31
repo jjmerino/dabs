@@ -59,7 +59,7 @@ func MarkConflicts(found []Service) []Service {
 const MaxCellLen = 64
 
 // Printable is a box-written string reduced to what is safe to print: the box
-// is the untrusted side, and a name carrying newlines or escape sequences would
+// is the untrusted side, and a value carrying newlines or escape sequences would
 // otherwise forge rows in the host's listing. Anything unprintable becomes a
 // question mark, and the result is capped.
 func Printable(s string) string {
@@ -76,9 +76,20 @@ func Printable(s string) string {
 	return b.String()
 }
 
+// nameIsUsable reports whether a filename may be taken as a service name. The
+// name is the key everything else hangs off — the port assignment, and which
+// box owns it — so a name that would have to be shortened or rewritten to be
+// printed is REFUSED rather than folded: a hostile box writing a long filename
+// directly would otherwise land on a neighbour's printed name and take its
+// ownership.
+func nameIsUsable(name string) bool {
+	return name != "" && len(name) <= forwarder.MaxServiceNameLen && Printable(name) == name
+}
+
 // ScanDir returns the services published into one box's services directory. A
 // descriptor without its socket is a service whose publisher died; it is not
-// reported, because nothing can be dialed. An absent directory holds no
+// reported, because nothing can be dialed. A name the host cannot print as
+// written is not reported either — see nameIsUsable. An absent directory holds no
 // services and is not an error — most boxes publish nothing.
 func ScanDir(dir string) ([]Service, error) {
 	entries, err := os.ReadDir(dir)
@@ -106,9 +117,12 @@ func ScanDir(dir string) ([]Service, error) {
 		if _, err := os.Stat(sock); err != nil {
 			continue
 		}
-		// The socket keeps the raw filename — it has to be dialable — while what
-		// the host PRINTS is reduced to printable characters.
-		out = append(out, Service{Name: Printable(name), Type: Printable(d.Type), BoxPort: d.Port, Socket: sock})
+		if !nameIsUsable(name) {
+			continue
+		}
+		// The descriptor's own fields are box-written too, and unlike the name they
+		// key nothing — printable is enough.
+		out = append(out, Service{Name: name, Type: Printable(d.Type), BoxPort: d.Port, Socket: sock})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil

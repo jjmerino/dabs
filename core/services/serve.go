@@ -231,7 +231,14 @@ func (s *Server) Conflicts() []Service {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := append([]Service{}, s.conflicted...)
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	// Name then node: two boxes shut out of one name must not swap places
+	// between refreshes of the index.
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+		return out[i].Node < out[j].Node
+	})
 	return out
 }
 

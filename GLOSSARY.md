@@ -265,14 +265,17 @@ A box-local port a box publishes under a NAME, so the host can reach a program
 that only ever bound the box's own loopback. A box publishes by running the
 in-box forwarder — `forward publish <name> --type webui|general --port <n>` —
 which listens on `/run/dabs/services/<name>.sock` and writes `<name>.json`
-beside it. That directory is the whole registry: it is the box node's `tmp`
-space, bound into EVERY box, so a service dies with the box that published it
-and nothing has to be deregistered. The type decides only how the index renders
-the service (a **webui** is a link), never how bytes are routed. One name is one
-host port: a second box claiming a live name is reported as a **conflict** and
-is not served. The host dials the box's socket through the bound directory, so
-host and box must share a kernel — on the Linux (bwrap) driver they do; on the
-macOS drivers the box's filesystem crosses a VM boundary and the socket, though
+beside it. A name is `[a-z0-9._-]`, starting with a letter or digit, at
+most 64 bytes: it is a filename AND a cell the host prints, and the box
+choosing it is the untrusted side. That directory is the whole registry —
+the box node's `tmp` space, bound into EVERY box, so a service dies with
+the box that published it and nothing has to be deregistered. The type
+decides only how the index renders the service (a **webui** is a link),
+never how bytes are routed. One name is one host port: a second box
+claiming a live name is reported as a **conflict** and is not served. The
+host dials the box's socket through the bound directory, so host and box
+must share a kernel — on the Linux (bwrap) driver they do; on the macOS
+drivers the box's filesystem crosses a VM boundary and the socket, though
 visible, does not accept, so the service lists as **down**.
 *Where:* `core/services`, `forwarder.Publish`, `forwarder.ServicesDir`.
 
@@ -280,10 +283,10 @@ visible, does not accept, so the service lists as **down**.
 List what the boxes publish, one row each: NAME, TYPE, the BOX node and its
 INSTANCE, the HOST address, and STATE — `up` when the socket answers, `down`
 when it does not, `conflict` when another box owns the name (then the row
-carries no address, because nothing reaches that service). `services serve` forwards each service from its stable
-127.0.0.1 port (42000–42999, persisted per name in `~/.dabs/service-ports.json`,
-so a URL survives a re-up) and serves an index of them at `127.0.0.1:28080`
-until interrupted.
+carries no address, because nothing reaches that service). `services serve`
+forwards each service from its stable 127.0.0.1 port (42000–42999, persisted
+per name in `~/.dabs/service-ports.json`, so a URL survives a re-up) and serves
+an index of them at `127.0.0.1:28080` until interrupted.
 *Where:* `Services`, `services.Server`, `services.Ports`.
 
 ### servers

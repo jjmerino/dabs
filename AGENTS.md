@@ -238,7 +238,10 @@ forward publish <name> --type webui|general --port <n>   # inside the box
 
 That listens on `/run/dabs/services/<name>.sock` and writes `<name>.json` beside
 it — running it IS the registration, and the socket dying with the process is
-the deregistration. On the host:
+the deregistration. A name is `[a-z0-9._-]`, starting with a letter or digit, at
+most 64 bytes (it is a filename and a cell the host prints, and the box choosing
+it is the untrusted side); anything else is refused, and a name the host cannot
+print as written is not listed at all. On the host:
 
 ```bash
 dabs services              # NAME TYPE BOX INSTANCE HOST STATE (up | down | conflict)

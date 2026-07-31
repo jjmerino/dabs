@@ -33,9 +33,9 @@ RUN curl -fsSL https://github.com/containers/bubblewrap/releases/download/v0.11.
 
 # pasta, from the passt project: what a nested box with open egress gets its
 # network namespace and its outbound connectivity from. Built from source for
-# the same reason bubblewrap is — the distro package is older than the flags
-# dabs passes (--dns-forward, --no-map-gw, per-protocol port forwarding off).
-ARG PASST_VERSION=2025_02_17.a1e48a0
+# the same reason bubblewrap is — the distro package is older than the address
+# flags dabs passes, and rejects `--map-guest-addr none` outright.
+ARG PASST_VERSION=2025_06_11.0293c6f
 RUN curl -fsSL "https://passt.top/passt/snapshot/passt-${PASST_VERSION}.tar.gz" -o /tmp/passt.tar.gz \
     && cd /tmp && tar xf passt.tar.gz && cd "passt-${PASST_VERSION}" \
     && make && make install prefix=/usr/local \

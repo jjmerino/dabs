@@ -67,7 +67,8 @@ RUN printf '%s' '{"env":["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
 RUN cp -a /tmp/boxer/.dabs/images /tmp/boxer/.dabs-staged-images \
  && chown -R boxer:boxer /tmp/boxer
 
-# The suite compiles itself in the box, and the box has no network: boxer builds
-# from root's module cache, which is read-only to it.
+# The suite compiles itself in the box, and the box has no network to fetch a
+# module from: boxer builds from root's module cache, which the go command
+# leaves world-readable and writes to only when a module is missing.
+# -mod=mod keeps the build from trying to rewrite go.mod, which boxer cannot do.
 ENV GOFLAGS=-mod=mod
-RUN chmod -R a+rX /go/pkg/mod 2>/dev/null || true

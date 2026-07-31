@@ -27,8 +27,9 @@ go build -o "$DABS" .
 # The egress: none box runs the whole suite; nothing reaches the internet.
 box="$("$DABS" recipe test/e2e/box --no-command | awk '/^id:/{print $2; exit}')"
 trap '"$DABS" rm "$box" --yes >/dev/null 2>&1 || true' EXIT
-# The suite writes fixtures into /work, so the checkout it is pointed at belongs
-# to the user that runs it — which is why run_e2e wants a throwaway copy.
+# The suite writes fixtures into /work, so /work must belong to the user running
+# it. The box carries its OWN copy of the tree there (the recipe mounts nothing;
+# the image COPYs it in), so this reaches no file on the host.
 "$DABS" exec "$box" -- chown -R boxer:boxer /work
 
 # As `boxer`, not root: an inner box with the default egress: open gets its

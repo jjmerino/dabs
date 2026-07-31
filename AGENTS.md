@@ -261,8 +261,8 @@ address on the port the publisher opened across the box's interfaces (a
 
 `dabs services` reports whichever door is live, and forwards over it. The
 outward door is opened only where it is the way in — dabs sets
-`DABS_SERVICE_BRIDGE` in those boxes and `forward publish --bridge` follows it —
-so a box sharing the host's network namespace never opens one.
+`DABS_SERVICE_BRIDGE` in those boxes and `forward publish --bridge` follows
+it — so a box sharing the host's network namespace never opens one.
 
 **That door is not access control.** Isolation is filesystem and process, NOT
 network: on apple, the bridge port answers anything that can reach the box's

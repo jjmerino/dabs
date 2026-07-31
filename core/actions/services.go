@@ -31,6 +31,20 @@ const portsFileName = "service-ports.json"
 // stand on the host's own NICs.
 var networkDoorKinds = map[string]bool{"apple": true}
 
+// NetworkDoorKinds names those kinds. It is exported so the composition root —
+// the one place that builds real drivers — can pin this list against the
+// drivers that actually implement sandbox.BoxAddresser, in both directions: a
+// kind here without the capability opens a listener nothing uses, and a driver
+// with the capability missing from here has its services read down for ever.
+func NetworkDoorKinds() []string {
+	out := make([]string, 0, len(networkDoorKinds))
+	for kind := range networkDoorKinds {
+		out = append(out, kind)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // boxNeedsNetworkDoor reports whether a service published in a box of this kind
 // should open a listener on the box's network. The DRIVER KIND is the form of
 // the question that can be answered before the box exists, which is when the

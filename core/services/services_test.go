@@ -701,8 +701,13 @@ func TestAServiceThatStopsAnsweringKeepsItsPort(t *testing.T) {
 	if strings.Contains(log.String(), "gone") {
 		t.Errorf("a service that only stopped answering was reported gone: %q", log.String())
 	}
-	if !strings.Contains(renderIndex(t, srv), "down") {
+	page := renderIndex(t, srv)
+	if !strings.Contains(page, "down") {
 		t.Error("the index does not say the service is down")
+	}
+	// A link says the address leads somewhere. This one does not.
+	if strings.Contains(page, "<a href=") {
+		t.Errorf("the index links a service nothing answers behind:\n%s", page)
 	}
 
 	// Unpublished — no descriptor, no socket — and the listener goes.

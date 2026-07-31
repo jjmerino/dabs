@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -266,12 +267,18 @@ func TestBridgeWantedReadsTheEnvironment(t *testing.T) {
 	}
 }
 
-// listeningPorts is the set of TCP ports this machine is listening on.
+// listeningPorts is the set of TCP listening sockets on this machine, as
+// "address:port" strings. It reads the kernel's own table on Linux — the
+// platform where a bwrap box shares this network namespace, so the platform
+// this test exists for — and the vendor tool elsewhere.
 func listeningPorts(t *testing.T) map[string]bool {
 	t.Helper()
+	if runtime.GOOS == "linux" {
+		return procListeners(t)
+	}
 	out, err := exec.Command("netstat", "-an", "-p", "tcp").Output()
 	if err != nil {
-		t.Skipf("cannot list listening ports here: %v", err)
+		t.Skipf("cannot list listening sockets on %s (%v); NOT guarding that publish opens no network listener", runtime.GOOS, err)
 	}
 	ports := map[string]bool{}
 	for _, line := range strings.Split(string(out), "\n") {
@@ -283,6 +290,33 @@ func listeningPorts(t *testing.T) map[string]bool {
 			continue
 		}
 		ports[fields[3]] = true
+	}
+	return ports
+}
+
+// procListeners reads Linux's TCP tables and returns the sockets in LISTEN
+// state (0x0A), keyed by the hex address:port the kernel prints.
+func procListeners(t *testing.T) map[string]bool {
+	t.Helper()
+	const listen = "0A"
+	ports := map[string]bool{}
+	read := 0
+	for _, path := range []string{"/proc/net/tcp", "/proc/net/tcp6"} {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			continue // tcp6 is absent on a kernel without IPv6; tcp is not
+		}
+		read++
+		for _, line := range strings.Split(string(b), "\n")[1:] {
+			fields := strings.Fields(line)
+			if len(fields) < 4 || fields[3] != listen {
+				continue
+			}
+			ports[fields[1]] = true
+		}
+	}
+	if read == 0 {
+		t.Fatal("/proc/net/tcp is unreadable; this test cannot guard that publish opens no network listener")
 	}
 	return ports
 }

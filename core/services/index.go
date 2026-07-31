@@ -14,9 +14,10 @@ func sortServed(list []Served) {
 	sort.Slice(list, func(i, j int) bool { return list[i].Name < list[j].Name })
 }
 
-// indexPage renders what the host is forwarding. A webui is a link because a
-// browser is what reaches it; anything else is an address to hand a client. The
-// type decides that and nothing else — routing is identical for both.
+// indexPage renders what the host is forwarding. An answering webui is a link
+// because a browser is what reaches it; anything else is an address to hand a
+// client. The type decides that and nothing else — routing is identical for
+// both.
 var indexPage = template.Must(template.New("index").Parse(`<!doctype html>
 <meta charset="utf-8">
 <title>dabs services</title>
@@ -24,7 +25,7 @@ var indexPage = template.Must(template.New("index").Parse(`<!doctype html>
 {{if and (not .Served) (not .Conflicts)}}<p>No box is publishing a service.</p>{{end}}
 <ul>
 {{range .Served}}<li>
-{{if .IsWebUI}}<a href="{{.URL}}">{{.Name}}</a>{{else}}{{.Name}}{{end}}
+{{if .IsLink}}<a href="{{.URL}}">{{.Name}}</a>{{else}}{{.Name}}{{end}}
 — {{.Addr}} — {{.Type}}{{if .Down}} — down{{end}}{{if .Instance}} — {{.Instance}}{{end}}
 </li>
 {{end}}{{range .Conflicts}}<li>
@@ -33,8 +34,10 @@ var indexPage = template.Must(template.New("index").Parse(`<!doctype html>
 {{end}}</ul>
 `))
 
-// IsWebUI reports whether the service is one a browser opens.
-func (s Served) IsWebUI() bool { return s.Type == forwarder.TypeWebUI }
+// IsLink reports whether the index renders the service as a link: a browsable
+// service that is answering. A link says the address leads somewhere, so a
+// service nothing answers behind is named, not linked.
+func (s Served) IsLink() bool { return s.Type == forwarder.TypeWebUI && !s.Down }
 
 // indexData is what the index page renders: what the host forwards, and what it
 // cannot because the name is taken.

@@ -9,9 +9,13 @@
 // docker is used as the BUILDER only (Dockerfile → exported rootfs); it
 // never runs instances. Isolation is user-namespace level (config
 // isolation, not a security boundary): shared kernel, and processes do not
-// outlive their Run call. The network is shared under egress open, and
-// unshared (loopback only) under egress none/proxy — proxy reaches the host
-// proxy through a mounted unix socket, which is filesystem, not network.
+// outlive their Run call — every process an enter starts is bound to the one
+// above it by --die-with-parent, and the outermost is bound to dabs by a
+// parent-death signal. The network is a namespace of the box's own under
+// every egress mode: none and proxy unshare it and leave it bare (proxy
+// reaches the host proxy through a mounted unix socket, which is filesystem,
+// not network), and open unshares it and hands it to pasta, which carries
+// outbound traffic as userspace socket translation.
 package bwrap
 
 import (
@@ -20,6 +24,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 
@@ -152,6 +157,16 @@ func (d Driver) Up(spec sandbox.Spec) (string, error) {
 	if err := readJSON(filepath.Join(d.imageDir(spec.Name), "image.json"), &im); err != nil {
 		return "", fmt.Errorf("bwrap: no image for %q (run dabs build first): %w", spec.Name, err)
 	}
+	// Refuse at boot for the two conditions that will not change between now and
+	// the first command — a root caller, and no pasta on PATH — so a box that can
+	// never have the namespace its egress names does not come up looking healthy.
+	// What that pasta can do is the invocation's business, and Up's own probe: a
+	// boot enters the box once with a no-op before reporting success.
+	if openEgress(spec.Egress) {
+		if _, err := requirePasta(); err != nil {
+			return "", err
+		}
+	}
 	instance, err := clidriver.InstanceName(spec.Name)
 	if err != nil {
 		return "", fmt.Errorf("bwrap: %w", err)
@@ -173,6 +188,11 @@ func (d Driver) Up(spec sandbox.Spec) (string, error) {
 	return instance, nil
 }
 
+// openEgress reports whether a mode means unrestricted outbound. The empty
+// string is what a Spec carries when no egress was asked for, and open is the
+// default.
+func openEgress(mode string) bool { return mode == "" || mode == sandbox.EgressOpen }
+
 // enter builds the bwrap invocation for an instance. The overlay is mounted
 // by bwrap itself (unprivileged, user namespace); writes land in the
 // instance's upper layer and persist across calls.
@@ -193,19 +213,22 @@ func (d Driver) enter(instance string, cmd []string) (*exec.Cmd, error) {
 		"--chdir", meta.Workdir,
 		"--clearenv",
 	}
-	restricted := meta.Egress == sandbox.EgressNone || meta.Egress == sandbox.EgressProxy
-	if restricted {
+	open := openEgress(meta.Egress)
+	if !open {
 		// None and proxy both start from a box with no network — loopback only.
 		// Proxy's way out is the host socket bound below: a unix socket crosses
 		// the netns because it is filesystem, not network.
 		args = append(args, "--unshare-net")
-	} else if _, err := os.Stat("/etc/resolv.conf"); err == nil {
+	} else {
+		if err := d.writeResolvConf(instance); err != nil {
+			return nil, err
+		}
 		// docker export does not carry the runtime-injected resolv.conf, so the
 		// box's copy is empty and DNS (package installs, downloads) would fail.
-		// The network is shared with the host under egress open; share its DNS
-		// config too. A restricted box has no resolver to reach — names resolve
-		// at the proxy (HTTP CONNECT), or not at all.
-		args = append(args, "--ro-bind", "/etc/resolv.conf", "/etc/resolv.conf")
+		// The box's namespace resolves at pasta, so it is pasta's address the
+		// box's resolv.conf names. A restricted box has no resolver to reach —
+		// names resolve at the proxy (HTTP CONNECT), or not at all.
+		args = append(args, "--ro-bind", d.resolvConfPath(instance), "/etc/resolv.conf")
 	}
 	// Live host mounts: writes pass through to the host and outlive the box.
 	for _, m := range meta.Mounts {
@@ -256,7 +279,41 @@ func (d Driver) enter(instance string, cmd []string) (*exec.Cmd, error) {
 		args = append(args, "--")
 	}
 	args = append(args, cmd...)
-	return exec.Command("bwrap", args...), nil
+	if !open {
+		return exec.Command("bwrap", args...), nil
+	}
+	// Open egress: pasta makes the namespace and runs bwrap inside it, as its
+	// own child, so the namespace lives exactly as long as the entered command.
+	// bwrap's --die-with-parent binds bwrap to pasta, and Pdeathsig asks the
+	// kernel to SIGKILL pasta when dabs dies. What that guards against is a dabs
+	// that is killed rather than returning: pasta and its bwrap would keep the
+	// instance's overlay mounted while the flock they were covered by is already
+	// free, so the next enter stacks a second overlay on the same upper dir and
+	// rm reaps under a live writer. When dabs does return normally it has waited
+	// on pasta, and the chain is gone with it. The lock already serializes
+	// entries, so one entered command is one namespace.
+	//
+	// The kernel raises Pdeathsig when the THREAD that started pasta dies, not
+	// when dabs does, so the caller runs the command on a pinned thread
+	// (runOnLockedThread).
+	pasta, err := requirePasta()
+	if err != nil {
+		return nil, err
+	}
+	c := exec.Command(pasta, pastaArgs(append([]string{"bwrap"}, args...))...)
+	c.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
+	return c, nil
+}
+
+// runOnLockedThread runs f with the goroutine pinned to its OS thread, for as
+// long as the entered command lives. A command carrying Pdeathsig is killed
+// when the thread that forked it exits, and Go moves goroutines between threads
+// and retires idle ones freely; pinning is what makes the signal mean "dabs is
+// gone" rather than "the scheduler moved on".
+func runOnLockedThread(f func() error) error {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	return f()
 }
 
 // imageOf recovers the sandbox name from an instance name (<name>-<hex12>).
@@ -301,7 +358,7 @@ func (d Driver) Run(instance string, cmd []string) error {
 	c.Stdin = os.Stdin
 	c.Stdout = os.Stdout
 	c.Stderr = os.Stderr
-	if err := c.Run(); err != nil {
+	if err := runOnLockedThread(c.Run); err != nil {
 		return execx.BoxErr(fmt.Sprintf("bwrap: run in %s", instance), nil, err)
 	}
 	return nil
@@ -319,7 +376,12 @@ func (d Driver) Exec(instance string, cmd []string) (string, error) {
 		return "", err
 	}
 	defer unlock()
-	out, err := c.CombinedOutput()
+	var out []byte
+	err = runOnLockedThread(func() error {
+		var cerr error
+		out, cerr = c.CombinedOutput()
+		return cerr
+	})
 	if err != nil {
 		return string(out), execx.BoxErr(fmt.Sprintf("bwrap: exec in %s", instance), out, err)
 	}
@@ -329,9 +391,11 @@ func (d Driver) Exec(instance string, cmd []string) (string, error) {
 // CheckDetach reports that this driver cannot hold a detached command, and why.
 // An instance is an overlay directory, not a process: every Run/Exec enters it
 // with a FRESH bwrap that owns the sandbox for exactly as long as the command
-// runs (--die-with-parent, its own PID namespace, an exclusive lock for the
-// duration). A command therefore cannot outlive the call that started it, and
-// nothing else could enter the box while it did.
+// runs (its own PID namespace, an exclusive lock for the duration, and a death
+// bond to the process that started it — --die-with-parent to whatever entered
+// the box, and a parent-death signal from there to dabs). A command therefore
+// cannot outlive the call that started it, and nothing else could enter the box
+// while it did.
 func (d Driver) CheckDetach() error {
 	return fmt.Errorf("the bwrap driver cannot hold a detached command: it enters the box with a fresh bwrap per command, so a command cannot outlive the call that started it")
 }
@@ -418,10 +482,13 @@ func (d Driver) HasImage(name string) (bool, error) {
 // Kind identifies this driver.
 func (Driver) Kind() string { return "bwrap" }
 
-// CheckEgress reports nil for both modes. None is one namespace flag; proxy
-// additionally mounts a forwarder binary into the box, which dabs materializes
-// from its embedded copy — the linux host makes it directly runnable in the box.
-// bwrap can always enforce both.
+// CheckEgress reports nil for the two modes a caller asks about before booting.
+// None is one namespace flag; proxy additionally mounts a forwarder binary into
+// the box, which dabs materializes from its embedded copy — the linux host makes
+// it directly runnable in the box. bwrap needs nothing of the host for either,
+// so it can always enforce both. Open is the mode with a host dependency here
+// (pasta, and an unprivileged caller); nothing asks about open, and Up refuses
+// it with pasta's own conditions named.
 func (Driver) CheckEgress(mode string) error { return nil }
 
 // Images lists the built image rootfs trees under <root>/images. Each is a

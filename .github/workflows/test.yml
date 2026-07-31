@@ -54,6 +54,23 @@ jobs:
           # which is exactly what bwrap needs. The runner is disposable.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
+      - name: Build pasta (the network namespace an open-egress box gets)
+        run: |
+          # A bwrap box with the default egress: open gets its network namespace
+          # from pasta, so without it every such boot in the suite refuses.
+          # Built from source at the same version the dabseption box image pins:
+          # ubuntu 24.04 packages passt 2024_02_20, which rejects the address
+          # flags dabs passes (`--map-guest-addr none`), and a pasta too old for
+          # a flag refuses the whole invocation. The runner is an unprivileged
+          # user, which is the other thing pasta needs.
+          # Unpinned supply-chain surface: the tarball is fetched over the network
+          # without checksum verification. Harden with a sha256 check.
+          PASST_VERSION=2025_06_11.0293c6f
+          curl -fsSL "https://passt.top/passt/snapshot/passt-${PASST_VERSION}.tar.gz" -o /tmp/passt.tar.gz
+          cd /tmp && tar xf passt.tar.gz && cd "passt-${PASST_VERSION}"
+          make && sudo make install prefix=/usr/local
+          pasta --help >/dev/null
+
       - name: Install bun (the proxy egress engine's host-side runtime)
         # Proxy egress starts a bun-run engine on the host; the e2e suite runs on
         # the runner itself, so bun must be on the runner's PATH. openssl (leaf

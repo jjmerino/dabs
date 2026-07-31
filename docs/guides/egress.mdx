@@ -3,14 +3,22 @@ title: "Egress"
 description: "Confine a box's outbound network: cut it, gate it by host, or route it through a hook you write"
 ---
 
-A box is isolated in filesystem and process, but by default its **network is
-open** — it can reach anything your host can. `egress` on a recipe changes that.
-As a scalar it is `open` (the default) or `none`; as a map it routes **all** of
-the box's egress through the dabs proxy engine, which enforces a host
+A box has a **network namespace of its own**, and `egress` on a recipe says what
+that namespace may reach. By default it is `open`: the box reaches anything your
+host can reach outward — but nothing of the host's own. A service on your host's
+loopback is not reachable from the box, and a port the box binds is the box's
+alone, so five boxes can each bind `:3000` without colliding with each other or
+with your host.
+
+As a scalar `egress` is `open` (the default) or `none`; as a map it routes
+**all** of the box's egress through the dabs proxy engine, which enforces a host
 `allow`/`deny` gate and an optional chain of hooks.
 
 <Info>Screens verified by `walkthroughs/test_egress.py`. The proxy engine runs on
-`bun` (host-side); `egress: none` needs nothing extra.</Info>
+`bun` (host-side); `egress: none` needs nothing extra. On Linux (the bwrap
+driver) `egress: open` is built by **pasta** — install the `passt` package and
+run dabs as an unprivileged user; a boot that cannot have pasta refuses and says
+so instead of handing the box your host's network. pasta must be snapshot `2025_05_03` or newer, for the address flags dabs passes: Debian trixie+ and Fedora 41+ package a new enough one, Ubuntu's and Alpine's current packages refuse those flags, and there you build from [passt.top](https://passt.top) at the version `contrib/recipes/dabseption.Dockerfile` pins.</Info>
 
 ## Cut it off
 

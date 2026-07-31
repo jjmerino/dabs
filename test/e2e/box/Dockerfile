@@ -52,12 +52,23 @@ RUN CGO_ENABLED=0 go build -o egressforwarder/forwarder/forward.bin ./egressforw
 # the builder flattens a stage into a plain rootfs, which is what a bwrap image
 # is — so the box needs no docker, and the suite installs nothing at startup.
 # HOME (/tmp/h, off overlayfs) comes from the base.
-COPY --from=e2ebase / /tmp/h/.dabs/images/dabs-e2e/rootfs
+# The suite runs as `boxer`, not root: an inner box with the default egress: open
+# gets its network namespace from pasta, and pasta serves only an unprivileged
+# caller. Everything the suite reads at runtime therefore lands in boxer's home
+# — which is under /tmp, off overlayfs, exactly as root's /tmp/h is.
+COPY --from=e2ebase / /tmp/boxer/.dabs/images/dabs-e2e/rootfs
 RUN printf '%s' '{"env":["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"],"workdir":"/work"}' \
-      > /tmp/h/.dabs/images/dabs-e2e/image.json
+      > /tmp/boxer/.dabs/images/dabs-e2e/image.json
 
 # Pristine copies of the staged images, OUTSIDE the store `dabs prune` reaps.
 # There is no builder in the box, so a pruned staged image is otherwise gone for
 # the rest of the suite; tests that need one (the bundled box recipes boot
 # `shell`) restore it from here.
-RUN cp -a /tmp/h/.dabs/images /tmp/h/.dabs-staged-images
+RUN cp -a /tmp/boxer/.dabs/images /tmp/boxer/.dabs-staged-images \
+ && chown -R boxer:boxer /tmp/boxer
+
+# The suite compiles itself in the box, and the box has no network to fetch a
+# module from: boxer builds from root's module cache, which the go command
+# leaves world-readable and writes to only when a module is missing.
+# -mod=mod keeps the build from trying to rewrite go.mod, which boxer cannot do.
+ENV GOFLAGS=-mod=mod

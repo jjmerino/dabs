@@ -291,9 +291,21 @@ live name is reported as a conflict and is not served — name them per worktree
   otherwise you run stale code.
 - Writes inside a box persist for that instance's lifetime; pristine again
   means a NEW box, not reusing the old instance.
-- Isolation is filesystem and process, NOT network: a box has open outbound
-  network access and dabs has no `--no-network` switch yet. Do not rely on a box
-  to contain code that should not reach the network — it can phone home.
+- A box has a network namespace of its own, and what that namespace reaches is
+  the recipe's `egress:`. Under the default `egress: open` the box reaches
+  anything your host can reach OUTWARD, but nothing of the host's own: a service
+  on the host's loopback is out of reach, and a port the box binds is the box's
+  alone — five boxes may bind `:3000` at once, and none of them takes the host's
+  `:3000`. An open box can still phone home, so do not rely on `open` to contain
+  code that must not reach the internet — that is `egress: none` or a proxy
+  egress. On the bwrap driver `egress: open` is built by **pasta** (the `passt`
+  package) and needs it installed and dabs running as an unprivileged user;
+  without either, a boot refuses and says so rather than handing the box the
+  host's network. pasta must be snapshot `2025_05_03` or newer, for the address
+  flags dabs passes: Debian trixie+ and Fedora 41+ package a new enough one,
+  Ubuntu's and Alpine's current packages refuse those flags, and there you build
+  from https://passt.top at the version `contrib/recipes/dabseption.Dockerfile`
+  pins.
 - The box only contains what the Dockerfile installed. Slim base images
   lack tools like `ps`; if a journey needs one, it belongs in the
   Dockerfile, not worked around.
@@ -443,6 +455,18 @@ pre-staging step, nothing to remember:
    exactly what a dabs bwrap image is (a `rootfs/` dir plus an `image.json`
    holding env and workdir — a `printf`, since you authored the stage and know
    them). Nothing has to run `docker` inside the box.
+4. **pasta in the image, and an unprivileged user to drive it** — a nested box
+   with the default `egress: open` gets its network namespace from pasta, and
+   pasta serves only an unprivileged caller. The image carries pasta (built from
+   source, like bubblewrap) and a `boxer` user with its own dabs state, so a
+   nested open-egress box is booted as:
+
+   ```bash
+   dabs exec <instance> "su boxer -c 'HOME=/tmp/boxer dabs recipe sh --no-command --name b1'"
+   ```
+
+   As root the boot refuses and says why. A nested box with `egress: none` or a
+   proxy egress needs none of this and boots as root.
 
 The trap, if you write your own such box: **dabs's state must not sit on
 overlayfs.** bwrap cannot stack an overlay on one, and `/root` in a docker box IS

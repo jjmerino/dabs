@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/jjmerino/dabs/core/params"
+	"github.com/jjmerino/dabs/core/version"
 )
 
 // Command is one dabs subcommand: the core action it invokes. Each Run
@@ -27,6 +28,7 @@ var Commands = map[string]Command{
 	"prune":     {(*CLI).runPrune},
 	"servers":   {(*CLI).runServers},
 	"services":  {(*CLI).runServices},
+	"version":   {(*CLI).runVersion},
 }
 
 // cmdDoc is a command's human-facing help: Help is the one-line description
@@ -58,6 +60,7 @@ var commandDocs = map[string]cmdDoc{
 	"rm":       {Help: "stop a box and remove its node and what it holds (--keep keeps the record instead; --clean-worktrees sweeps every worktree with no unreviewed work; --inactive sweeps every inactive subtree): rm <node> [-y] [--keep] [--volume] [--multiple] [--dry] [--force] | rm --clean-worktrees [--force] [--dry] | rm --inactive [--dry]", Args: "rm <node> [-y] [--keep] [--volume] [--multiple] [--dry] [--force] | rm --clean-worktrees [--force] [--dry] | rm --inactive [--dry]"},
 	"prune":    {Help: "reclaim built box images (they rebuild on the next build); --dry lists what exists, --force removes even images a live box uses", Args: "prune [--dry] [--force]"},
 	"services": {Help: "list the services the boxes publish — name, type, box and instance, the host address `services serve` gives it, and its state (up | down | conflict, when another box owns the name). `services serve` forwards each one from a stable 127.0.0.1 port (a name keeps its port across boxes) and serves an index of them at 127.0.0.1:28080 until interrupted. A box publishes by running the in-box forwarder: `forward publish <name> --type webui|general --port <n>` (name: [a-z0-9._-], starting with a letter or digit, max 64 bytes)", Args: "services [serve]"},
+	"version":  {Help: "print which dabs this is, as one line: the release tag of a released binary, else the commit a source build came from", Args: "version"},
 	"servers":  {Help: "manage registered servers: servers [ls] | add <name> [host] | rm <name>", Args: "servers [ls | add <name> [host] | rm <name>]"},
 }
 
@@ -305,4 +308,14 @@ func (c *CLI) runServices(args []string) error {
 		return err
 	}
 	return c.actions.Services(p)
+}
+
+func (c *CLI) runVersion(args []string) error {
+	if wantsHelp(args) {
+		return HelpRequestedError{helpText("version", nil)}
+	}
+	if len(args) != 0 {
+		return BadArgsError{Cmd: "version", Reason: "usage: version"}
+	}
+	return VersionRequestedError{Text: version.Line() + "\n"}
 }

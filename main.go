@@ -31,6 +31,12 @@ func main() {
 		case "--help-full", "--help-full-for-agents":
 			os.Stdout.Write(agentsGuide)
 			return
+		case "--version", "version":
+			// Which binary this is is answerable from the binary alone, and the
+			// root flag and the verb are one answer: both route through the verb,
+			// which needs no driver and no actions.
+			finish(cli.New(nil).Run([]string{"version"}))
+			return
 		}
 	}
 	// A bare `dabs`, and a per-command `dabs <cmd> --help`, resolve entirely in
@@ -73,6 +79,11 @@ func finish(err error) {
 	// that command's own usage to stdout and exit 0 — no top-level menu dump.
 	if h, ok := err.(cli.HelpRequestedError); ok {
 		fmt.Fprint(os.Stdout, h.Text)
+		return
+	}
+	// `dabs version` / `dabs --version` answer on stdout and exit 0.
+	if v, ok := err.(cli.VersionRequestedError); ok {
+		fmt.Fprint(os.Stdout, v.Text)
 		return
 	}
 	// A box command that merely exited non-zero is the box command's failure,

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/jjmerino/dabs/core/params"
+	"github.com/jjmerino/dabs/core/version"
 )
 
 // A single-character flag is written with ONE dash (-y), a multi-character flag
@@ -485,5 +486,38 @@ func TestServicesParsesItsOneSubcommand(t *testing.T) {
 		if len(f.services) != 1 || f.services[0].Serve != tc.wantServe {
 			t.Errorf("services %v → %+v, want Serve=%v", tc.args, f.services, tc.wantServe)
 		}
+	}
+}
+
+// `dabs version` must answer from the binary alone: main serves it with a nil
+// Actions (no driver built), so the runner must never touch c.actions.
+func TestVersionNeedsNoActions(t *testing.T) {
+	err := New(nil).Run([]string{"version"})
+	var v VersionRequestedError
+	if !errors.As(err, &v) {
+		t.Fatalf("version returned %v, want VersionRequestedError", err)
+	}
+	if want := version.Line() + "\n"; v.Text != want {
+		t.Errorf("version printed %q, want %q", v.Text, want)
+	}
+	if strings.Count(v.Text, "\n") != 1 {
+		t.Errorf("version printed %q, want exactly one line", v.Text)
+	}
+}
+
+// The verb takes no arguments; a stray one is a usage error, not a version line.
+func TestVersionRejectsArguments(t *testing.T) {
+	err := New(nil).Run([]string{"version", "extra"})
+	var bad BadArgsError
+	if !errors.As(err, &bad) {
+		t.Fatalf("version extra returned %v, want BadArgsError", err)
+	}
+}
+
+// The verb is listed in the top-level menu, so it needs a doc entry like any
+// other command.
+func TestVersionIsDocumented(t *testing.T) {
+	if doc := commandDocs["version"]; doc.Help == "" || doc.Args == "" {
+		t.Errorf("commandDocs[version] = %+v, want a Help and an Args", doc)
 	}
 }

@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"flag"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -485,5 +486,39 @@ func TestServicesParsesItsOneSubcommand(t *testing.T) {
 		if len(f.services) != 1 || f.services[0].Serve != tc.wantServe {
 			t.Errorf("services %v → %+v, want Serve=%v", tc.args, f.services, tc.wantServe)
 		}
+	}
+}
+
+// `dabs version` must answer from the binary alone: main serves it with a nil
+// Actions (no driver built), so the runner must never touch c.actions.
+func TestVersionNeedsNoActions(t *testing.T) {
+	err := New(nil).Run([]string{"version"})
+	var v VersionRequestedError
+	if !errors.As(err, &v) {
+		t.Fatalf("version returned %v, want VersionRequestedError", err)
+	}
+	// The text is checked against the shapes the line is allowed to take,
+	// not against the resolver that produced it: a resolver that returns
+	// something else entirely must fail here.
+	shape := regexp.MustCompile(`^dabs (v[0-9][^ \n]*|[0-9a-f]{1,12}(-dirty)? \(built from source\)|\(unknown\))\n$`)
+	if !shape.MatchString(v.Text) {
+		t.Errorf("version printed %q, want one line of the form `dabs <tag|commit|(unknown)>`", v.Text)
+	}
+}
+
+// The verb takes no arguments; a stray one is a usage error, not a version line.
+func TestVersionRejectsArguments(t *testing.T) {
+	err := New(nil).Run([]string{"version", "extra"})
+	var bad BadArgsError
+	if !errors.As(err, &bad) {
+		t.Fatalf("version extra returned %v, want BadArgsError", err)
+	}
+}
+
+// The verb is listed in the top-level menu, so it needs a doc entry like any
+// other command.
+func TestVersionIsDocumented(t *testing.T) {
+	if doc := commandDocs["version"]; doc.Help == "" || doc.Args == "" {
+		t.Errorf("commandDocs[version] = %+v, want a Help and an Args", doc)
 	}
 }

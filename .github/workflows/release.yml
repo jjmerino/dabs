@@ -40,7 +40,7 @@ jobs:
             GOOS=linux GOARCH=$arch CGO_ENABLED=0 \
               go build -o egressforwarder/forwarder/forward.bin ./egressforwarder/cmd/forward
             GOOS=$os GOARCH=$arch CGO_ENABLED=0 \
-              go build -trimpath -ldflags="-s -w" -tags withforwarder \
+              go build -trimpath -ldflags="-s -w -X github.com/jjmerino/dabs/core/version.version=${GITHUB_REF_NAME}" -tags withforwarder \
                 -o "dist/dabs_${os}_${arch}" .
           done; done
           (cd dist && shasum -a 256 dabs_* > SHA256SUMS)

@@ -33,6 +33,14 @@ func main() {
 			return
 		}
 	}
+	// Which binary this is is answerable from the binary alone, and the root
+	// flag and the verb are one answer: both route through the verb, which
+	// needs no driver and no actions. Trailing tokens ride along so the verb
+	// itself answers a misuse, rather than a driver failing first.
+	if len(args) > 0 && (args[0] == "--version" || args[0] == "version") {
+		finish(cli.New(nil).Run(append([]string{"version"}, args[1:]...)))
+		return
+	}
 	// A bare `dabs`, and a per-command `dabs <cmd> --help`, resolve entirely in
 	// the cli layer: every parser answers a leading help flag before its action
 	// is touched, so a nil Actions is never reached.
@@ -73,6 +81,11 @@ func finish(err error) {
 	// that command's own usage to stdout and exit 0 — no top-level menu dump.
 	if h, ok := err.(cli.HelpRequestedError); ok {
 		fmt.Fprint(os.Stdout, h.Text)
+		return
+	}
+	// `dabs version` / `dabs --version` answer on stdout and exit 0.
+	if v, ok := err.(cli.VersionRequestedError); ok {
+		fmt.Fprint(os.Stdout, v.Text)
 		return
 	}
 	// A box command that merely exited non-zero is the box command's failure,

@@ -3,11 +3,11 @@ package cli
 import (
 	"errors"
 	"flag"
+	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/jjmerino/dabs/core/params"
-	"github.com/jjmerino/dabs/core/version"
 )
 
 // A single-character flag is written with ONE dash (-y), a multi-character flag
@@ -497,11 +497,12 @@ func TestVersionNeedsNoActions(t *testing.T) {
 	if !errors.As(err, &v) {
 		t.Fatalf("version returned %v, want VersionRequestedError", err)
 	}
-	if want := version.Line() + "\n"; v.Text != want {
-		t.Errorf("version printed %q, want %q", v.Text, want)
-	}
-	if strings.Count(v.Text, "\n") != 1 {
-		t.Errorf("version printed %q, want exactly one line", v.Text)
+	// The text is checked against the shapes the line is allowed to take,
+	// not against the resolver that produced it: a resolver that returns
+	// something else entirely must fail here.
+	shape := regexp.MustCompile(`^dabs (v[0-9][^ \n]*|[0-9a-f]{1,12}(-dirty)? \(built from source\)|\(unknown\))\n$`)
+	if !shape.MatchString(v.Text) {
+		t.Errorf("version printed %q, want one line of the form `dabs <tag|commit|(unknown)>`", v.Text)
 	}
 }
 

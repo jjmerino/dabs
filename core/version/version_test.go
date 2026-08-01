@@ -43,6 +43,27 @@ func TestFormatLine(t *testing.T) {
 			want:    "dabs v0.5.1",
 		},
 		{
+			name:    "module version outranks the revision",
+			stamped: "",
+			info:    buildInfo("v0.5.1", map[string]string{"vcs.revision": "1a2b3c4d5e6f7a8b9c0d", "vcs.modified": "true"}),
+			ok:      true,
+			want:    "dabs v0.5.1",
+		},
+		{
+			name:    "a revision one character over the limit is cut to the limit",
+			stamped: "",
+			info:    buildInfo("", map[string]string{"vcs.revision": "1a2b3c4d5e6f7"}),
+			ok:      true,
+			want:    "dabs 1a2b3c4d5e6f (built from source)",
+		},
+		{
+			name:    "a revision exactly at the limit is kept whole",
+			stamped: "",
+			info:    buildInfo("", map[string]string{"vcs.revision": "1a2b3c4d5e6f"}),
+			ok:      true,
+			want:    "dabs 1a2b3c4d5e6f (built from source)",
+		},
+		{
 			name:    "devel module version falls through to the revision",
 			stamped: "",
 			info:    buildInfo("(devel)", map[string]string{"vcs.revision": "1a2b3c4d5e6f7a8b9c0d", "vcs.modified": "false"}),

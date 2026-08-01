@@ -31,13 +31,15 @@ func main() {
 		case "--help-full", "--help-full-for-agents":
 			os.Stdout.Write(agentsGuide)
 			return
-		case "--version", "version":
-			// Which binary this is is answerable from the binary alone, and the
-			// root flag and the verb are one answer: both route through the verb,
-			// which needs no driver and no actions.
-			finish(cli.New(nil).Run([]string{"version"}))
-			return
 		}
+	}
+	// Which binary this is is answerable from the binary alone, and the root
+	// flag and the verb are one answer: both route through the verb, which
+	// needs no driver and no actions. Trailing tokens ride along so the verb
+	// itself answers a misuse, rather than a driver failing first.
+	if len(args) > 0 && (args[0] == "--version" || args[0] == "version") {
+		finish(cli.New(nil).Run(append([]string{"version"}, args[1:]...)))
+		return
 	}
 	// A bare `dabs`, and a per-command `dabs <cmd> --help`, resolve entirely in
 	// the cli layer: every parser answers a leading help flag before its action

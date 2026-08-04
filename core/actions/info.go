@@ -163,6 +163,15 @@ func describeRecipe(name string, rec recipe.Recipe, note string) string {
 		}
 		b.WriteString(tui.Rows(nil, srcRows))
 	}
+
+	if len(rec.Sockets) > 0 {
+		b.WriteString("\n" + tui.Muted("sockets:") + "\n")
+		var sockRows [][]string
+		for _, s := range rec.Sockets {
+			sockRows = append(sockRows, []string{"  socket", s.Socket, tui.Arrow(), s.Path})
+		}
+		b.WriteString(tui.Rows(nil, sockRows))
+	}
 	return b.String()
 }
 

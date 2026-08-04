@@ -102,6 +102,9 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 	if err := r.checkSources(name, rec.Sources, boxless); err != nil {
 		return err
 	}
+	if err := checkSockets(name, rec.Sockets); err != nil {
+		return err
+	}
 	command := append(append([]string{}, rec.Command...), extra...)
 	// A recipe with no image is a recipe for a PLACE, not a box: it provisions its
 	// nodes (a worktree, a directory) and stops. Nodes do not need a box; a box
@@ -190,7 +193,7 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 	if err != nil {
 		return err
 	}
-	sockets, err := r.resolveSockets(name, rec.Sockets, vars)
+	sockets, err := r.resolveSockets(name, boxID, rec.Sockets, vars)
 	if err != nil {
 		return err
 	}
@@ -621,13 +624,18 @@ func (r Real) validateSources(recipeName string, sources []recipe.Source, vars m
 
 // resolveSockets turns a recipe's declared host sockets into driver mounts: each
 // host path expanded (~ , $VAR, and the node space vars a source may name) and
-// made absolute, and each one checked to BE a socket before any box is touched.
-// A path that is missing, or that names a regular file or a directory, is a typo
-// — bound anyway it would give the box a dead inode and a program inside it a
-// connection refused with nothing to point at.
-func (r Real) resolveSockets(recipeName string, sockets []recipe.Socket, vars map[string]string) ([]sandbox.Mount, error) {
+// made absolute, each box path expanded the way a source's is ($NODE_ID, the
+// box's own id), and each origin checked to BE a socket before any box is
+// touched. A path that is missing, or that names a regular file or a directory,
+// is a typo — bound anyway it would give the box a dead inode and a program
+// inside it a connection refused with nothing to point at.
+func (r Real) resolveSockets(recipeName, boxID string, sockets []recipe.Socket, vars map[string]string) ([]sandbox.Mount, error) {
 	out := make([]sandbox.Mount, 0, len(sockets))
 	for _, s := range sockets {
+		boxPath, err := expandBoxPath(s.Path, boxID)
+		if err != nil {
+			return nil, fmt.Errorf("recipe %q: %w", recipeName, err)
+		}
 		host, err := r.expandPathWith(s.Socket, vars)
 		if err != nil {
 			return nil, fmt.Errorf("recipe %q: %w", recipeName, err)
@@ -644,7 +652,7 @@ func (r Real) resolveSockets(recipeName string, sockets []recipe.Socket, vars ma
 		if fi.Mode()&fs.ModeSocket == 0 {
 			return nil, fmt.Errorf("recipe %q: %s is not a unix socket", recipeName, host)
 		}
-		out = append(out, sandbox.Mount{Host: host, Path: s.Path})
+		out = append(out, sandbox.Mount{Host: host, Path: boxPath})
 	}
 	return out, nil
 }
@@ -1092,6 +1100,11 @@ func confirmRecipe(name string, rec recipe.Recipe, command []string) string {
 			continue
 		}
 		fmt.Fprintf(&b, "  %-8s %s → %s\n", kind, origin, s.Path)
+	}
+	// A socket is a live door onto a program already running on the host, so it is
+	// part of the box the user is approving, not a detail of it.
+	for _, s := range rec.Sockets {
+		fmt.Fprintf(&b, "  %-8s %s → %s\n", "socket", s.Socket, s.Path)
 	}
 	fmt.Fprintf(&b, "command: %s", shellJoin(command))
 	return b.String()
@@ -1791,6 +1804,45 @@ func checkBoxPath(recipeName, kind, origin, boxPath string) error {
 		return fmt.Errorf("recipe %q: box path %q for %s:%s uses `..` to escape the workdir", recipeName, boxPath, kind, origin)
 	}
 	return nil
+}
+
+// reservedBoxPaths are the paths dabs binds into a box ITSELF, whatever the
+// recipe says: the services directory every box publishes into, and the egress
+// socket, forwarder binary and detached-log directory a proxied or detached box
+// gets. A recipe source is bound before them and is simply overridden; a socket
+// is bound after, and would mask dabs's own door with nothing failing until a
+// program inside the box reached for it.
+var reservedBoxPaths = []string{
+	forwarder.ServicesDir,
+	forwarder.SockPath,
+	forwarder.ForwardPath,
+	sandbox.DetachedLogDir,
+}
+
+// checkSockets rejects socket specs dabs cannot safely realize, BEFORE any side
+// effect (no place cut, no image built, no box up). Where a socket lands is held
+// to exactly what a source's box path is — checkBoxPath: absolute, no `..`, no
+// variable but $NODE_ID — plus one rule of its own: it may not overlap a path
+// dabs binds itself.
+func checkSockets(recipeName string, sockets []recipe.Socket) error {
+	for _, s := range sockets {
+		if err := checkBoxPath(recipeName, "socket", s.Socket, s.Path); err != nil {
+			return err
+		}
+		for _, res := range reservedBoxPaths {
+			if overlapsPath(s.Path, res) {
+				return fmt.Errorf("recipe %q: socket box path %q collides with %s, which dabs binds into every box that needs it — name another path", recipeName, s.Path, res)
+			}
+		}
+	}
+	return nil
+}
+
+// overlapsPath reports whether two box paths name the same place, or one holds
+// the other — the two ways a bind at one hides what is at the other.
+func overlapsPath(a, b string) bool {
+	a, b = filepath.Clean(a), filepath.Clean(b)
+	return withinRoot(a, b) || withinRoot(b, a)
 }
 
 // escapesRoot reports whether a relative path climbs above its anchor with `..`.

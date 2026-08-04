@@ -873,6 +873,116 @@ func TestRecipeSocketThatIsNotASocketRefusesBeforeUp(t *testing.T) {
 	}
 }
 
+// CONTRACT: a socket's box path is held to exactly what a source's box path is —
+// absolute, no `..` segment, and no variable but $NODE_ID. A weaker rule here
+// would be a way around the one sources answer to: `/run/dabs/../../etc/passwd`
+// lands the socket on /etc/passwd inside the box, and an unexpanded space var
+// becomes a directory literally named "$NODE_VOLUME".
+func TestRecipeSocketBoxPathHeldToTheSourceRule(t *testing.T) {
+	for _, tc := range []struct{ name, boxPath, want string }{
+		{"relative", "run/dabs/one.sock", "not absolute"},
+		{"traversal", "/run/dabs/../../etc/passwd", ".."},
+		{"space var", "/$NODE_VOLUME/one.sock", "variable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			y := "recipes:\n  s:\n    image: img\n    command: [x]\n    sockets:\n      - socket: /run/one.sock\n        path: " + tc.boxPath + "\n"
+			fd := baseData()
+			listenSocket(fd, "/run/one.sock")
+			drv := &fakeDriver{built: map[string]bool{"img": true}}
+			err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "s"})
+			if err == nil {
+				t.Fatalf("want a refusal for box path %q; got nil", tc.boxPath)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error should name %q: %v", tc.want, err)
+			}
+			if len(drv.ups) != 0 {
+				t.Errorf("brought a box up with box path %q: %v", tc.boxPath, drv.ups)
+			}
+		})
+	}
+}
+
+// CONTRACT: $NODE_ID resolves in a socket's box path as it does in a source's,
+// so a socket can auto-namespace per box. Left literal, the box would get a
+// directory actually named "$NODE_ID".
+func TestRecipeSocketNodeIDExpandsInBoxPath(t *testing.T) {
+	y := `recipes:
+  s:
+    image: img
+    command: [x]
+    sockets:
+      - socket: /run/one.sock
+        path: /$NODE_ID/agent.sock
+`
+	fd := baseData()
+	listenSocket(fd, "/run/one.sock")
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	if err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "s", NodeName: "mybox"}); err != nil {
+		t.Fatalf("Recipe: %v", err)
+	}
+	up := onlyUp(t, drv)
+	if len(up.Sockets) != 1 || up.Sockets[0].Path != "/mybox/agent.sock" {
+		t.Errorf("Up sockets = %+v, want the socket at /mybox/agent.sock", up.Sockets)
+	}
+}
+
+// CONTRACT: dabs binds paths of its own into a box — the services directory
+// every box publishes into, and the egress socket, forwarder and detached-log
+// paths. A socket is bound after the recipe's mounts, so one aimed at any of
+// them (or at a directory holding them) would mask dabs's own door with nothing
+// failing until a program in the box reached for it. Refuse by name instead.
+func TestRecipeSocketCannotMaskDabsOwnPaths(t *testing.T) {
+	for _, boxPath := range []string{
+		"/run/dabs/services",    // exactly the services dir every box gets
+		"/run/dabs/services/x",  // inside it
+		"/run/dabs",             // the directory holding all of them
+		"/run/dabs/egress.sock", // the proxy's socket
+		"/run/dabs/forward",     // the forwarder binary
+		"/run/dabs/log",         // the detached-log dir
+	} {
+		t.Run(boxPath, func(t *testing.T) {
+			y := "recipes:\n  s:\n    image: img\n    command: [x]\n    sockets:\n      - socket: /run/one.sock\n        path: " + boxPath + "\n"
+			fd := baseData()
+			listenSocket(fd, "/run/one.sock")
+			drv := &fakeDriver{built: map[string]bool{"img": true}}
+			err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "s"})
+			if err == nil {
+				t.Fatalf("want a refusal for %q; got nil", boxPath)
+			}
+			if !strings.Contains(err.Error(), "collides") {
+				t.Errorf("error should say it collides with a path dabs binds: %v", err)
+			}
+			if len(drv.ups) != 0 {
+				t.Errorf("brought a box up with a socket at %q: %v", boxPath, drv.ups)
+			}
+		})
+	}
+}
+
+// CONTRACT: a socket sitting elsewhere under /run/dabs is fine — dabs reserves
+// the paths it binds, not the directory as a namespace. This is the shape the
+// docs recommend, so a refusal here would be a false positive.
+func TestRecipeSocketBesideDabsOwnPathsIsFine(t *testing.T) {
+	y := `recipes:
+  s:
+    image: img
+    command: [x]
+    sockets:
+      - socket: /run/one.sock
+        path: /run/dabs/agent.sock
+`
+	fd := baseData()
+	listenSocket(fd, "/run/one.sock")
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	if err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "s"}); err != nil {
+		t.Fatalf("Recipe: %v", err)
+	}
+	if got := onlyUp(t, drv).Sockets; len(got) != 1 || got[0].Path != "/run/dabs/agent.sock" {
+		t.Errorf("Up sockets = %+v, want the socket at /run/dabs/agent.sock", got)
+	}
+}
+
 // CONTRACT: a mount whose host does not exist must fail clearly BEFORE up, not
 // hand a phantom path to the driver. (Bug hunt / vault regression: `dabs recipe
 // claude` before `dabs auth claude` used to warn+create; now the mount host is
@@ -1115,6 +1225,38 @@ const appendRecipe = `recipes:
 // yes/no confirm stubs for the look-before-run gate.
 func yes(string) bool { return true }
 func no(string) bool  { return false }
+
+// CONTRACT: the look-before-run summary is the whole picture the user approves,
+// and a socket is a live door onto a host program — more consequential than any
+// mount. Approving a command must not hide that the box reaches a host daemon.
+func TestRecipeConfirmationShowsSockets(t *testing.T) {
+	y := `recipes:
+  s:
+    image: img
+    command: [run]
+    sockets:
+      - socket: /run/one.sock
+        path: /run/dabs/one.sock
+    sources:
+      - mount: /data
+        path: /work
+`
+	fd := baseData()
+	fd.exists["/data"] = true
+	listenSocket(fd, "/run/one.sock")
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	asked := ""
+	confirm := func(prompt string) bool { asked = prompt; return true }
+	if err := newReal(y, fd, drv).WithConfirm(confirm).
+		Recipe(params.Recipe{Args: []string{"s", "--flag"}}); err != nil {
+		t.Fatalf("Recipe: %v", err)
+	}
+	for _, want := range []string{"socket", "/run/one.sock", "/run/dabs/one.sock"} {
+		if !strings.Contains(asked, want) {
+			t.Errorf("confirmation prompt does not show %q: %q", want, asked)
+		}
+	}
+}
 
 // CONTRACT: a trailing command from `dabs recipe <name> <cmd…>` is APPENDED to
 // the recipe's own command, and (once approved) that full argv is what runs.

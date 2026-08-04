@@ -24,8 +24,8 @@ func stageImage(t *testing.T, d Driver, name string) {
 	}
 }
 
-// indexOf returns the position of tok in args, or -1.
-func indexOf(args []string, tok string) int {
+// findArg returns the position of tok in args, or -1.
+func findArg(args []string, tok string) int {
 	for i, a := range args {
 		if a == tok {
 			return i
@@ -58,11 +58,11 @@ func TestSocketsSurviveEveryEnter(t *testing.T) {
 				t.Fatal(err)
 			}
 			args := c.Args
-			bind := indexOf(args, "/host/one.sock")
+			bind := findArg(args, "/host/one.sock")
 			if bind < 1 || args[bind-1] != "--bind" || args[bind+1] != "/run/dabs/one.sock" {
 				t.Fatalf("socket not bound read-write at its box path: %v", args)
 			}
-			mount := indexOf(args, "/host/data")
+			mount := findArg(args, "/host/data")
 			if mount < 0 || mount > bind {
 				t.Errorf("socket bound before the recipe mount that could mask it: %v", args)
 			}
@@ -83,7 +83,7 @@ func TestNoSocketsBindsNone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if i := indexOf(c.Args, "--bind"); i >= 0 {
+	if i := findArg(c.Args, "--bind"); i >= 0 {
 		t.Errorf("a socketless, mountless box binds something: %v", c.Args)
 	}
 	if !strings.Contains(strings.Join(c.Args, " "), "--unshare-net") {

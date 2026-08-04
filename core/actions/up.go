@@ -36,6 +36,9 @@ func (r Real) upDetached(arg, worktree, nodeName string, startCommand bool) erro
 	if err := r.checkSources(name, rec.Sources, boxless); err != nil {
 		return err
 	}
+	if err := checkSockets(name, rec.Sockets); err != nil {
+		return err
+	}
 	// `--detach` starts the recipe's OWN command, so a recipe with no box to run it
 	// in, or no command to run, has nothing to detach. Both refuse instead of
 	// quietly booting: `--no-command` is the flag that means "boot, run nothing",
@@ -167,7 +170,7 @@ func (r Real) bootDetached(name string, rec recipe.Recipe, worktree, nodeName st
 	if err != nil {
 		return Box{}, "", nil, err
 	}
-	sockets, err := r.resolveSockets(name, rec.Sockets, vars)
+	sockets, err := r.resolveSockets(name, boxID, rec.Sockets, vars)
 	if err != nil {
 		return Box{}, "", nil, err
 	}

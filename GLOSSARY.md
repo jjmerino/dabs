@@ -392,9 +392,14 @@ each `socket:` (the host path, `~` and `$VAR` expanded) landing at an absolute
 owns no node space, and `rm` never reads it: the listener is a host program that
 must already be running, and the box only gets a door to it. That door is
 filesystem, not network, so it is open under every egress mode, `none` included.
-A `socket:` that does not exist, or that names a file or a directory, refuses the
-boot by name rather than handing the box a dead inode.
-*Where:* `recipe.Socket`, `resolveSockets`, `sandbox.Spec.Sockets`.
+The box `path:` is held to exactly what a source's box path is — absolute, no
+`..`, `$NODE_ID` the only variable that resolves in it. What a socket cannot be
+refuses by name rather than booting a box that quietly has no door: a `socket:`
+that is missing or is not a socket, a `path:` landing on a source's path or on
+one dabs binds itself, a `:` in either path, a recipe with no image, a `target:`
+(the listener is on this host; a box on another machine cannot reach it).
+*Where:* `recipe.Socket`, `validateSockets`, `checkSockets`, `resolveSockets`,
+`sandbox.Spec.Sockets`.
 
 ### at
 Where a provisioning source (a `worktree:` or `copy:`) puts its bytes in the NEW

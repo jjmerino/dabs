@@ -388,9 +388,10 @@ The cwd (`/work` default) and environment variables inside the box.
 ### sockets
 Recipe field, a top-level list of its own: host unix sockets the box may talk to,
 each `socket:` (the host path, expanded like a source origin: `~`, `$VAR`, and
-the `$NODE_*`/`$PARENT_*` space vars) landing at an absolute `path:` in the box. It is not a source kind — a socket provisions nothing,
-owns no node space, and `rm` never reads it: the listener is a host program that
-must already be running, and the box only gets a door to it. That door is
+the `$NODE_*`/`$PARENT_*` space vars) landing at an absolute `path:` in the box.
+It is not a source kind — a socket provisions nothing, owns no node space, and
+`rm` never reads it: the listener is a host program that must already be
+running, and the box only gets a door to it. That door is
 filesystem, not network, so it is open under every egress mode, `none` included.
 The box `path:` is held to exactly what a source's box path is — absolute, no
 `..`, `$NODE_ID` the only variable that resolves in it. What a socket cannot be
@@ -399,8 +400,8 @@ that is missing or is not a socket, a `path:` landing on one another source or
 socket already claims or on one dabs binds itself, a `:` in either path, a
 recipe with no image, a `target:` naming a SERVER (the listener is on this host,
 and a box on another machine has no path to it; a local target is fine).
-*Where:* `recipe.Socket`, `validateSockets`, `checkSockets`, `resolveSockets`,
-`sandbox.Spec.Sockets`.
+*Where:* `recipe.Socket`, `validateSockets`, `checkSockets`,
+`checkSocketsReachable`, `resolveSockets`, `sandbox.Spec.Sockets`.
 
 ### at
 Where a provisioning source (a `worktree:` or `copy:`) puts its bytes in the NEW

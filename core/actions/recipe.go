@@ -646,18 +646,34 @@ func (r Real) resolveSockets(recipeName, boxID string, sockets []recipe.Socket, 
 		if host, err = r.absPath(host); err != nil {
 			return nil, fmt.Errorf("recipe %q: socket %s: %w", recipeName, s.Socket, err)
 		}
-		fi, err := r.data.Stat(host)
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil, fmt.Errorf("recipe %q: socket %s does not exist — the host program must be listening before the box boots", recipeName, host)
-		} else if err != nil {
-			return nil, fmt.Errorf("recipe %q: socket %s: %w", recipeName, host, err)
+		// The literal paths were checked for `:` before expansion; a variable or a
+		// home directory can carry one in, and the drivers spell a bind host:box.
+		if strings.ContainsRune(host, ':') {
+			return nil, fmt.Errorf("recipe %q: socket %s expands to %s — a socket path may not contain `:`, which a driver reads as the host:box separator", recipeName, s.Socket, host)
 		}
-		if fi.Mode()&fs.ModeSocket == 0 {
-			return nil, fmt.Errorf("recipe %q: %s is not a unix socket", recipeName, host)
+		if err := r.checkSocketLive(recipeName, host); err != nil {
+			return nil, err
 		}
 		out = append(out, sandbox.Mount{Host: host, Path: boxPath})
 	}
 	return out, nil
+}
+
+// checkSocketLive reports whether host is a unix socket right now. A path that is
+// missing, or that names a regular file or a directory, is a typo — bound anyway
+// it would give the box a dead inode and a program inside it a connection refused
+// with nothing to point at.
+func (r Real) checkSocketLive(recipeName, host string) error {
+	fi, err := r.data.Stat(host)
+	if errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("recipe %q: socket %s does not exist — the host program must be listening before the box boots", recipeName, host)
+	} else if err != nil {
+		return fmt.Errorf("recipe %q: socket %s: %w", recipeName, host, err)
+	}
+	if fi.Mode()&fs.ModeSocket == 0 {
+		return fmt.Errorf("recipe %q: %s is not a unix socket", recipeName, host)
+	}
+	return nil
 }
 
 // withEnv returns env plus one variable, without writing into the recipe's own
@@ -783,6 +799,19 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID, tip string, rec re
 	// A recipe's env is passed to the driver as-is, and setting PATH there REPLACES
 	// the image PATH rather than extending it — so even the recipe's own command
 	// may stop resolving. Warn (stderr, never stdout) so the box still comes up.
+	// The last look at each socket before the driver binds it. A driver asked to
+	// bind a path that is not there CREATES a host directory at it (docker's short
+	// bind form does; the long form refuses, but a socket only crosses in the short
+	// one), so a listener that unlinked and rebound between the recipe's checks and
+	// this boot would find a directory standing where its socket belongs — one dabs
+	// left, owned by whoever ran dabs, and its next bind() failing against it.
+	// Checking here makes the window the gap between this call and the driver's own
+	// bind, which no caller can close.
+	for _, s := range sockets {
+		if err := r.checkSocketLive(recipeName, s.Host); err != nil {
+			return "", err
+		}
+	}
 	if _, ok := rec.Env["PATH"]; ok {
 		fmt.Fprintln(os.Stderr, tui.Warn("recipe %q sets PATH in env, which REPLACES the image PATH — commands in the box may not resolve", recipeName))
 	}

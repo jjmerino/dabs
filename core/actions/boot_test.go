@@ -8,6 +8,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/jjmerino/dabs/core/actions"
 	"github.com/jjmerino/dabs/core/recipe"
@@ -64,6 +65,33 @@ func TestBootRefusesBadSocketBoxPath(t *testing.T) {
 				t.Errorf("driver was handed %q: %v", boxPath, drv.ups)
 			}
 		})
+	}
+}
+
+// CONTRACT: Boot answers for the server refusal on its own. It shares a call site
+// with the `--no-command` path, so one test cannot speak for both entry points —
+// a caller handing Boot a recipe with sockets and a server target is refused
+// before the remote driver is asked for anything.
+func TestBootRefusesSocketsOnAServer(t *testing.T) {
+	fd := baseData()
+	listenSocket(fd, "/run/one.sock")
+	remote := &fakeDriver{built: map[string]bool{"img": true}, kind: "ssh"}
+	real := actions.New(map[string]sandbox.Driver{"local": &fakeDriver{}, "builder": remote},
+		[]string{"local", "builder"}, fstest.MapFS{}, fd)
+	_, err := real.Boot(actions.BootSpec{
+		Name: "inmem",
+		Recipe: recipe.Recipe{
+			Image:   recipe.ImageRef{Name: "img"},
+			Command: []string{"sh"},
+			Target:  "builder",
+			Sockets: []recipe.Socket{{Socket: "/run/one.sock", Path: "/run/dabs/one.sock"}},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "another machine") {
+		t.Fatalf("Boot put sockets on a server: %v", err)
+	}
+	if len(remote.ups) != 0 {
+		t.Errorf("the server driver was handed a box: %v", remote.ups)
 	}
 }
 

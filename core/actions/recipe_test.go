@@ -138,27 +138,28 @@ func (d *fakeDriver) Kind() string {
 // --- fake data: canned fs/env/git, records mutations -------------------------
 
 type fakeData struct {
-	home      string
-	cwd       string // Getwd: what relative paths resolve against
-	env       map[string]string
-	files     map[string][]byte      // ReadFile
-	exists    map[string]bool        // Stat -> exists
-	isDir     map[string]bool        // Stat -> IsDir (subset of exists)
-	modes     map[string]fs.FileMode // Stat -> Mode for an existing non-dir (zero = plain file)
-	toplevel  map[string]error       // GitToplevel: dir present with nil err => repo root is the dir
-	noCommits map[string]bool        // GitHasCommits false for these tops
-	worktrees []string               // recorded GitAddWorktree dests
-	mkdirs    []string
-	made      []string                  // exclusive Mkdir creations
-	dirs      map[string][]string       // ReadDir results
-	states    map[string]wtState        // GitState by worktree path
-	removed   []string                  // recorded GitRemoveWorktree
-	rmAll     []string                  // recorded RemoveAll
-	copies    []string                  // recorded CopyDir
-	commondir map[string]string         // GitCommonDir: worktree path -> parent .git (present => a worktree)
-	foreign   map[string][]string       // GitListWorktrees: repo top -> linked worktree paths; an absent top errors (no git / not a repo)
-	symlinks  map[string]string         // EvalSymlinks: path -> canonical form; an absent path errors, like an unresolvable one
-	prompts   map[string]data.GitPrompt // GitPromptStatus: dir -> prompt state; an absent dir errors (not a git repo)
+	home        string
+	cwd         string // Getwd: what relative paths resolve against
+	env         map[string]string
+	files       map[string][]byte      // ReadFile
+	exists      map[string]bool        // Stat -> exists
+	isDir       map[string]bool        // Stat -> IsDir (subset of exists)
+	modes       map[string]fs.FileMode // Stat -> Mode for an existing non-dir (zero = plain file)
+	vanishAfter map[string]int         // Stat -> ErrNotExist once the path has been stat'd this many times
+	toplevel    map[string]error       // GitToplevel: dir present with nil err => repo root is the dir
+	noCommits   map[string]bool        // GitHasCommits false for these tops
+	worktrees   []string               // recorded GitAddWorktree dests
+	mkdirs      []string
+	made        []string                  // exclusive Mkdir creations
+	dirs        map[string][]string       // ReadDir results
+	states      map[string]wtState        // GitState by worktree path
+	removed     []string                  // recorded GitRemoveWorktree
+	rmAll       []string                  // recorded RemoveAll
+	copies      []string                  // recorded CopyDir
+	commondir   map[string]string         // GitCommonDir: worktree path -> parent .git (present => a worktree)
+	foreign     map[string][]string       // GitListWorktrees: repo top -> linked worktree paths; an absent top errors (no git / not a repo)
+	symlinks    map[string]string         // EvalSymlinks: path -> canonical form; an absent path errors, like an unresolvable one
+	prompts     map[string]data.GitPrompt // GitPromptStatus: dir -> prompt state; an absent dir errors (not a git repo)
 }
 
 type wtState struct {
@@ -211,6 +212,14 @@ func (f *fakeData) AppendFile(p string, b []byte, _ fs.FileMode) error {
 	return nil
 }
 func (f *fakeData) Stat(p string) (fs.FileInfo, error) {
+	// A path with a countdown disappears once it has been stat'd that many times,
+	// standing in for a host program that unlinks its socket mid-boot.
+	if n, ok := f.vanishAfter[p]; ok {
+		if n <= 0 {
+			return nil, fs.ErrNotExist
+		}
+		f.vanishAfter[p] = n - 1
+	}
 	if f.exists[p] {
 		if f.isDir[p] {
 			return fakeFileInfo{fs.ModeDir}, nil
@@ -1077,6 +1086,68 @@ func TestRecipeSocketOnALocalTargetBoots(t *testing.T) {
 	up := onlyUp(t, dkr)
 	if len(up.Sockets) != 1 || up.Sockets[0] != (sandbox.Mount{Host: "/run/one.sock", Path: "/run/dabs/one.sock"}) {
 		t.Errorf("Up sockets = %+v, want the declared socket", up.Sockets)
+	}
+}
+
+// CONTRACT: the socket is checked again immediately before the driver binds it.
+// A driver told to bind a path that is not there creates a host DIRECTORY at it,
+// so a listener that unlinked and rebound after the recipe's own checks would
+// come back to a directory standing where its socket belongs. The window cannot
+// be closed, but a socket gone by boot time must refuse rather than reach the
+// driver.
+func TestRecipeSocketCheckedAgainBeforeUp(t *testing.T) {
+	y := `recipes:
+  s:
+    image: img
+    command: [x]
+    sockets:
+      - socket: /run/one.sock
+        path: /run/dabs/one.sock
+`
+	fd := baseData()
+	listenSocket(fd, "/run/one.sock")
+	// Alive for the resolve, gone by the boot — the whole window this guards.
+	fd.vanishAfter = map[string]int{"/run/one.sock": 1}
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "s"})
+	if err == nil {
+		t.Fatal("a socket that vanished before the boot still brought a box up")
+	}
+	if !strings.Contains(err.Error(), "does not exist") {
+		t.Errorf("error should name the vanished socket: %v", err)
+	}
+	if len(drv.ups) != 0 {
+		t.Errorf("driver was handed a vanished socket: %v", drv.ups)
+	}
+}
+
+// CONTRACT: the `:` refusal survives expansion. The literal paths are checked
+// when the recipe parses, but a variable or a home directory can carry a `:` in
+// afterwards, and every driver spells a bind host:box — so the expanded path is
+// checked too, and the user gets dabs's named refusal instead of a driver's
+// "invalid mode" further down.
+func TestRecipeSocketColonFromExpansionRefuses(t *testing.T) {
+	y := `recipes:
+  s:
+    image: img
+    command: [x]
+    sockets:
+      - socket: $RUNDIR/agent.sock
+        path: /run/dabs/agent.sock
+`
+	fd := baseData()
+	fd.env["RUNDIR"] = "/run/a:b"
+	listenSocket(fd, "/run/a:b/agent.sock")
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "s"})
+	if err == nil {
+		t.Fatal("a socket path that expands to one holding `:` booted a box")
+	}
+	if !strings.Contains(err.Error(), "`:`") || !strings.Contains(err.Error(), "/run/a:b/agent.sock") {
+		t.Errorf("error should name the expanded path and the `:`: %v", err)
+	}
+	if len(drv.ups) != 0 {
+		t.Errorf("driver was handed a path holding `:`: %v", drv.ups)
 	}
 }
 

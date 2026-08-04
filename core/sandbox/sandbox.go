@@ -44,6 +44,11 @@ type Spec struct {
 	Workdir string            // working directory inside the sandbox
 	Env     map[string]string // environment inside the sandbox
 	Mounts  []Mount           // live host paths attached into the box
+	// Sockets are host unix sockets exposed inside the box, each at its own Path.
+	// The caller has resolved every host path and confirmed it names a socket; a
+	// driver attaches it exactly. A socket is the box's line to a program that is
+	// already listening on the host, so it is attached whatever the egress mode.
+	Sockets []Mount
 	// Egress is the box's outbound network: "" or EgressOpen (unrestricted),
 	// EgressNone, or EgressProxy. The caller has already confirmed the driver
 	// enforces it (EgressEnforcer); a driver never degrades a mode it was given.

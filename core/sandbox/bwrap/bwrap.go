@@ -71,6 +71,10 @@ type instanceMeta struct {
 	Workdir string          `json:"workdir"`
 	Env     []string        `json:"env"`    // K=V, image env merged with spec env
 	Mounts  []sandbox.Mount `json:"mounts"` // live host paths bound into the box
+	// Sockets are the host unix sockets the box may talk to. They ride the meta
+	// for the same reason the egress fields do: the box has no long-lived process,
+	// so every Run/Exec rebuilds the whole sandbox and must bind them again.
+	Sockets []sandbox.Mount `json:"sockets,omitempty"`
 	// Egress and ProxySock replay the Spec's egress on every enter — the box
 	// has no long-lived process, so the network decision is re-applied per
 	// Run/Exec. A meta.json without these fields decodes to open.
@@ -181,7 +185,7 @@ func (d Driver) Up(spec sandbox.Spec) (string, error) {
 	// DABS_NAME marks the box: anything running inside can detect it is
 	// sandboxed.
 	env = append(env, "DABS_NAME="+instance)
-	meta := instanceMeta{Workdir: spec.Workdir, Env: env, Mounts: spec.Mounts, Egress: spec.Egress, ProxySock: spec.ProxySock, ForwarderBin: spec.ForwarderBin}
+	meta := instanceMeta{Workdir: spec.Workdir, Env: env, Mounts: spec.Mounts, Sockets: spec.Sockets, Egress: spec.Egress, ProxySock: spec.ProxySock, ForwarderBin: spec.ForwarderBin}
 	if err := writeJSON(filepath.Join(dir, "meta.json"), meta); err != nil {
 		return "", err
 	}
@@ -237,6 +241,13 @@ func (d Driver) enter(instance string, cmd []string) (*exec.Cmd, error) {
 			bind = "--ro-bind"
 		}
 		args = append(args, bind, m.Host, m.Path)
+	}
+	// Host sockets the recipe declared, bound AFTER the recipe mounts: bwrap binds
+	// in argv order, so a recipe source holding the directory a socket lands in
+	// would silently mask it. Read-write, since connecting to a unix socket is a
+	// write on its inode.
+	for _, s := range meta.Sockets {
+		args = append(args, "--bind", s.Host, s.Path)
 	}
 	if meta.Egress == sandbox.EgressProxy {
 		// The host proxy's socket and the single-purpose forwarder binary land

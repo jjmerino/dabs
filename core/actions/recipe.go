@@ -190,13 +190,17 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 	if err != nil {
 		return err
 	}
+	sockets, err := r.resolveSockets(name, rec.Sockets, vars)
+	if err != nil {
+		return err
+	}
 
 	image, err := r.ensureImage(drv, name, rec.Image)
 	if err != nil {
 		return err
 	}
 
-	instance, err := r.buildBox(drv, name, boxID, tip, rec, image, sources, resolved, cut, extra)
+	instance, err := r.buildBox(drv, name, boxID, tip, rec, image, sources, resolved, sockets, cut, extra)
 	if err != nil {
 		return err
 	}
@@ -615,6 +619,36 @@ func (r Real) validateSources(recipeName string, sources []recipe.Source, vars m
 	return resolved, nil
 }
 
+// resolveSockets turns a recipe's declared host sockets into driver mounts: each
+// host path expanded (~ , $VAR, and the node space vars a source may name) and
+// made absolute, and each one checked to BE a socket before any box is touched.
+// A path that is missing, or that names a regular file or a directory, is a typo
+// — bound anyway it would give the box a dead inode and a program inside it a
+// connection refused with nothing to point at.
+func (r Real) resolveSockets(recipeName string, sockets []recipe.Socket, vars map[string]string) ([]sandbox.Mount, error) {
+	out := make([]sandbox.Mount, 0, len(sockets))
+	for _, s := range sockets {
+		host, err := r.expandPathWith(s.Socket, vars)
+		if err != nil {
+			return nil, fmt.Errorf("recipe %q: %w", recipeName, err)
+		}
+		if host, err = r.absPath(host); err != nil {
+			return nil, fmt.Errorf("recipe %q: socket %s: %w", recipeName, s.Socket, err)
+		}
+		fi, err := r.data.Stat(host)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("recipe %q: socket %s does not exist — the host program must be listening before the box boots", recipeName, host)
+		} else if err != nil {
+			return nil, fmt.Errorf("recipe %q: socket %s: %w", recipeName, host, err)
+		}
+		if fi.Mode()&fs.ModeSocket == 0 {
+			return nil, fmt.Errorf("recipe %q: %s is not a unix socket", recipeName, host)
+		}
+		out = append(out, sandbox.Mount{Host: host, Path: s.Path})
+	}
+	return out, nil
+}
+
 // withEnv returns env plus one variable, without writing into the recipe's own
 // map — a recipe value is shared with the node snapshot and the registry.
 func withEnv(env map[string]string, key, value string) map[string]string {
@@ -637,8 +671,9 @@ func withEnv(env map[string]string, key, value string) map[string]string {
 // the boot path so both mount sources identically. `extra` is the argv the caller
 // appended to the recipe's command; it is recorded on the box node as provenance
 // of what the box was asked to do, and is empty on the boot path (which appends
-// nothing).
-func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID, tip string, rec recipe.Recipe, image string, sources []recipe.Source, resolved []resolvedSource, cut []wtCut, extra []string) (instance string, err error) {
+// nothing). `sockets` are the recipe's declared host sockets, already resolved
+// and checked (resolveSockets); the box gets them whatever its egress.
+func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID, tip string, rec recipe.Recipe, image string, sources []recipe.Source, resolved []resolvedSource, sockets []sandbox.Mount, cut []wtCut, extra []string) (instance string, err error) {
 	// Places are already cut (provisionPlaces): a `.` source's origin is the
 	// directory that place owns. What is left is turning every source into a mount.
 	var mounts []sandbox.Mount
@@ -740,7 +775,7 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID, tip string, rec re
 	if _, ok := rec.Env["PATH"]; ok {
 		fmt.Fprintln(os.Stderr, tui.Warn("recipe %q sets PATH in env, which REPLACES the image PATH — commands in the box may not resolve", recipeName))
 	}
-	instance, err = drv.Up(sandbox.Spec{Name: image, Workdir: workdir, Env: env, Mounts: mounts, Egress: egressMode, ProxySock: proxySock, ForwarderBin: forwarderBin})
+	instance, err = drv.Up(sandbox.Spec{Name: image, Workdir: workdir, Env: env, Mounts: mounts, Sockets: sockets, Egress: egressMode, ProxySock: proxySock, ForwarderBin: forwarderBin})
 	if err != nil {
 		return "", err
 	}

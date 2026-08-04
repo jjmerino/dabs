@@ -12,6 +12,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -140,12 +141,13 @@ type fakeData struct {
 	home      string
 	cwd       string // Getwd: what relative paths resolve against
 	env       map[string]string
-	files     map[string][]byte // ReadFile
-	exists    map[string]bool   // Stat -> exists
-	isDir     map[string]bool   // Stat -> IsDir (subset of exists)
-	toplevel  map[string]error  // GitToplevel: dir present with nil err => repo root is the dir
-	noCommits map[string]bool   // GitHasCommits false for these tops
-	worktrees []string          // recorded GitAddWorktree dests
+	files     map[string][]byte      // ReadFile
+	exists    map[string]bool        // Stat -> exists
+	isDir     map[string]bool        // Stat -> IsDir (subset of exists)
+	modes     map[string]fs.FileMode // Stat -> Mode for an existing non-dir (zero = plain file)
+	toplevel  map[string]error       // GitToplevel: dir present with nil err => repo root is the dir
+	noCommits map[string]bool        // GitHasCommits false for these tops
+	worktrees []string               // recorded GitAddWorktree dests
 	mkdirs    []string
 	made      []string                  // exclusive Mkdir creations
 	dirs      map[string][]string       // ReadDir results
@@ -211,23 +213,24 @@ func (f *fakeData) AppendFile(p string, b []byte, _ fs.FileMode) error {
 func (f *fakeData) Stat(p string) (fs.FileInfo, error) {
 	if f.exists[p] {
 		if f.isDir[p] {
-			return dirFileInfo{}, nil
+			return fakeFileInfo{fs.ModeDir}, nil
 		}
-		return nil, nil
+		return fakeFileInfo{f.modes[p]}, nil
 	}
 	return nil, fs.ErrNotExist
 }
 
-// dirFileInfo is a minimal fs.FileInfo reporting IsDir()==true, so Stat can
-// stand in for a directory (the `dabs build <dir>` resolution branch).
-type dirFileInfo struct{}
+// fakeFileInfo is a minimal fs.FileInfo carrying only a mode, so Stat can stand
+// in for a directory (the `dabs build <dir>` resolution branch), a unix socket,
+// or a plain file.
+type fakeFileInfo struct{ mode fs.FileMode }
 
-func (dirFileInfo) Name() string       { return "" }
-func (dirFileInfo) Size() int64        { return 0 }
-func (dirFileInfo) Mode() fs.FileMode  { return fs.ModeDir }
-func (dirFileInfo) ModTime() time.Time { return time.Time{} }
-func (dirFileInfo) IsDir() bool        { return true }
-func (dirFileInfo) Sys() any           { return nil }
+func (fakeFileInfo) Name() string         { return "" }
+func (fakeFileInfo) Size() int64          { return 0 }
+func (fi fakeFileInfo) Mode() fs.FileMode { return fi.mode }
+func (fakeFileInfo) ModTime() time.Time   { return time.Time{} }
+func (fi fakeFileInfo) IsDir() bool       { return fi.mode.IsDir() }
+func (fakeFileInfo) Sys() any             { return nil }
 func (f *fakeData) MkdirAll(p string, _ fs.FileMode) error {
 	f.mkdirs = append(f.mkdirs, p)
 	return nil
@@ -374,7 +377,7 @@ func newReal(recipesYAML string, fd *fakeData, drv sandbox.Driver, bundledImages
 }
 
 func baseData() *fakeData {
-	return &fakeData{home: "/home/t", cwd: "/cwd", env: map[string]string{}, exists: map[string]bool{}, isDir: map[string]bool{}, toplevel: map[string]error{}, noCommits: map[string]bool{}, states: map[string]wtState{}}
+	return &fakeData{home: "/home/t", cwd: "/cwd", env: map[string]string{}, exists: map[string]bool{}, isDir: map[string]bool{}, modes: map[string]fs.FileMode{}, toplevel: map[string]error{}, noCommits: map[string]bool{}, states: map[string]wtState{}}
 }
 
 func onlyUp(t *testing.T, d *fakeDriver) sandbox.Spec {
@@ -708,6 +711,165 @@ func TestRecipeWorktreeNoCommitsFailsBeforeBuild(t *testing.T) {
 	}
 	if len(drv.builds) != 0 || len(drv.ups) != 0 {
 		t.Errorf("side effects before no-commits validation: builds=%v ups=%v", drv.builds, drv.ups)
+	}
+}
+
+// listenSocket makes a host path stat as a live unix socket.
+func listenSocket(fd *fakeData, path string) {
+	fd.exists[path] = true
+	fd.modes[path] = fs.ModeSocket
+}
+
+// CONTRACT: every socket a recipe declares reaches the driver as a socket — host
+// path expanded, box path as written — and none of them turns into a mount. A
+// socket that arrived as a plain mount would be bound as a directory by the
+// drivers that distinguish the two, and the box would find a dead inode.
+func TestRecipeSocketsReachDriver(t *testing.T) {
+	y := `recipes:
+  s:
+    image: img
+    command: [x]
+    sockets:
+      - socket: ~/run/one.sock
+        path: /run/dabs/one.sock
+      - socket: $XDG/two.sock
+        path: /run/dabs/two.sock
+    sources:
+      - mount: /data
+        path: /work
+`
+	fd := baseData()
+	fd.exists["/data"] = true
+	fd.env["XDG"] = "/var/run/app"
+	listenSocket(fd, "/home/t/run/one.sock")
+	listenSocket(fd, "/var/run/app/two.sock")
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	if err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "s"}); err != nil {
+		t.Fatalf("Recipe: %v", err)
+	}
+	up := onlyUp(t, drv)
+	want := []sandbox.Mount{
+		{Host: "/home/t/run/one.sock", Path: "/run/dabs/one.sock"},
+		{Host: "/var/run/app/two.sock", Path: "/run/dabs/two.sock"},
+	}
+	if !reflect.DeepEqual(up.Sockets, want) {
+		t.Errorf("Up sockets = %+v, want %+v", up.Sockets, want)
+	}
+	if ms := sourceMounts(up.Mounts); len(ms) != 1 || ms[0] != (sandbox.Mount{Host: "/data", Path: "/work"}) {
+		t.Errorf("Up mounts = %+v, want only the declared source", ms)
+	}
+}
+
+// CONTRACT: a socket is filesystem, not network — a box that reaches nowhere
+// still gets the sockets its recipe declared. Gating them on egress would make
+// `egress: none` silently drop the box's line to a host program.
+func TestRecipeSocketsRideEveryEgress(t *testing.T) {
+	y := `recipes:
+  s:
+    image: img
+    command: [x]
+    egress: none
+    sockets:
+      - socket: /run/one.sock
+        path: /run/dabs/one.sock
+`
+	fd := baseData()
+	listenSocket(fd, "/run/one.sock")
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	if err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "s"}); err != nil {
+		t.Fatalf("Recipe: %v", err)
+	}
+	up := onlyUp(t, drv)
+	if up.Egress != sandbox.EgressNone {
+		t.Fatalf("Up egress = %q, want none", up.Egress)
+	}
+	if len(up.Sockets) != 1 || up.Sockets[0].Path != "/run/dabs/one.sock" {
+		t.Errorf("Up sockets = %+v, want the declared socket", up.Sockets)
+	}
+}
+
+// CONTRACT: a recipe that declares no sockets hands the driver none — the
+// feature is invisible to every recipe written before it.
+func TestRecipeWithoutSocketsCarriesNone(t *testing.T) {
+	y := `recipes:
+  m:
+    image: img
+    command: [x]
+    sources:
+      - mount: /data
+        path: /work
+`
+	fd := baseData()
+	fd.exists["/data"] = true
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	if err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "m"}); err != nil {
+		t.Fatalf("Recipe: %v", err)
+	}
+	if got := onlyUp(t, drv).Sockets; len(got) != 0 {
+		t.Errorf("Up sockets = %+v, want none", got)
+	}
+}
+
+// CONTRACT: a declared socket that is not there must be refused BY NAME before
+// any box comes up. Bound anyway, the box gets a dead inode and the program
+// inside it a failure with nothing to point at.
+func TestRecipeSocketMissingRefusesBeforeUp(t *testing.T) {
+	y := `recipes:
+  s:
+    image: img
+    command: [x]
+    sockets:
+      - socket: /run/absent.sock
+        path: /run/dabs/one.sock
+`
+	fd := baseData()
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "s"})
+	if err == nil {
+		t.Fatalf("want a refusal for a socket that does not exist; got nil")
+	}
+	if !strings.Contains(err.Error(), "/run/absent.sock") || !strings.Contains(err.Error(), "does not exist") {
+		t.Errorf("error should name the missing socket: %v", err)
+	}
+	if len(drv.ups) != 0 {
+		t.Errorf("brought a box up with a missing socket: %v", drv.ups)
+	}
+}
+
+// CONTRACT: a path that exists but is a regular file or a directory is refused
+// too. It is certainly a mistake, and binding it would give the box something
+// nothing can connect to.
+func TestRecipeSocketThatIsNotASocketRefusesBeforeUp(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		set  func(*fakeData)
+	}{
+		{"regular file", func(fd *fakeData) { fd.exists["/run/one.sock"] = true }},
+		{"directory", func(fd *fakeData) { fd.exists["/run/one.sock"] = true; fd.isDir["/run/one.sock"] = true }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			y := `recipes:
+  s:
+    image: img
+    command: [x]
+    sockets:
+      - socket: /run/one.sock
+        path: /run/dabs/one.sock
+`
+			fd := baseData()
+			tc.set(fd)
+			drv := &fakeDriver{built: map[string]bool{"img": true}}
+			err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "s"})
+			if err == nil {
+				t.Fatalf("want a refusal for a %s declared as a socket; got nil", tc.name)
+			}
+			if !strings.Contains(err.Error(), "not a unix socket") {
+				t.Errorf("error should say it is not a socket: %v", err)
+			}
+			if len(drv.ups) != 0 {
+				t.Errorf("brought a box up with a %s as its socket: %v", tc.name, drv.ups)
+			}
+		})
 	}
 }
 

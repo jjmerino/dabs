@@ -167,7 +167,11 @@ func (r Real) bootDetached(name string, rec recipe.Recipe, worktree, nodeName st
 	if err != nil {
 		return Box{}, "", nil, err
 	}
-	instance, err := r.buildBox(drv, name, boxID, tip, rec, image, sources, resolved, cut, nil)
+	sockets, err := r.resolveSockets(name, rec.Sockets, vars)
+	if err != nil {
+		return Box{}, "", nil, err
+	}
+	instance, err := r.buildBox(drv, name, boxID, tip, rec, image, sources, resolved, sockets, cut, nil)
 	if err != nil {
 		return Box{}, "", nil, err
 	}

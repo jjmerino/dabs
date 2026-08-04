@@ -309,7 +309,7 @@ Manage registered remote servers: `servers [ls] | add <name> [host] | rm <name>`
 
 ### recipe
 A fully declarative schema to provision spaces — image, workdir, command, env,
-sources, target, keep. Resolution order: bundled (`sh`) → `~/.dabs/recipes.yaml`
+sources, sockets, target, keep. Resolution order: bundled (`sh`) → `~/.dabs/recipes.yaml`
 (global) → `./dabs.yaml` (project), later winning.
 *Where:* `recipe.Recipe`, `loadRegistry`.
 
@@ -385,6 +385,17 @@ references `Real.drivers`.
 The cwd (`/work` default) and environment variables inside the box.
 *Where:* `recipe.Recipe.Workdir`/`Env`, `sandbox.Spec`.
 
+### sockets
+Recipe field, a top-level list of its own: host unix sockets the box may talk to,
+each `socket:` (the host path, `~` and `$VAR` expanded) landing at an absolute
+`path:` inside the box. It is not a source kind — a socket provisions nothing,
+owns no node space, and `rm` never reads it: the listener is a host program that
+must already be running, and the box only gets a door to it. That door is
+filesystem, not network, so it is open under every egress mode, `none` included.
+A `socket:` that does not exist, or that names a file or a directory, refuses the
+boot by name rather than handing the box a dead inode.
+*Where:* `recipe.Socket`, `resolveSockets`, `sandbox.Spec.Sockets`.
+
 ### at
 Where a provisioning source (a `worktree:` or `copy:`) puts its bytes in the NEW
 node's own spaces — e.g. `$NODE_HELD/worktree`. It lets the recipe say where the
@@ -397,7 +408,8 @@ Unset, it defaults to the node's held space.
 ## Source kinds
 
 A recipe's `sources:` list places things into the box at a `path`. Exactly one of
-the four kinds names each source's origin and picks HOW it lands.
+the four kinds names each source's origin and picks HOW it lands. A host unix
+socket is not one of them — see **sockets**.
 *All defined in:* `recipe.Source`, `buildBox`.
 
 ### mount

@@ -79,6 +79,12 @@ func (d Driver) Up(spec sandbox.Spec) (string, error) {
 	for _, m := range spec.Mounts {
 		args = append(args, "--mount", clidriver.MountArg(m))
 	}
+	// Host sockets the recipe declared. Each rides its own --volume: `container`
+	// relays a socket FILE volume across the VM (the --ssh mechanism); a socket
+	// inside a directory bind is dead virtiofs.
+	for _, s := range spec.Sockets {
+		args = append(args, "--volume", s.Host+":"+s.Path)
+	}
 	keepAlive := []string{"sleep", "infinity"}
 	if spec.Egress == sandbox.EgressProxy {
 		// A host binary cannot run in the linux micro-VM, so unlike the linux

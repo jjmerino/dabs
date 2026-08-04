@@ -500,3 +500,64 @@ func TestSingleTLSWindow(t *testing.T) {
 		t.Fatalf("want single-window error, got %v", err)
 	}
 }
+
+// `sockets:` is its own top-level key, not a fifth source kind: it parses into
+// its own list, keeps the order written, and leaves the recipe's sources alone.
+func TestSocketsParse(t *testing.T) {
+	reg, err := recipe.Parse([]byte(`
+recipes:
+  s:
+    image: img
+    sockets:
+      - socket: ~/run/one.sock
+        path: /run/dabs/one.sock
+      - socket: $XDG/two.sock
+        path: /run/dabs/two.sock
+    sources:
+      - mount: .
+        path: /work
+`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	got := reg.Recipes["s"].Sockets
+	want := []recipe.Socket{
+		{Socket: "~/run/one.sock", Path: "/run/dabs/one.sock"},
+		{Socket: "$XDG/two.sock", Path: "/run/dabs/two.sock"},
+	}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("sockets = %+v, want %+v", got, want)
+	}
+	if len(reg.Recipes["s"].Sources) != 1 {
+		t.Errorf("sockets leaked into sources: %+v", reg.Recipes["s"].Sources)
+	}
+}
+
+// A socket entry that cannot describe a door into the box is rejected at parse
+// time, naming what is wrong — a half-written entry must never reach a driver.
+func TestSocketValidation(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{"no host socket", "recipes:\n  s:\n    image: img\n    sockets:\n      - path: /run/one.sock\n", "needs both"},
+		{"no box path", "recipes:\n  s:\n    image: img\n    sockets:\n      - socket: /run/one.sock\n", "needs both"},
+		{"relative box path", "recipes:\n  s:\n    image: img\n    sockets:\n      - socket: /run/one.sock\n        path: run/one.sock\n", "must be absolute"},
+		{"unknown key", "recipes:\n  s:\n    image: img\n    sockets:\n      - sockt: /run/one.sock\n        path: /run/one.sock\n", "sockt"},
+		{"control character", "recipes:\n  s:\n    image: img\n    sockets:\n      - socket: \"/run/one\\u001b[2J.sock\"\n        path: /run/one.sock\n", "control character"},
+		{"two sockets at one box path", "recipes:\n  s:\n    image: img\n    sockets:\n      - socket: /run/one.sock\n        path: /run/dabs/x.sock\n      - socket: /run/two.sock\n        path: /run/dabs/x.sock\n", "same box path"},
+		{"socket over a source", "recipes:\n  s:\n    image: img\n    sources:\n      - mount: /data\n        path: /work\n    sockets:\n      - socket: /run/one.sock\n        path: /work\n", "same box path"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := recipe.Parse([]byte(c.yaml))
+			if err == nil {
+				t.Fatalf("want an error naming %q; the recipe parsed", c.want)
+			}
+			if !strings.Contains(err.Error(), c.want) {
+				t.Errorf("error %v does not name %q", err, c.want)
+			}
+		})
+	}
+}

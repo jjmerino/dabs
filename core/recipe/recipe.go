@@ -36,6 +36,7 @@ type Recipe struct {
 	Command     []string          `json:"command,omitempty" yaml:"command,omitempty"`         // what runs in the box
 	Env         map[string]string `json:"env,omitempty" yaml:"env,omitempty"`                 // environment inside the box
 	Sources     []Source          `json:"sources,omitempty" yaml:"sources,omitempty"`         // what lands in the box, and how
+	Sockets     []Socket          `json:"sockets,omitempty" yaml:"sockets,omitempty"`         // host unix sockets the box may talk to
 	Target      string            `json:"target,omitempty" yaml:"target,omitempty"`           // which fleet driver runs it (e.g. "docker", a server); default local
 	Keep        bool              `json:"keep,omitempty" yaml:"keep,omitempty"`               // keep the box alive after the command (default: delete it)
 	Egress      Egress            `json:"egress,omitempty" yaml:"egress,omitempty"`           // the box's outbound network: open | none | {allow/deny/http_proxy}
@@ -634,6 +635,19 @@ type Source struct {
 	RO bool `json:"ro,omitempty" yaml:"ro,omitempty"` // for mount: read-only
 }
 
+// Socket is a host unix socket exposed inside the box at Path. It is not a
+// source: it provisions nothing, owns no node space, and `rm` never reads it —
+// the listener lives on the host, and the box only gets a door to it. The door
+// is filesystem, not network, so it is open under every egress mode.
+//
+// Host paths may use ~ and $VAR/${VAR}, as a source's do. The host socket must
+// already exist when the box boots: nothing here creates one, and a path that
+// names no socket is a typo, not an instruction.
+type Socket struct {
+	Socket string `json:"socket" yaml:"socket"` // host path of the listening socket
+	Path   string `json:"path" yaml:"path"`     // absolute path inside the box
+}
+
 // Kind returns which source strategy this entry uses, plus its host origin. An
 // entry that names none (or more than one) is invalid.
 func (s Source) Kind() (kind, origin string, err error) {
@@ -776,6 +790,28 @@ func Validate(name string, rec Recipe) error {
 			}
 			seen[s.Path] = true
 		}
+	}
+	for _, s := range rec.Sockets {
+		if err := rejectControl(fmt.Sprintf("socket path in recipe %q", name), s.Socket); err != nil {
+			return err
+		}
+		if err := rejectControl(fmt.Sprintf("socket box path in recipe %q", name), s.Path); err != nil {
+			return err
+		}
+		if s.Socket == "" || s.Path == "" {
+			return fmt.Errorf("recipe %q: a socket entry needs both `socket:` (the host socket) and `path:` (where it lands in the box)", name)
+		}
+		// A box path is where the socket appears inside the box, and the box has no
+		// cwd for a relative one to hang off at bind time.
+		if !strings.HasPrefix(s.Path, "/") {
+			return fmt.Errorf("recipe %q: socket box path %q must be absolute", name, s.Path)
+		}
+		// A socket landing where a source (or another socket) lands is masked by
+		// whichever binds last, so the collision is named rather than hidden.
+		if seen[s.Path] {
+			return fmt.Errorf("recipe %q attaches two things at the same box path %q; each box path must be unique", name, s.Path)
+		}
+		seen[s.Path] = true
 	}
 	for k, v := range rec.Env {
 		if err := rejectControl(fmt.Sprintf("env key in recipe %q", name), k); err != nil {

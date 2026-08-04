@@ -81,6 +81,12 @@ func (d Driver) Up(spec sandbox.Spec) (string, error) {
 	for _, m := range spec.Mounts {
 		args = append(args, "--mount", clidriver.MountArg(m))
 	}
+	// Host sockets the recipe declared, each a FILE mount capturing the socket's
+	// inode at run time: a program that recreates its socket orphans this
+	// container's mount, and the box needs a re-up.
+	for _, s := range spec.Sockets {
+		args = append(args, "--mount", clidriver.MountArg(s))
+	}
 	// sleep infinity keeps the box alive; docker exec inherits the container's
 	// env and image WORKDIR, so Run/Exec need not re-pass them.
 	keepAlive := []string{"sleep", "infinity"}

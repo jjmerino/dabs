@@ -1151,6 +1151,61 @@ func TestRecipeSocketColonFromExpansionRefuses(t *testing.T) {
 	}
 }
 
+// CONTRACT: the reserved paths are checked against what the box path RESOLVES
+// to, not only what the recipe wrote. `/run/dabs/$NODE_ID` names nothing
+// reserved on the page, but in a box named `services` it lands exactly on the
+// services directory — and a socket masking it makes `dabs services` go quiet
+// with nothing to point at. The refusal names both spellings, since only one of
+// them is in the recipe.
+func TestRecipeSocketReservedCheckedAfterExpansion(t *testing.T) {
+	y := `recipes:
+  s:
+    image: img
+    command: [x]
+    sockets:
+      - socket: /run/one.sock
+        path: /run/dabs/$NODE_ID
+`
+	fd := baseData()
+	listenSocket(fd, "/run/one.sock")
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "s", NodeName: "services"})
+	if err == nil {
+		t.Fatal("a socket resolving onto the services dir booted a box")
+	}
+	for _, want := range []string{"/run/dabs/$NODE_ID", "/run/dabs/services", "collides"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should name %q: %v", want, err)
+		}
+	}
+	if len(drv.ups) != 0 {
+		t.Errorf("driver was handed a socket over the services dir: %v", drv.ups)
+	}
+}
+
+// CONTRACT: $NODE_ID in a socket path is still ordinary — a box whose name does
+// not resolve onto a reserved path boots and gets its socket there. The check
+// above must refuse a collision, not the variable.
+func TestRecipeSocketNodeIDAwayFromReservedBoots(t *testing.T) {
+	y := `recipes:
+  s:
+    image: img
+    command: [x]
+    sockets:
+      - socket: /run/one.sock
+        path: /run/dabs/$NODE_ID.sock
+`
+	fd := baseData()
+	listenSocket(fd, "/run/one.sock")
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	if err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "s", NodeName: "mybox"}); err != nil {
+		t.Fatalf("Recipe: %v", err)
+	}
+	if got := onlyUp(t, drv).Sockets; len(got) != 1 || got[0].Path != "/run/dabs/mybox.sock" {
+		t.Errorf("Up sockets = %+v, want the socket at /run/dabs/mybox.sock", got)
+	}
+}
+
 // CONTRACT: a socket sitting elsewhere under /run/dabs is fine — dabs reserves
 // the paths it binds, not the directory as a namespace. This is the shape the
 // docs recommend, so a refusal here would be a false positive.

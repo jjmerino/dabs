@@ -639,6 +639,13 @@ func (r Real) resolveSockets(recipeName, boxID string, sockets []recipe.Socket, 
 		if err != nil {
 			return nil, fmt.Errorf("recipe %q: %w", recipeName, err)
 		}
+		// The written path was checked against the reserved ones when the recipe was
+		// read; $NODE_ID can land on one that the written path did not name, so the
+		// resolved path is checked too — and the error names both spellings, since
+		// only one of them is in the recipe the user wrote.
+		if res := findReservedOverlap(boxPath); res != "" {
+			return nil, fmt.Errorf("recipe %q: socket box path %q resolves to %s, which collides with %s, the path dabs binds into every box that needs it — name another path", recipeName, s.Path, boxPath, res)
+		}
 		host, err := r.expandPathWith(s.Socket, vars)
 		if err != nil {
 			return nil, fmt.Errorf("recipe %q: %w", recipeName, err)
@@ -799,6 +806,9 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID, tip string, rec re
 	// A recipe's env is passed to the driver as-is, and setting PATH there REPLACES
 	// the image PATH rather than extending it — so even the recipe's own command
 	// may stop resolving. Warn (stderr, never stdout) so the box still comes up.
+	if _, ok := rec.Env["PATH"]; ok {
+		fmt.Fprintln(os.Stderr, tui.Warn("recipe %q sets PATH in env, which REPLACES the image PATH — commands in the box may not resolve", recipeName))
+	}
 	// The last look at each socket before the driver binds it. A driver asked to
 	// bind a path that is not there CREATES a host directory at it (docker's short
 	// bind form does; the long form refuses, but a socket only crosses in the short
@@ -811,9 +821,6 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID, tip string, rec re
 		if err := r.checkSocketLive(recipeName, s.Host); err != nil {
 			return "", err
 		}
-	}
-	if _, ok := rec.Env["PATH"]; ok {
-		fmt.Fprintln(os.Stderr, tui.Warn("recipe %q sets PATH in env, which REPLACES the image PATH — commands in the box may not resolve", recipeName))
 	}
 	instance, err = drv.Up(sandbox.Spec{Name: image, Workdir: workdir, Env: env, Mounts: mounts, Sockets: sockets, Egress: egressMode, ProxySock: proxySock, ForwarderBin: forwarderBin})
 	if err != nil {
@@ -1873,13 +1880,22 @@ func checkSockets(recipeName string, sockets []recipe.Socket) error {
 		if err := checkBoxPath(recipeName, "socket", s.Socket, s.Path); err != nil {
 			return err
 		}
-		for _, res := range reservedBoxPaths {
-			if overlapsPath(s.Path, res) {
-				return fmt.Errorf("recipe %q: socket box path %q collides with %s, which dabs binds into every box that needs it — name another path", recipeName, s.Path, res)
-			}
+		if res := findReservedOverlap(s.Path); res != "" {
+			return fmt.Errorf("recipe %q: socket box path %q collides with %s, which dabs binds into every box that needs it — name another path", recipeName, s.Path, res)
 		}
 	}
 	return nil
+}
+
+// findReservedOverlap returns the path dabs binds itself that boxPath would hide,
+// or "" when it hides none.
+func findReservedOverlap(boxPath string) string {
+	for _, res := range reservedBoxPaths {
+		if overlapsPath(boxPath, res) {
+			return res
+		}
+	}
+	return ""
 }
 
 // overlapsPath reports whether two box paths name the same place, or one holds

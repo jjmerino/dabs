@@ -984,7 +984,7 @@ func TestRecipeSocketCannotMaskDabsOwnPaths(t *testing.T) {
 // CONTRACT: the socket gate stands on EVERY path that boots a box, not just the
 // one that runs a command. `--no-command` builds the same box from the same
 // recipe, so a box path that is refused there is refused here — resolveSockets
-// alone would let `..` and a reserved collision straight through to the driver.
+// alone would let a `..` path straight through to the driver.
 func TestRecipeNoCommandRefusesBadSocketBoxPath(t *testing.T) {
 	for _, boxPath := range []string{"/run/dabs/../../etc/passwd", "/run/dabs/services"} {
 		t.Run(boxPath, func(t *testing.T) {
@@ -1203,6 +1203,44 @@ func TestRecipeSocketNodeIDAwayFromReservedBoots(t *testing.T) {
 	}
 	if got := onlyUp(t, drv).Sockets; len(got) != 1 || got[0].Path != "/run/dabs/mybox.sock" {
 		t.Errorf("Up sockets = %+v, want the socket at /run/dabs/mybox.sock", got)
+	}
+}
+
+// CONTRACT: a socket dabs cannot honour refuses BEFORE any side effect — the
+// early gate runs ahead of the places a recipe provisions, so a reserved box
+// path costs the user no cut worktree and no node record to clean up. The later
+// check, once the box path is resolved, catches the same collision but only
+// after both have happened.
+func TestRecipeSocketReservedRefusesBeforeAnySideEffect(t *testing.T) {
+	y := `recipes:
+  s:
+    image: img
+    command: [x]
+    sockets:
+      - socket: /run/one.sock
+        path: /run/dabs/services
+    sources:
+      - worktree: .
+        path: /work
+`
+	fd := baseData()
+	fd.toplevel["/cwd"] = nil // the cwd is a repo, so the worktree source COULD be cut
+	listenSocket(fd, "/run/one.sock")
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "s"})
+	if err == nil || !strings.Contains(err.Error(), "collides") {
+		t.Fatalf("want a reserved-path refusal, got %v", err)
+	}
+	if len(fd.worktrees) != 0 {
+		t.Errorf("a refused recipe cut a worktree: %v", fd.worktrees)
+	}
+	for path := range fd.files {
+		if strings.HasSuffix(path, "/"+nodeFileName) {
+			t.Errorf("a refused recipe minted a node record: %s", path)
+		}
+	}
+	if len(drv.ups) != 0 {
+		t.Errorf("a refused recipe brought a box up: %v", drv.ups)
 	}
 }
 

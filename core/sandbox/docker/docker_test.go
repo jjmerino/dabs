@@ -181,16 +181,21 @@ func TestUpSockets(t *testing.T) {
 			t.Fatal(err)
 		}
 		run := strings.Join((*calls)[0], " ")
+		// The SHORT form is load-bearing: Docker Desktop relays a socket bind
+		// written as -v and refuses the same bind written as --mount.
 		for _, want := range []string{
-			"type=bind,source=/host/one.sock,target=/run/dabs/one.sock",
-			"type=bind,source=/host/two.sock,target=/run/dabs/two.sock",
+			"-v /host/one.sock:/run/dabs/one.sock",
+			"-v /host/two.sock:/run/dabs/two.sock",
 		} {
 			if !strings.Contains(run, want) {
 				t.Errorf("argv missing %q: %s", want, run)
 			}
 		}
+		if strings.Contains(run, "target=/run/dabs/one.sock") {
+			t.Errorf("socket bound with --mount, which does not carry a socket: %s", run)
+		}
 		// A socket the box must connect to cannot be bound read-only.
-		if strings.Contains(run, "target=/run/dabs/one.sock,readonly") {
+		if strings.Contains(run, "/run/dabs/one.sock:ro") {
 			t.Errorf("socket bound read-only: %s", run)
 		}
 	})
@@ -209,7 +214,7 @@ func TestUpSockets(t *testing.T) {
 		}
 		run := strings.Join((*calls)[0], " ")
 		for _, want := range []string{
-			"type=bind,source=/host/one.sock,target=/run/dabs/one.sock",
+			"-v /host/one.sock:/run/dabs/one.sock",
 			"source=/host/.dabs/egress.sock,target=/run/dabs/egress.sock,readonly",
 			"/run/dabs/forward /run/dabs/egress.sock 18080 -- sleep infinity",
 		} {
@@ -224,7 +229,8 @@ func TestUpSockets(t *testing.T) {
 		if _, err := (Driver{}).Up(sandbox.Spec{Name: "img", Workdir: "/work"}); err != nil {
 			t.Fatal(err)
 		}
-		if run := strings.Join((*calls)[0], " "); strings.Contains(run, "type=bind") {
+		run := strings.Join((*calls)[0], " ")
+		if strings.Contains(run, "type=bind") || strings.Contains(run, "-v ") {
 			t.Errorf("a socketless, mountless box bound something: %s", run)
 		}
 	})

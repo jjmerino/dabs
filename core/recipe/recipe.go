@@ -807,11 +807,12 @@ func Validate(name string, rec Recipe) error {
 }
 
 // validateSockets checks a recipe's declared host sockets against seen, the box
-// paths its sources already claim. A socket needs a box to open a door into, and
-// the local host is the only one whose sockets dabs can reach — so a recipe with
-// no image, or one routed to a server, is refused here rather than booting a box
-// that quietly has no door. Where the socket LANDS is held to the same rules a
-// source's box path is (checkBoxPath, at boot).
+// paths its sources already claim. A socket needs a box to open a door into, so a
+// recipe with no image is refused here rather than provisioning a place that
+// quietly ignores its sockets. Where the socket LANDS is held to the same rules a
+// source's box path is (checkBoxPath, at boot), and whether the box's driver can
+// reach a listener on this host is settled once the target resolves to a driver
+// (checkSocketsReachable).
 func validateSockets(name string, rec Recipe, seen map[string]bool) error {
 	for _, s := range rec.Sockets {
 		if err := rejectControl(fmt.Sprintf("socket path in recipe %q", name), s.Socket); err != nil {
@@ -830,9 +831,6 @@ func validateSockets(name string, rec Recipe, seen map[string]bool) error {
 		}
 		if rec.Image.Name == "" && rec.Image.Dockerfile == "" {
 			return fmt.Errorf("recipe %q: declares sockets but no image — a socket is a door into a box, and this recipe only makes places", name)
-		}
-		if rec.Target != "" {
-			return fmt.Errorf("recipe %q: declares sockets and target %q — a socket is a listener on THIS host, which a box on another machine cannot reach", name, rec.Target)
 		}
 		// A socket landing where a source (or another socket) lands is masked by
 		// whichever binds last, so the collision is named rather than hidden.

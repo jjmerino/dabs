@@ -23,8 +23,8 @@ import (
 // CABoxDir is where the engine's public-cert directory is mounted in the box (a
 // DIRECTORY, not a file — the apple micro-VM cannot bind a single file); the
 // CA-trust env vars point every ecosystem's trust store at the cert inside it.
-// It is exported because it is one of the box paths dabs binds on its own
-// initiative, which the recipe lifecycle keeps a recipe from landing on.
+// It is one of the box paths dabs binds on its own initiative, which the recipe
+// lifecycle keeps a recipe from landing on.
 const (
 	CABoxDir  = "/run/dabs/pub"
 	caBoxPath = "/run/dabs/pub/ca.crt"

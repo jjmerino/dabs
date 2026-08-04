@@ -110,6 +110,9 @@ func (r Real) bootDetached(name string, rec recipe.Recipe, worktree, nodeName st
 	if err != nil {
 		return Box{}, "", nil, err
 	}
+	if err := checkSocketsReachable(name, rec.Sockets, drv); err != nil {
+		return Box{}, "", nil, err
+	}
 	// ASK the driver, before the boot, so one that cannot hold a background command
 	// refuses while nothing has been provisioned — never a box that quietly holds
 	// no running command. The question is a METHOD, not a bare type assertion: a

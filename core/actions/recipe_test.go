@@ -376,6 +376,16 @@ func newReal(recipesYAML string, fd *fakeData, drv sandbox.Driver, bundledImages
 	return actions.New(drivers, []string{"local"}, imgs, fd)
 }
 
+// withRecipes plants a recipes.yaml in the fake home, for a test that builds its
+// own driver map instead of going through newReal.
+func withRecipes(fd *fakeData, recipesYAML string) *fakeData {
+	if fd.files == nil {
+		fd.files = map[string][]byte{}
+	}
+	fd.files[fd.home+"/.dabs/recipes.yaml"] = []byte(recipesYAML)
+	return fd
+}
+
 func baseData() *fakeData {
 	return &fakeData{home: "/home/t", cwd: "/cwd", env: map[string]string{}, exists: map[string]bool{}, isDir: map[string]bool{}, modes: map[string]fs.FileMode{}, toplevel: map[string]error{}, noCommits: map[string]bool{}, states: map[string]wtState{}}
 }
@@ -981,6 +991,92 @@ func TestRecipeNoCommandRefusesBadSocketBoxPath(t *testing.T) {
 				t.Errorf("driver was handed %q: %v", boxPath, drv.ups)
 			}
 		})
+	}
+}
+
+// CONTRACT: a socket is a listener on THIS host, so a box that runs on another
+// machine is refused rather than booted with a bind the server driver drops —
+// and the local-host existence check, which cannot say anything about a remote
+// box, is never the thing standing between the user and a doorless box.
+func TestRecipeSocketOnAServerRefuses(t *testing.T) {
+	y := `recipes:
+  s:
+    image: img
+    command: [x]
+    target: builder
+    sockets:
+      - socket: /run/one.sock
+        path: /run/dabs/one.sock
+`
+	fd := baseData()
+	listenSocket(fd, "/run/one.sock")
+	remote := &fakeDriver{built: map[string]bool{"img": true}, kind: "ssh"}
+	real := actions.New(map[string]sandbox.Driver{"local": &fakeDriver{}, "builder": remote},
+		[]string{"local", "builder"}, fstest.MapFS{}, withRecipes(fd, y))
+	err := real.Recipe(params.Recipe{Name: "s"})
+	if err == nil {
+		t.Fatal("a recipe with sockets booted on a server; want a refusal")
+	}
+	if !strings.Contains(err.Error(), "another machine") {
+		t.Errorf("error should say the box runs elsewhere: %v", err)
+	}
+	if len(remote.ups) != 0 {
+		t.Errorf("the server driver was handed a box: %v", remote.ups)
+	}
+}
+
+// CONTRACT: the server refusal stands on the `--no-command` boot too, not only
+// on the path that runs a command — both hand the same recipe to the same
+// driver, and one gate without the other is a boot away from a doorless box.
+func TestRecipeNoCommandSocketOnAServerRefuses(t *testing.T) {
+	y := `recipes:
+  s:
+    image: img
+    command: [x]
+    target: builder
+    sockets:
+      - socket: /run/one.sock
+        path: /run/dabs/one.sock
+`
+	fd := baseData()
+	listenSocket(fd, "/run/one.sock")
+	remote := &fakeDriver{built: map[string]bool{"img": true}, kind: "ssh"}
+	real := actions.New(map[string]sandbox.Driver{"local": &fakeDriver{}, "builder": remote},
+		[]string{"local", "builder"}, fstest.MapFS{}, withRecipes(fd, y))
+	err := real.Recipe(params.Recipe{NoCommand: true, Args: []string{"s"}})
+	if err == nil || !strings.Contains(err.Error(), "another machine") {
+		t.Fatalf("--no-command booted sockets on a server: %v", err)
+	}
+	if len(remote.ups) != 0 {
+		t.Errorf("the server driver was handed a box: %v", remote.ups)
+	}
+}
+
+// CONTRACT: a target is not automatically another machine — the docker driver
+// runs its boxes right here, and binds a host path exactly as the default local
+// driver does. A socket must reach it, or the refusal above would be a ban on
+// every target rather than on a remote one.
+func TestRecipeSocketOnALocalTargetBoots(t *testing.T) {
+	y := `recipes:
+  s:
+    image: img
+    command: [x]
+    target: docker
+    sockets:
+      - socket: /run/one.sock
+        path: /run/dabs/one.sock
+`
+	fd := baseData()
+	listenSocket(fd, "/run/one.sock")
+	dkr := &fakeDriver{built: map[string]bool{"img": true}, kind: "docker"}
+	real := actions.New(map[string]sandbox.Driver{"local": &fakeDriver{}, "docker": dkr},
+		[]string{"local", "docker"}, fstest.MapFS{}, withRecipes(fd, y))
+	if err := real.Recipe(params.Recipe{Name: "s"}); err != nil {
+		t.Fatalf("Recipe: %v", err)
+	}
+	up := onlyUp(t, dkr)
+	if len(up.Sockets) != 1 || up.Sockets[0] != (sandbox.Mount{Host: "/run/one.sock", Path: "/run/dabs/one.sock"}) {
+		t.Errorf("Up sockets = %+v, want the declared socket", up.Sockets)
 	}
 }
 

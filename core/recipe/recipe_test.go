@@ -546,7 +546,6 @@ func TestSocketValidation(t *testing.T) {
 		{"host path with a colon", "recipes:\n  s:\n    image: img\n    sockets:\n      - socket: /run/a:b.sock\n        path: /run/dabs/one.sock\n", "may not contain `:`"},
 		{"box path with a colon", "recipes:\n  s:\n    image: img\n    sockets:\n      - socket: /run/one.sock\n        path: /run/dabs/a:b.sock\n", "may not contain `:`"},
 		{"no image", "recipes:\n  s:\n    sources:\n      - worktree: .\n        path: /work\n    sockets:\n      - socket: /run/one.sock\n        path: /run/dabs/one.sock\n", "no image"},
-		{"routed to a server", "recipes:\n  s:\n    image: img\n    target: builder\n    sockets:\n      - socket: /run/one.sock\n        path: /run/dabs/one.sock\n", "another machine"},
 		{"unknown key", "recipes:\n  s:\n    image: img\n    sockets:\n      - sockt: /run/one.sock\n        path: /run/one.sock\n", "sockt"},
 		{"control character", "recipes:\n  s:\n    image: img\n    sockets:\n      - socket: \"/run/one\\u001b[2J.sock\"\n        path: /run/one.sock\n", "control character"},
 		{"two sockets at one box path", "recipes:\n  s:\n    image: img\n    sockets:\n      - socket: /run/one.sock\n        path: /run/dabs/x.sock\n      - socket: /run/two.sock\n        path: /run/dabs/x.sock\n", "same box path"},

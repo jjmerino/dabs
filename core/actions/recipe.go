@@ -163,6 +163,9 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 	if err != nil {
 		return err
 	}
+	if err := checkSocketsReachable(name, rec.Sockets, drv); err != nil {
+		return err
+	}
 	// The claim runs after the confirm and after every name-independent
 	// refusal — including the PURE image check below: an image that can never
 	// be had refuses while nothing has happened yet. The image BUILD stays
@@ -1817,6 +1820,18 @@ var reservedBoxPaths = []string{
 	forwarder.ForwardPath,
 	proxy.CABoxDir,
 	sandbox.DetachedLogDir,
+}
+
+// checkSocketsReachable refuses a recipe's sockets on a driver whose boxes run
+// somewhere other than this host. The listener is a program on THIS machine, and
+// its socket is a host path only this machine has; a remote box could at best be
+// handed a name that means nothing there. Local drivers — however different their
+// boxes — all bind a host path, so only a server is refused.
+func checkSocketsReachable(recipeName string, sockets []recipe.Socket, drv sandbox.Driver) error {
+	if len(sockets) == 0 || !isServer(drv.Kind()) {
+		return nil
+	}
+	return fmt.Errorf("recipe %q: declares sockets and runs on %s, a box on another machine — a socket is a listener on this host, which that box has no path to", recipeName, drv.Kind())
 }
 
 // checkSockets rejects socket specs dabs cannot safely realize, BEFORE any side

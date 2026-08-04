@@ -567,3 +567,22 @@ func TestSocketValidation(t *testing.T) {
 		})
 	}
 }
+
+// Two sources landing at one box path silently mask each other, and the
+// destination is a PLACE, not a spelling: /work and /work/ are the same mount
+// point, so the collision must be named however either is written. This holds
+// for a recipe with no sockets at all.
+func TestSourceCollisionIsCanonical(t *testing.T) {
+	for _, second := range []string{"/work/", "/work/./", "/work/../work", "/work"} {
+		t.Run(second, func(t *testing.T) {
+			y := "recipes:\n  m:\n    image: img\n    sources:\n      - mount: /a\n        path: /work\n      - mount: /b\n        path: " + second + "\n"
+			_, err := recipe.Parse([]byte(y))
+			if err == nil {
+				t.Fatalf("two sources at /work and %s parsed; want a collision error", second)
+			}
+			if !strings.Contains(err.Error(), "same box path") {
+				t.Errorf("error %v does not name the box-path collision", err)
+			}
+		})
+	}
+}

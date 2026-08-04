@@ -940,6 +940,8 @@ func TestRecipeSocketCannotMaskDabsOwnPaths(t *testing.T) {
 		"/run/dabs/egress.sock", // the proxy's socket
 		"/run/dabs/forward",     // the forwarder binary
 		"/run/dabs/log",         // the detached-log dir
+		"/run/dabs/pub",         // the proxy CA directory
+		"/run/dabs/pub/ca.crt",  // the CA cert a proxied box verifies TLS against
 	} {
 		t.Run(boxPath, func(t *testing.T) {
 			y := "recipes:\n  s:\n    image: img\n    command: [x]\n    sockets:\n      - socket: /run/one.sock\n        path: " + boxPath + "\n"
@@ -955,6 +957,28 @@ func TestRecipeSocketCannotMaskDabsOwnPaths(t *testing.T) {
 			}
 			if len(drv.ups) != 0 {
 				t.Errorf("brought a box up with a socket at %q: %v", boxPath, drv.ups)
+			}
+		})
+	}
+}
+
+// CONTRACT: the socket gate stands on EVERY path that boots a box, not just the
+// one that runs a command. `--no-command` builds the same box from the same
+// recipe, so a box path that is refused there is refused here — resolveSockets
+// alone would let `..` and a reserved collision straight through to the driver.
+func TestRecipeNoCommandRefusesBadSocketBoxPath(t *testing.T) {
+	for _, boxPath := range []string{"/run/dabs/../../etc/passwd", "/run/dabs/services"} {
+		t.Run(boxPath, func(t *testing.T) {
+			y := "recipes:\n  s:\n    image: img\n    command: [x]\n    sockets:\n      - socket: /run/one.sock\n        path: " + boxPath + "\n"
+			fd := baseData()
+			listenSocket(fd, "/run/one.sock")
+			drv := &fakeDriver{built: map[string]bool{"img": true}}
+			err := newReal(y, fd, drv).Recipe(params.Recipe{NoCommand: true, Args: []string{"s"}})
+			if err == nil {
+				t.Fatalf("--no-command booted a box with socket box path %q", boxPath)
+			}
+			if len(drv.ups) != 0 {
+				t.Errorf("driver was handed %q: %v", boxPath, drv.ups)
 			}
 		})
 	}

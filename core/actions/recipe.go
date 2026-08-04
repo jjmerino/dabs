@@ -1101,8 +1101,7 @@ func confirmRecipe(name string, rec recipe.Recipe, command []string) string {
 		}
 		fmt.Fprintf(&b, "  %-8s %s → %s\n", kind, origin, s.Path)
 	}
-	// A socket is a live door onto a program already running on the host, so it is
-	// part of the box the user is approving, not a detail of it.
+	// A socket is a live door onto a program already running on the host.
 	for _, s := range rec.Sockets {
 		fmt.Fprintf(&b, "  %-8s %s → %s\n", "socket", s.Socket, s.Path)
 	}
@@ -1808,14 +1807,15 @@ func checkBoxPath(recipeName, kind, origin, boxPath string) error {
 
 // reservedBoxPaths are the paths dabs binds into a box ITSELF, whatever the
 // recipe says: the services directory every box publishes into, and the egress
-// socket, forwarder binary and detached-log directory a proxied or detached box
-// gets. A recipe source is bound before them and is simply overridden; a socket
-// is bound after, and would mask dabs's own door with nothing failing until a
-// program inside the box reached for it.
+// socket, forwarder binary, CA directory and detached-log directory a proxied or
+// detached box gets. A recipe source is bound before them and is simply
+// overridden; a socket is bound after, and would mask dabs's own door with
+// nothing failing until a program inside the box reached for it.
 var reservedBoxPaths = []string{
 	forwarder.ServicesDir,
 	forwarder.SockPath,
 	forwarder.ForwardPath,
+	proxy.CABoxDir,
 	sandbox.DetachedLogDir,
 }
 

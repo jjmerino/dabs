@@ -176,9 +176,10 @@ know what is in it:
    booting a box that quietly has no door: a `socket:` that is missing or that is
    not a socket, a `path:` landing on something dabs binds itself
    (`/run/dabs/services`, `/run/dabs/egress.sock`, `/run/dabs/forward`,
-   `/run/dabs/log`) or on another source's path, a `:` in either path, a recipe
-   with no image (a place has no box to open a door into), and a `target:`
-   (the listener is on THIS host; a box on another machine cannot reach it).
+   `/run/dabs/pub`, `/run/dabs/log`) or on another source's path, a `:` in
+   either path, a recipe with no image (a place has no box to open a door into),
+   and a `target:` (the listener is on THIS host; a box on another machine
+   cannot reach it).
 
    **Nodes and their three spaces.** A node is a marker for a place dabs
    provisioned — kind `project | workdir | worktree | box`, chained

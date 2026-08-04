@@ -39,6 +39,34 @@ func TestBootFromValueNeedsNoRegistry(t *testing.T) {
 	}
 }
 
+// CONTRACT: the library entry point boots a recipe VALUE, which never passed
+// through a recipes file — so it meets the socket gate too. A caller handing
+// Boot a socket box path that escapes with `..`, or one that lands on a path
+// dabs binds itself, is refused before any box comes up.
+func TestBootRefusesBadSocketBoxPath(t *testing.T) {
+	for _, boxPath := range []string{"/run/dabs/../../etc/passwd", "/run/dabs/services"} {
+		t.Run(boxPath, func(t *testing.T) {
+			fd := baseData()
+			listenSocket(fd, "/run/one.sock")
+			drv := &fakeDriver{built: map[string]bool{"img": true}}
+			_, err := newReal("", fd, drv).Boot(actions.BootSpec{
+				Name: "inmem",
+				Recipe: recipe.Recipe{
+					Image:   recipe.ImageRef{Name: "img"},
+					Command: []string{"sh"},
+					Sockets: []recipe.Socket{{Socket: "/run/one.sock", Path: boxPath}},
+				},
+			})
+			if err == nil {
+				t.Fatalf("Boot brought a box up with socket box path %q", boxPath)
+			}
+			if len(drv.ups) != 0 {
+				t.Errorf("driver was handed %q: %v", boxPath, drv.ups)
+			}
+		})
+	}
+}
+
 // CONTRACT: Boot runs NOTHING. It is the `--no-command` form: the box comes up
 // and the recipe's command is left for the caller to run through Exec, so a
 // recipe carrying a command must still reach the driver as a bare boot.

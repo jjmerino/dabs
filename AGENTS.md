@@ -154,6 +154,35 @@ know what is in it:
    | `worktree` | a fresh git branch off HEAD, mounted live | your tree is untouched; reap with `dabs worktrees` |
    | `copy` | a snapshot taken at box start | untouched |
 
+   **Host sockets — `sockets:`, a key of its own.** A box may also be handed unix
+   sockets a host program is already listening on. That is NOT a source kind: a
+   socket provisions nothing, owns no node space, and `rm` never reads it, so it
+   is its own top-level list — each entry a `socket:` (the host path, expanded
+   like a source origin: `~`, `$VAR`, and the node space vars `$NODE_*`/
+   `$PARENT_*`) landing at an absolute `path:` in the box:
+
+   ```yaml
+   recipes:
+     myproj:
+       image: shell
+       sockets:
+         - socket: ~/run/agent.sock     # must already exist and BE a socket
+           path: /run/dabs/agent.sock   # where the box finds it
+   ```
+
+   The door is filesystem, not network, so the box gets it under every egress
+   mode, `none` included. The box `path:` obeys the same rules a source's does —
+   absolute, no `..`, and `$NODE_ID` (the box's own id) is the only variable that
+   resolves in it. Everything else about a socket refuses by name rather than
+   booting a box that quietly has no door: a `socket:` that is missing or that is
+   not a socket, a `path:` landing on something dabs binds itself
+   (`/run/dabs/services`, `/run/dabs/egress.sock`, `/run/dabs/forward`,
+   `/run/dabs/pub`, `/run/dabs/log`) or on a path another source or socket
+   already claims, a `:` in either path, a recipe with no image (a place has no
+   box to open a door into), and a `target:` naming a SERVER (the listener is on
+   THIS host; a box on another machine has no path to it — a local target such
+   as `docker` is fine).
+
    **Nodes and their three spaces.** A node is a marker for a place dabs
    provisioned — kind `project | workdir | worktree | box`, chained
    `project → (workdir | worktree)? → box`. Every node has three directories, and
@@ -364,12 +393,15 @@ recipes:
         path: /work                #   kinds: mount | mkmount | worktree | copy
       - mkmount: $NODE_VOLUME/cache  # a box-private dir that survives `rm --keep`
         path: /root/.cache
+    sockets:                         # host unix sockets the box may talk to
+      - socket: ~/run/agent.sock     #   must exist and BE a socket; any egress
+        path: /run/dabs/agent.sock   #   absolute box path
 ```
 
 `dabs build [recipe|path]` builds a recipe's image; `dabs recipe [recipe|path]
 --no-command` boots a box from it and runs no command. Both take no arg (the registry
 `default:`), a recipe name, or a path to a `dabs.yaml` (or a dir holding one).
-A recipe is the whole box spec — image, env, workdir, target, sources.
+A recipe is the whole box spec — image, env, workdir, target, sources, sockets.
 
 ## Working on the codebase
 

@@ -63,6 +63,32 @@ func TestInfoRendersPersistedRecipeSnapshot(t *testing.T) {
 	}
 }
 
+// CONTRACT: the sockets a box was provisioned with render too. They are the
+// box's doors onto host programs, persisted on the node like every other part of
+// the recipe, and a reader asking what a box can reach must be told.
+func TestInfoRendersSockets(t *testing.T) {
+	base := "/home/t/.dabs/nodes/"
+	fd := baseData()
+	fd.files = map[string][]byte{
+		base + "boxy-abcd/dabs-node.json": []byte(`{"id":"boxy-abcd","kind":"box","instance":"inst-b","recipe":"agentbox","created":"t",` +
+			`"recipeSpec":{"image":"img","command":["sh"],` +
+			`"sockets":[{"socket":"~/run/agent.sock","path":"/run/dabs/agent.sock"}],` +
+			`"sources":[{"mount":".","path":"/work"}]}}`),
+	}
+	fd.dirs = map[string][]string{"/home/t/.dabs/nodes": {"boxy-abcd"}}
+
+	out := captureStdout(t, func() {
+		if err := newReal("", fd, &fakeDriver{}).Info(params.Info{Node: "boxy-abcd"}); err != nil {
+			t.Fatalf("Info: %v", err)
+		}
+	})
+	for _, want := range []string{"sockets", "~/run/agent.sock", "/run/dabs/agent.sock"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("info output missing %q:\n%s", want, out)
+		}
+	}
+}
+
 // CONTRACT: `dabs info` shows the tokens appended to the recipe's command at
 // boot (Node.Extra), VERBATIM — what this box was asked to do, which `dabs ls`
 // deliberately never surfaces. It shows the STORED tokens only, not a synthesis

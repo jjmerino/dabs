@@ -102,6 +102,9 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 	if err := r.checkSources(name, rec.Sources, boxless); err != nil {
 		return err
 	}
+	if err := checkSockets(name, rec.Sockets); err != nil {
+		return err
+	}
 	command := append(append([]string{}, rec.Command...), extra...)
 	// A recipe with no image is a recipe for a PLACE, not a box: it provisions its
 	// nodes (a worktree, a directory) and stops. Nodes do not need a box; a box
@@ -160,6 +163,9 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 	if err != nil {
 		return err
 	}
+	if err := checkSocketsReachable(name, rec.Sockets, drv); err != nil {
+		return err
+	}
 	// The claim runs after the confirm and after every name-independent
 	// refusal — including the PURE image check below: an image that can never
 	// be had refuses while nothing has happened yet. The image BUILD stays
@@ -190,13 +196,17 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 	if err != nil {
 		return err
 	}
+	sockets, err := r.resolveSockets(name, boxID, rec.Sockets, vars)
+	if err != nil {
+		return err
+	}
 
 	image, err := r.ensureImage(drv, name, rec.Image)
 	if err != nil {
 		return err
 	}
 
-	instance, err := r.buildBox(drv, name, boxID, tip, rec, image, sources, resolved, cut, extra)
+	instance, err := r.buildBox(drv, name, boxID, tip, rec, image, sources, resolved, sockets, cut, extra)
 	if err != nil {
 		return err
 	}
@@ -615,6 +625,64 @@ func (r Real) validateSources(recipeName string, sources []recipe.Source, vars m
 	return resolved, nil
 }
 
+// resolveSockets turns a recipe's declared host sockets into driver mounts: each
+// host path expanded (~ , $VAR, and the node space vars a source may name) and
+// made absolute, each box path expanded the way a source's is ($NODE_ID, the
+// box's own id), and each origin checked to BE a socket before any box is
+// touched. A path that is missing, or that names a regular file or a directory,
+// is a typo — bound anyway it would give the box a dead inode and a program
+// inside it a connection refused with nothing to point at.
+func (r Real) resolveSockets(recipeName, boxID string, sockets []recipe.Socket, vars map[string]string) ([]sandbox.Mount, error) {
+	out := make([]sandbox.Mount, 0, len(sockets))
+	for _, s := range sockets {
+		boxPath, err := expandBoxPath(s.Path, boxID)
+		if err != nil {
+			return nil, fmt.Errorf("recipe %q: %w", recipeName, err)
+		}
+		// The written path was checked against the reserved ones when the recipe was
+		// read; $NODE_ID can land on one that the written path did not name, so the
+		// resolved path is checked too — and the error names both spellings, since
+		// only one of them is in the recipe the user wrote.
+		if res := findReservedOverlap(boxPath); res != "" {
+			return nil, fmt.Errorf("recipe %q: socket box path %q resolves to %s, which collides with %s, the path dabs binds into every box that needs it — name another path", recipeName, s.Path, boxPath, res)
+		}
+		host, err := r.expandPathWith(s.Socket, vars)
+		if err != nil {
+			return nil, fmt.Errorf("recipe %q: %w", recipeName, err)
+		}
+		if host, err = r.absPath(host); err != nil {
+			return nil, fmt.Errorf("recipe %q: socket %s: %w", recipeName, s.Socket, err)
+		}
+		// The literal paths were checked for `:` before expansion; a variable or a
+		// home directory can carry one in, and the drivers spell a bind host:box.
+		if strings.ContainsRune(host, ':') {
+			return nil, fmt.Errorf("recipe %q: socket %s expands to %s — a socket path may not contain `:`, which a driver reads as the host:box separator", recipeName, s.Socket, host)
+		}
+		if err := r.checkSocketLive(recipeName, host); err != nil {
+			return nil, err
+		}
+		out = append(out, sandbox.Mount{Host: host, Path: boxPath})
+	}
+	return out, nil
+}
+
+// checkSocketLive reports whether host is a unix socket right now. A path that is
+// missing, or that names a regular file or a directory, is a typo — bound anyway
+// it would give the box a dead inode and a program inside it a connection refused
+// with nothing to point at.
+func (r Real) checkSocketLive(recipeName, host string) error {
+	fi, err := r.data.Stat(host)
+	if errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("recipe %q: socket %s does not exist — the host program must be listening before the box boots", recipeName, host)
+	} else if err != nil {
+		return fmt.Errorf("recipe %q: socket %s: %w", recipeName, host, err)
+	}
+	if fi.Mode()&fs.ModeSocket == 0 {
+		return fmt.Errorf("recipe %q: %s is not a unix socket", recipeName, host)
+	}
+	return nil
+}
+
 // withEnv returns env plus one variable, without writing into the recipe's own
 // map — a recipe value is shared with the node snapshot and the registry.
 func withEnv(env map[string]string, key, value string) map[string]string {
@@ -637,8 +705,9 @@ func withEnv(env map[string]string, key, value string) map[string]string {
 // the boot path so both mount sources identically. `extra` is the argv the caller
 // appended to the recipe's command; it is recorded on the box node as provenance
 // of what the box was asked to do, and is empty on the boot path (which appends
-// nothing).
-func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID, tip string, rec recipe.Recipe, image string, sources []recipe.Source, resolved []resolvedSource, cut []wtCut, extra []string) (instance string, err error) {
+// nothing). `sockets` are the recipe's declared host sockets, already resolved
+// and checked (resolveSockets); the box gets them whatever its egress.
+func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID, tip string, rec recipe.Recipe, image string, sources []recipe.Source, resolved []resolvedSource, sockets []sandbox.Mount, cut []wtCut, extra []string) (instance string, err error) {
 	// Places are already cut (provisionPlaces): a `.` source's origin is the
 	// directory that place owns. What is left is turning every source into a mount.
 	var mounts []sandbox.Mount
@@ -740,7 +809,20 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID, tip string, rec re
 	if _, ok := rec.Env["PATH"]; ok {
 		fmt.Fprintln(os.Stderr, tui.Warn("recipe %q sets PATH in env, which REPLACES the image PATH — commands in the box may not resolve", recipeName))
 	}
-	instance, err = drv.Up(sandbox.Spec{Name: image, Workdir: workdir, Env: env, Mounts: mounts, Egress: egressMode, ProxySock: proxySock, ForwarderBin: forwarderBin})
+	// The last look at each socket before the driver binds it. A driver asked to
+	// bind a path that is not there CREATES a host directory at it (docker's short
+	// bind form does; the long form refuses, but a socket only crosses in the short
+	// one), so a listener that unlinked and rebound between the recipe's checks and
+	// this boot would find a directory standing where its socket belongs — one dabs
+	// left, owned by whoever ran dabs, and its next bind() failing against it.
+	// Checking here makes the window the gap between this call and the driver's own
+	// bind, which no caller can close.
+	for _, s := range sockets {
+		if err := r.checkSocketLive(recipeName, s.Host); err != nil {
+			return "", err
+		}
+	}
+	instance, err = drv.Up(sandbox.Spec{Name: image, Workdir: workdir, Env: env, Mounts: mounts, Sockets: sockets, Egress: egressMode, ProxySock: proxySock, ForwarderBin: forwarderBin})
 	if err != nil {
 		return "", err
 	}
@@ -1057,6 +1139,10 @@ func confirmRecipe(name string, rec recipe.Recipe, command []string) string {
 			continue
 		}
 		fmt.Fprintf(&b, "  %-8s %s → %s\n", kind, origin, s.Path)
+	}
+	// A socket is a live door onto a program already running on the host.
+	for _, s := range rec.Sockets {
+		fmt.Fprintf(&b, "  %-8s %s → %s\n", "socket", s.Socket, s.Path)
 	}
 	fmt.Fprintf(&b, "command: %s", shellJoin(command))
 	return b.String()
@@ -1756,6 +1842,67 @@ func checkBoxPath(recipeName, kind, origin, boxPath string) error {
 		return fmt.Errorf("recipe %q: box path %q for %s:%s uses `..` to escape the workdir", recipeName, boxPath, kind, origin)
 	}
 	return nil
+}
+
+// reservedBoxPaths are the paths dabs binds into a box ITSELF, whatever the
+// recipe says: the services directory every box publishes into, and the egress
+// socket, forwarder binary, CA directory and detached-log directory a proxied or
+// detached box gets. A recipe source is bound before them and is simply
+// overridden; a socket is bound after, and would mask dabs's own door with
+// nothing failing until a program inside the box reached for it.
+var reservedBoxPaths = []string{
+	forwarder.ServicesDir,
+	forwarder.SockPath,
+	forwarder.ForwardPath,
+	proxy.CABoxDir,
+	sandbox.DetachedLogDir,
+}
+
+// checkSocketsReachable refuses a recipe's sockets on a driver whose boxes run
+// somewhere other than this host. The listener is a program on THIS machine, and
+// its socket is a host path only this machine has; a remote box could at best be
+// handed a name that means nothing there. Local drivers — however different their
+// boxes — all bind a host path, so only a server is refused.
+func checkSocketsReachable(recipeName string, sockets []recipe.Socket, drv sandbox.Driver) error {
+	if len(sockets) == 0 || !isServer(drv.Kind()) {
+		return nil
+	}
+	return fmt.Errorf("recipe %q: declares sockets and runs on %s, a box on another machine — a socket is a listener on this host, which that box has no path to", recipeName, drv.Kind())
+}
+
+// checkSockets rejects socket specs dabs cannot safely realize, BEFORE any side
+// effect (no place cut, no image built, no box up). Where a socket lands is held
+// to exactly what a source's box path is — checkBoxPath: absolute, no `..`, no
+// variable but $NODE_ID — plus one rule of its own: it may not overlap a path
+// dabs binds itself.
+func checkSockets(recipeName string, sockets []recipe.Socket) error {
+	for _, s := range sockets {
+		if err := checkBoxPath(recipeName, "socket", s.Socket, s.Path); err != nil {
+			return err
+		}
+		if res := findReservedOverlap(s.Path); res != "" {
+			return fmt.Errorf("recipe %q: socket box path %q collides with %s, which dabs binds into every box that needs it — name another path", recipeName, s.Path, res)
+		}
+	}
+	return nil
+}
+
+// findReservedOverlap returns the path dabs binds itself that boxPath would hide,
+// or "" when it hides none.
+func findReservedOverlap(boxPath string) string {
+	for _, res := range reservedBoxPaths {
+		if overlapsPath(boxPath, res) {
+			return res
+		}
+	}
+	return ""
+}
+
+// overlapsPath reports whether two box paths name the same place, or one holds
+// the other — the two ways a bind at one hides what is at the other.
+func overlapsPath(a, b string) bool {
+	a, b = filepath.Clean(a), filepath.Clean(b)
+	return withinRoot(a, b) || withinRoot(b, a)
 }
 
 // escapesRoot reports whether a relative path climbs above its anchor with `..`.

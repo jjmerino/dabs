@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"path"
 	"reflect"
 	"sort"
 	"strings"
@@ -36,6 +37,7 @@ type Recipe struct {
 	Command     []string          `json:"command,omitempty" yaml:"command,omitempty"`         // what runs in the box
 	Env         map[string]string `json:"env,omitempty" yaml:"env,omitempty"`                 // environment inside the box
 	Sources     []Source          `json:"sources,omitempty" yaml:"sources,omitempty"`         // what lands in the box, and how
+	Sockets     []Socket          `json:"sockets,omitempty" yaml:"sockets,omitempty"`         // host unix sockets the box may talk to
 	Target      string            `json:"target,omitempty" yaml:"target,omitempty"`           // which fleet driver runs it (e.g. "docker", a server); default local
 	Keep        bool              `json:"keep,omitempty" yaml:"keep,omitempty"`               // keep the box alive after the command (default: delete it)
 	Egress      Egress            `json:"egress,omitempty" yaml:"egress,omitempty"`           // the box's outbound network: open | none | {allow/deny/http_proxy}
@@ -634,6 +636,19 @@ type Source struct {
 	RO bool `json:"ro,omitempty" yaml:"ro,omitempty"` // for mount: read-only
 }
 
+// Socket is a host unix socket exposed inside the box at Path. The listener
+// lives on the host and must already be running; the box only gets a door to it,
+// and the door is filesystem, not network, so it is open under every egress
+// mode.
+//
+// Host paths may use ~ and $VAR/${VAR}, as a source's do. Path is held to
+// exactly what a source's box path is: absolute, no `..` segment, and no
+// variable but $NODE_ID.
+type Socket struct {
+	Socket string `json:"socket" yaml:"socket"` // host path of the listening socket
+	Path   string `json:"path" yaml:"path"`     // absolute path inside the box
+}
+
 // Kind returns which source strategy this entry uses, plus its host origin. An
 // entry that names none (or more than one) is invalid.
 func (s Source) Kind() (kind, origin string, err error) {
@@ -771,11 +786,14 @@ func Validate(name string, rec Recipe) error {
 		// Nesting at DIFFERENT paths stays legal; an empty path is a source
 		// that only makes a place and lands nowhere, so it is not a collision.
 		if s.Path != "" {
-			if seen[s.Path] {
+			if seen[path.Clean(s.Path)] {
 				return fmt.Errorf("recipe %q has two sources mounting to the same box path %q; each box path must be unique", name, s.Path)
 			}
-			seen[s.Path] = true
+			seen[path.Clean(s.Path)] = true
 		}
+	}
+	if err := validateSockets(name, rec, seen); err != nil {
+		return err
 	}
 	for k, v := range rec.Env {
 		if err := rejectControl(fmt.Sprintf("env key in recipe %q", name), k); err != nil {
@@ -786,6 +804,43 @@ func Validate(name string, rec Recipe) error {
 		}
 	}
 	return validateEgress(name, rec.Egress)
+}
+
+// validateSockets checks a recipe's declared host sockets against seen, the box
+// paths its sources already claim. A socket needs a box to open a door into, so a
+// recipe with no image is refused here rather than provisioning a place that
+// quietly ignores its sockets. Where the socket LANDS is held to the same rules a
+// source's box path is (checkBoxPath, at boot), and whether the box's driver can
+// reach a listener on this host is settled once the target resolves to a driver
+// (checkSocketsReachable).
+func validateSockets(name string, rec Recipe, seen map[string]bool) error {
+	for _, s := range rec.Sockets {
+		if err := rejectControl(fmt.Sprintf("socket path in recipe %q", name), s.Socket); err != nil {
+			return err
+		}
+		if err := rejectControl(fmt.Sprintf("socket box path in recipe %q", name), s.Path); err != nil {
+			return err
+		}
+		if s.Socket == "" || s.Path == "" {
+			return fmt.Errorf("recipe %q: a socket entry needs both `socket:` (the host socket) and `path:` (where it lands in the box)", name)
+		}
+		// A driver spells a bind as host:box, so a `:` in either half splits the
+		// pair somewhere else and attaches something other than what was written.
+		if strings.ContainsRune(s.Socket, ':') || strings.ContainsRune(s.Path, ':') {
+			return fmt.Errorf("recipe %q: socket %s → %s: a socket path may not contain `:` — a driver reads it as the host:box separator", name, s.Socket, s.Path)
+		}
+		if rec.Image.Name == "" && rec.Image.Dockerfile == "" {
+			return fmt.Errorf("recipe %q: declares sockets but no image — a socket is a door into a box, and this recipe only makes places", name)
+		}
+		// A socket landing where a source (or another socket) lands is masked by
+		// whichever binds last, so the collision is named rather than hidden.
+		// Compared canonically: /work and /work/../work are one destination.
+		if seen[path.Clean(s.Path)] {
+			return fmt.Errorf("recipe %q attaches two things at the same box path %q; each box path must be unique", name, s.Path)
+		}
+		seen[path.Clean(s.Path)] = true
+	}
+	return nil
 }
 
 // rejectControl fails if s holds an ASCII control byte. %q in the message

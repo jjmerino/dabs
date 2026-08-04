@@ -20,11 +20,13 @@ import (
 	"github.com/jjmerino/dabs/egressforwarder/forwarder"
 )
 
-// caBoxDir is where the engine's public-cert directory is mounted in the box (a
+// CABoxDir is where the engine's public-cert directory is mounted in the box (a
 // DIRECTORY, not a file — the apple micro-VM cannot bind a single file); the
 // CA-trust env vars point every ecosystem's trust store at the cert inside it.
+// It is one of the box paths dabs binds on its own initiative, which the recipe
+// lifecycle keeps a recipe from landing on.
 const (
-	caBoxDir  = "/run/dabs/pub"
+	CABoxDir  = "/run/dabs/pub"
 	caBoxPath = "/run/dabs/pub/ca.crt"
 )
 
@@ -106,7 +108,7 @@ func Provision(drv sandbox.Driver, recipeName string, egress recipe.Egress, reci
 			env[k] = v
 		}
 	}
-	mounts := []sandbox.Mount{{Host: eng.CAPubDir, Path: caBoxDir, RO: true}}
+	mounts := []sandbox.Mount{{Host: eng.CAPubDir, Path: CABoxDir, RO: true}}
 	return &Provisioned{
 		Env: env, Mounts: mounts, Socket: eng.Socket,
 		ForwarderBin: forwarderBin, PID: eng.PID, Dir: eng.Dir,

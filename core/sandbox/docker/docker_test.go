@@ -163,3 +163,75 @@ func TestUpEgressProxy(t *testing.T) {
 		}
 	}
 }
+
+// CONTRACT: every socket in the spec is bound into the box at its own path, and
+// the proxy's own socket is untouched by that — a proxied box with declared
+// sockets carries both doors.
+func TestUpSockets(t *testing.T) {
+	t.Run("each socket is bound", func(t *testing.T) {
+		calls := captureDocker(t)
+		_, err := (Driver{}).Up(sandbox.Spec{
+			Name: "img", Workdir: "/work",
+			Sockets: []sandbox.Mount{
+				{Host: "/host/one.sock", Path: "/run/dabs/one.sock"},
+				{Host: "/host/two.sock", Path: "/run/dabs/two.sock"},
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		run := strings.Join((*calls)[0], " ")
+		// The SHORT form is load-bearing: Docker Desktop relays a socket bind
+		// written as -v and refuses the same bind written as --mount.
+		for _, want := range []string{
+			"-v /host/one.sock:/run/dabs/one.sock",
+			"-v /host/two.sock:/run/dabs/two.sock",
+		} {
+			if !strings.Contains(run, want) {
+				t.Errorf("argv missing %q: %s", want, run)
+			}
+		}
+		if strings.Contains(run, "target=/run/dabs/one.sock") {
+			t.Errorf("socket bound with --mount, which does not carry a socket: %s", run)
+		}
+		// A socket the box must connect to cannot be bound read-only.
+		if strings.Contains(run, "/run/dabs/one.sock:ro") {
+			t.Errorf("socket bound read-only: %s", run)
+		}
+	})
+
+	t.Run("proxy egress keeps its own socket", func(t *testing.T) {
+		calls := captureDocker(t)
+		_, err := (Driver{}).Up(sandbox.Spec{
+			Name: "img", Workdir: "/work",
+			Sockets:      []sandbox.Mount{{Host: "/host/one.sock", Path: "/run/dabs/one.sock"}},
+			Egress:       sandbox.EgressProxy,
+			ProxySock:    "/host/.dabs/egress.sock",
+			ForwarderBin: "/host/.dabs/forward",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		run := strings.Join((*calls)[0], " ")
+		for _, want := range []string{
+			"-v /host/one.sock:/run/dabs/one.sock",
+			"source=/host/.dabs/egress.sock,target=/run/dabs/egress.sock,readonly",
+			"/run/dabs/forward /run/dabs/egress.sock 18080 -- sleep infinity",
+		} {
+			if !strings.Contains(run, want) {
+				t.Errorf("argv missing %q: %s", want, run)
+			}
+		}
+	})
+
+	t.Run("a spec with no sockets binds none", func(t *testing.T) {
+		calls := captureDocker(t)
+		if _, err := (Driver{}).Up(sandbox.Spec{Name: "img", Workdir: "/work"}); err != nil {
+			t.Fatal(err)
+		}
+		run := strings.Join((*calls)[0], " ")
+		if strings.Contains(run, "type=bind") || strings.Contains(run, "-v ") {
+			t.Errorf("a socketless, mountless box bound something: %s", run)
+		}
+	})
+}

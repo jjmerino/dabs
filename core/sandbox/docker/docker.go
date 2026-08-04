@@ -81,6 +81,13 @@ func (d Driver) Up(spec sandbox.Spec) (string, error) {
 	for _, m := range spec.Mounts {
 		args = append(args, "--mount", clidriver.MountArg(m))
 	}
+	// Host sockets the recipe declared, each as a -v bind. The short form is the
+	// one that carries a unix socket: Docker Desktop relays a socket bind written
+	// as -v, and refuses the same bind written as --mount with "bind source path
+	// does not exist" against a path of its own (/socket_mnt/...).
+	for _, s := range spec.Sockets {
+		args = append(args, "-v", s.Host+":"+s.Path)
+	}
 	// sleep infinity keeps the box alive; docker exec inherits the container's
 	// env and image WORKDIR, so Run/Exec need not re-pass them.
 	keepAlive := []string{"sleep", "infinity"}

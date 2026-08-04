@@ -87,6 +87,9 @@ func (r Real) Boot(spec BootSpec) (Box, error) {
 	if err := r.checkSources(spec.Name, rec.Sources, false); err != nil {
 		return Box{}, err
 	}
+	if err := checkSockets(spec.Name, rec.Sockets); err != nil {
+		return Box{}, err
+	}
 	box, _, _, err := r.bootDetached(spec.Name, rec, spec.Worktree, spec.NodeName, false)
 	return box, err
 }

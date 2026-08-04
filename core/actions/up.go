@@ -36,6 +36,9 @@ func (r Real) upDetached(arg, worktree, nodeName string, startCommand bool) erro
 	if err := r.checkSources(name, rec.Sources, boxless); err != nil {
 		return err
 	}
+	if err := checkSockets(name, rec.Sockets); err != nil {
+		return err
+	}
 	// `--detach` starts the recipe's OWN command, so a recipe with no box to run it
 	// in, or no command to run, has nothing to detach. Both refuse instead of
 	// quietly booting: `--no-command` is the flag that means "boot, run nothing",
@@ -107,6 +110,9 @@ func (r Real) bootDetached(name string, rec recipe.Recipe, worktree, nodeName st
 	if err != nil {
 		return Box{}, "", nil, err
 	}
+	if err := checkSocketsReachable(name, rec.Sockets, drv); err != nil {
+		return Box{}, "", nil, err
+	}
 	// ASK the driver, before the boot, so one that cannot hold a background command
 	// refuses while nothing has been provisioned — never a box that quietly holds
 	// no running command. The question is a METHOD, not a bare type assertion: a
@@ -167,7 +173,11 @@ func (r Real) bootDetached(name string, rec recipe.Recipe, worktree, nodeName st
 	if err != nil {
 		return Box{}, "", nil, err
 	}
-	instance, err := r.buildBox(drv, name, boxID, tip, rec, image, sources, resolved, cut, nil)
+	sockets, err := r.resolveSockets(name, boxID, rec.Sockets, vars)
+	if err != nil {
+		return Box{}, "", nil, err
+	}
+	instance, err := r.buildBox(drv, name, boxID, tip, rec, image, sources, resolved, sockets, cut, nil)
 	if err != nil {
 		return Box{}, "", nil, err
 	}

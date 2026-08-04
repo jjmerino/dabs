@@ -500,3 +500,88 @@ func TestSingleTLSWindow(t *testing.T) {
 		t.Fatalf("want single-window error, got %v", err)
 	}
 }
+
+// `sockets:` is its own top-level key, not a fifth source kind: it parses into
+// its own list, keeps the order written, and leaves the recipe's sources alone.
+func TestSocketsParse(t *testing.T) {
+	reg, err := recipe.Parse([]byte(`
+recipes:
+  s:
+    image: img
+    sockets:
+      - socket: ~/run/one.sock
+        path: /run/dabs/one.sock
+      - socket: $XDG/two.sock
+        path: /run/dabs/two.sock
+    sources:
+      - mount: .
+        path: /work
+`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	got := reg.Recipes["s"].Sockets
+	want := []recipe.Socket{
+		{Socket: "~/run/one.sock", Path: "/run/dabs/one.sock"},
+		{Socket: "$XDG/two.sock", Path: "/run/dabs/two.sock"},
+	}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("sockets = %+v, want %+v", got, want)
+	}
+	if len(reg.Recipes["s"].Sources) != 1 {
+		t.Errorf("sockets leaked into sources: %+v", reg.Recipes["s"].Sources)
+	}
+}
+
+// A socket entry that cannot describe a door into the box is rejected at parse
+// time, naming what is wrong — a half-written entry must never reach a driver.
+func TestSocketValidation(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{"no host socket", "recipes:\n  s:\n    image: img\n    sockets:\n      - path: /run/one.sock\n", "needs both"},
+		{"no box path", "recipes:\n  s:\n    image: img\n    sockets:\n      - socket: /run/one.sock\n", "needs both"},
+		{"host path with a colon", "recipes:\n  s:\n    image: img\n    sockets:\n      - socket: /run/a:b.sock\n        path: /run/dabs/one.sock\n", "may not contain `:`"},
+		{"box path with a colon", "recipes:\n  s:\n    image: img\n    sockets:\n      - socket: /run/one.sock\n        path: /run/dabs/a:b.sock\n", "may not contain `:`"},
+		{"no image", "recipes:\n  s:\n    sources:\n      - worktree: .\n        path: /work\n    sockets:\n      - socket: /run/one.sock\n        path: /run/dabs/one.sock\n", "no image"},
+		{"unknown key", "recipes:\n  s:\n    image: img\n    sockets:\n      - sockt: /run/one.sock\n        path: /run/one.sock\n", "sockt"},
+		{"control character", "recipes:\n  s:\n    image: img\n    sockets:\n      - socket: \"/run/one\\u001b[2J.sock\"\n        path: /run/one.sock\n", "control character"},
+		{"two sockets at one box path", "recipes:\n  s:\n    image: img\n    sockets:\n      - socket: /run/one.sock\n        path: /run/dabs/x.sock\n      - socket: /run/two.sock\n        path: /run/dabs/x.sock\n", "same box path"},
+		{"socket over a source", "recipes:\n  s:\n    image: img\n    sources:\n      - mount: /data\n        path: /work\n    sockets:\n      - socket: /run/one.sock\n        path: /work\n", "same box path"},
+		// The collision is a place, not a spelling: `..` must not walk a socket onto
+		// a source's path unnoticed.
+		{"socket over a source, spelled with ..", "recipes:\n  s:\n    image: img\n    sources:\n      - mount: /data\n        path: /work\n    sockets:\n      - socket: /run/one.sock\n        path: /work/../work\n", "same box path"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := recipe.Parse([]byte(c.yaml))
+			if err == nil {
+				t.Fatalf("want an error naming %q; the recipe parsed", c.want)
+			}
+			if !strings.Contains(err.Error(), c.want) {
+				t.Errorf("error %v does not name %q", err, c.want)
+			}
+		})
+	}
+}
+
+// Two sources landing at one box path silently mask each other, and the
+// destination is a PLACE, not a spelling: /work and /work/ are the same mount
+// point, so the collision must be named however either is written. This holds
+// for a recipe with no sockets at all.
+func TestSourceCollisionIsCanonical(t *testing.T) {
+	for _, second := range []string{"/work/", "/work/./", "/work/../work", "/work"} {
+		t.Run(second, func(t *testing.T) {
+			y := "recipes:\n  m:\n    image: img\n    sources:\n      - mount: /a\n        path: /work\n      - mount: /b\n        path: " + second + "\n"
+			_, err := recipe.Parse([]byte(y))
+			if err == nil {
+				t.Fatalf("two sources at /work and %s parsed; want a collision error", second)
+			}
+			if !strings.Contains(err.Error(), "same box path") {
+				t.Errorf("error %v does not name the box-path collision", err)
+			}
+		})
+	}
+}

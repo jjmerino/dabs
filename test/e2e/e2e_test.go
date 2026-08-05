@@ -678,10 +678,10 @@ const e2eRecipes = `recipes:
   longrunner:
     image: dabs-e2e
     command: [sh, -c, "while true; do echo tick >> /tmp/ticks; sleep 1; done"]
-  # For --worktree: a worktree-source recipe whose command DOES git — proving the
-  # bound worktree made the box git-capable. It commits (empty) and records the new
-  # HEAD into /work (the live-mounted worktree), so the host can confirm the commit
-  # reconciled.
+  # For the git-in-box pair: a worktree-source recipe whose command DOES git —
+  # proving the worktree the box stands on, cut or bound, made it git-capable. It
+  # commits (empty) and records the new HEAD into /work (the live-mounted
+  # worktree), so the host can confirm the commit reconciled.
   gitprobe:
     image: dabs-e2e
     command: [sh, -c, "cd /work && git rev-parse --abbrev-ref HEAD > BRANCH && git -c user.email=box@dabs.test -c user.name=box commit --allow-empty -qm 'from worktree box' && git rev-parse HEAD > CAST_HEAD"]
@@ -1091,6 +1091,53 @@ func TestWorktreeFlagAttachesWorktreeAndGivesGit(t *testing.T) {
 	}
 
 	// git ran INSIDE the box against the worktree's own branch...
+	branch := gitOut(t, wt, "rev-parse", "--abbrev-ref", "HEAD")
+	gotBranch, err := os.ReadFile(filepath.Join(wt, "BRANCH"))
+	if err != nil {
+		t.Fatalf("box did not write BRANCH — git was blind in-box: %v", err)
+	}
+	if strings.TrimSpace(string(gotBranch)) != branch {
+		t.Fatalf("in-box branch %q != worktree branch %q", strings.TrimSpace(string(gotBranch)), branch)
+	}
+
+	// ...and its commit reconciled into the SHARED store: the sha the box wrote
+	// is a real commit object reachable from the original repo, subject and all.
+	shaBytes, err := os.ReadFile(filepath.Join(wt, "CAST_HEAD"))
+	if err != nil {
+		t.Fatalf("box could not commit — no CAST_HEAD: %v", err)
+	}
+	sha := strings.TrimSpace(string(shaBytes))
+	if typ := gitOut(t, repo, "cat-file", "-t", sha); typ != "commit" {
+		t.Fatalf("box commit %s not in shared store from the repo (type %q)", sha, typ)
+	}
+	if subj := gitOut(t, wt, "log", "-1", "--format=%s"); subj != "from worktree box" {
+		t.Fatalf("worktree HEAD subject = %q, want 'from worktree box'", subj)
+	}
+}
+
+// TestFreshWorktreeCutGivesGit is the other half of the pair: with NO
+// `--worktree`, the same recipe CUTS a worktree instead of binding one — and
+// that box gets git too, on its very first run. Which checkout the box stands
+// on is all the flag decides; a cut checkout and a bound one agree about git.
+// Proven the same way: the box reads the branch dabs cut, commits, and that
+// commit reconciles into the shared store.
+func TestFreshWorktreeCutGivesGit(t *testing.T) {
+	clean(t)
+	installRecipes(t)
+	resetNodes(t) // isolate from other tests
+	repo := filepath.Join(home, "cutrepo")
+	gitRepo(t, repo)
+
+	// No prior worktree, no flag: the recipe cuts its own and stands on it.
+	out, code := runIn(repo, "dabs recipe gitprobe")
+	wantExit(t, 0, code)
+	wants := worktreeDirs(t)
+	if len(wants) != 1 {
+		t.Fatalf("want exactly one cut worktree, got %v\n%s", wants, out)
+	}
+	wt := worktreeData(wants[0])
+
+	// git ran INSIDE the box against the branch dabs cut...
 	branch := gitOut(t, wt, "rev-parse", "--abbrev-ref", "HEAD")
 	gotBranch, err := os.ReadFile(filepath.Join(wt, "BRANCH"))
 	if err != nil {

@@ -199,10 +199,12 @@ func TestInfoWorktreeNodeRendersProvisionedSnapshot(t *testing.T) {
 			t.Errorf("info missing snapshot detail %q:\n%s", want, out)
 		}
 	}
-	// The lone `worktree: .` source has no in-box path, so its mounts row is the
-	// kind and origin alone — no arrow, no empty target.
-	if !strings.Contains(out, "worktree  .") {
-		t.Errorf("boxless worktree source must render `worktree  .`:\n%s", out)
+	// The lone worktree source has no in-box path, so its mounts row is the kind
+	// and origin alone — no arrow, no empty target. The origin is the host path
+	// the recipe resolved to when it ran: a snapshot records where the bytes came
+	// from, and `.` would only name wherever the reader happens to stand now.
+	if !strings.Contains(out, "worktree  /cwd") {
+		t.Errorf("boxless worktree source must render `worktree  /cwd`:\n%s", out)
 	}
 	if strings.Contains(out, "→") {
 		t.Errorf("a pathless source must not render an arrow:\n%s", out)

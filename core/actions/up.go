@@ -52,6 +52,9 @@ func (r Real) upDetached(arg, worktree, nodeName string, startCommand bool) erro
 			return fmt.Errorf("recipe %q: no command to run — `dabs recipe %s --no-command` boots the box without one", name, name)
 		}
 	}
+	if rec, err = r.resolveOrigins(rec); err != nil {
+		return err
+	}
 	// A recipe with no image is a recipe for a PLACE, not a box. `--no-command` on
 	// one provisions its nodes and stops — the same outcome as a plain
 	// `dabs recipe`, so the two paths agree instead of the flag erroring on a
@@ -210,7 +213,7 @@ func (r Real) bootDetached(name string, rec recipe.Recipe, worktree, nodeName st
 			return Box{}, "", nil, fmt.Errorf("recipe %q: starting the detached command: %w", name, derr)
 		}
 	}
-	return Box{ID: boxID, Instance: instance}, logFile, kept, nil
+	return Box{ID: boxID, Instance: instance, Parent: tip}, logFile, kept, nil
 }
 
 // printUp reports what the boot did and what to do next. The box has two names:

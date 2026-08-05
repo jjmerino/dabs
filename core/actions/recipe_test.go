@@ -496,6 +496,87 @@ func TestRecipeWorktreeCreatesAndMounts(t *testing.T) {
 	}
 }
 
+// CONTRACT: what a `worktree:` source PROVISIONS is decided by its kind, not by
+// how its origin is spelled. A recipe naming a repository outright cuts a
+// checkout of it exactly as `worktree: .` cuts one of the cwd — there is no
+// spelling that turns the box's isolation into a live bind of the repository.
+func TestRecipeWorktreeFromAnAbsoluteOriginCutsACheckout(t *testing.T) {
+	y := `recipes:
+  w:
+    image: img
+    command: [x]
+    sources:
+      - worktree: /repo
+        path: /work
+`
+	fd := baseData()
+	fd.toplevel["/repo"] = nil // /repo is a repo whose root is itself
+	fd.exists["/repo"] = true
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	if err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "w"}); err != nil {
+		t.Fatalf("Recipe: %v", err)
+	}
+	if len(fd.worktrees) != 1 {
+		t.Fatalf("want one worktree cut off /repo, got %v", fd.worktrees)
+	}
+	up := onlyUp(t, drv)
+	if up.Mounts[0].Host == "/repo" {
+		t.Fatalf("the repository itself is bound at %s — a worktree source degraded to a live mount", up.Mounts[0].Path)
+	}
+	if up.Mounts[0].Host != fd.worktrees[0] || up.Mounts[0].Path != "/work" {
+		t.Errorf("Up mount = %+v, want the cut checkout %q at /work", up.Mounts[0], fd.worktrees[0])
+	}
+}
+
+// CONTRACT: a recipe read from a file carries FULL HOST PATHS by the time it
+// runs — the node's creation-time snapshot is the record of what it stood on, and
+// `.` there would name wherever a later reader happens to be rather than the
+// directory the run was about.
+func TestRecipeSnapshotRecordsResolvedOrigins(t *testing.T) {
+	y := `recipes:
+  m:
+    image: img
+    command: [x]
+    keep: true
+    sources:
+      - mount: .
+        path: /work
+`
+	fd := baseData()
+	fd.exists["/cwd"] = true
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	captureStdout(t, func() {
+		if err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "m"}); err != nil {
+			t.Fatalf("Recipe: %v", err)
+		}
+	})
+	var boxes int
+	for p, b := range fd.files {
+		if !strings.HasSuffix(p, "/dabs-node.json") {
+			continue
+		}
+		var n struct {
+			Kind       string `json:"kind"`
+			RecipeSpec *struct {
+				Sources []recipe.Source `json:"sources"`
+			} `json:"recipeSpec"`
+		}
+		if err := json.Unmarshal(b, &n); err != nil || n.Kind != "box" {
+			continue
+		}
+		boxes++
+		if n.RecipeSpec == nil || len(n.RecipeSpec.Sources) != 1 {
+			t.Fatalf("box node carries no single-source snapshot:\n%s", b)
+		}
+		if got := n.RecipeSpec.Sources[0].Mount; got != "/cwd" {
+			t.Errorf("snapshot origin = %q, want the resolved host path /cwd", got)
+		}
+	}
+	if boxes != 1 {
+		t.Fatalf("want one box node record, got %d", boxes)
+	}
+}
+
 func TestRecipeCopySnapshotsOntoTheHostAndMountsIt(t *testing.T) {
 	y := `recipes:
   c:
@@ -1449,9 +1530,10 @@ func TestWorktreeFlagAttachesWorktreeAndGitDir(t *testing.T) {
 	}
 }
 
-// CONTRACT: `--worktree` on a recipe that has no `.` source is a user error, not
-// a silent no-op — there's nothing to bind the worktree to.
-func TestWorktreeFlagRecipeWithoutDotSourceErrors(t *testing.T) {
+// CONTRACT: `--worktree` on a recipe whose sources carry no work — every one of
+// them a directory the box merely also needs — is a user error, not a silent
+// no-op: there is nothing to bind the worktree to.
+func TestWorktreeFlagRecipeWithoutWorkSourceErrors(t *testing.T) {
 	y := `recipes:
   v:
     image: img
@@ -1461,11 +1543,12 @@ func TestWorktreeFlagRecipeWithoutDotSourceErrors(t *testing.T) {
         path: /work
 `
 	fd := baseData()
+	fd.exists["/data"] = true
 	seedWorktreeNode(fd, "wt1", wtState{branch: "dabs/wt1"})
 	drv := &fakeDriver{built: map[string]bool{"img": true}}
 	err := newReal(y, fd, drv).Recipe(params.Recipe{Args: []string{"v"}, Worktree: "wt1"})
-	if err == nil || !strings.Contains(err.Error(), "no `.` source") {
-		t.Fatalf("want 'no `.` source' error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "no source carrying its work") {
+		t.Fatalf("want a no-work-source error, got %v", err)
 	}
 	if len(drv.ups) != 0 {
 		t.Errorf("box brought up despite bad --worktree: %v", drv.ups)
@@ -2296,28 +2379,38 @@ func TestRecipeSpaceVarNestedPathResolvesInside(t *testing.T) {
 	}
 }
 
-// CONTRACT: a recipe with more than one `.` source is rejected — each `.` cuts a
-// chain tip, but a single box can only stand on one place.
-func TestRecipeMultipleDotSourcesRejected(t *testing.T) {
-	y := `recipes:
+// CONTRACT: a box recipe declaring more than one source that MAKES a place is
+// rejected — each cuts a chain tip, and a single box can only stand on one. The
+// refusal keys on the source KIND, so naming two repositories outright is
+// refused exactly as two `.` sources are.
+func TestRecipeMultiplePlaceSourcesRejected(t *testing.T) {
+	for _, c := range []struct{ name, first, second string }{
+		{"both spelled `.`", ".", "."},
+		{"two absolute origins", "/repo", "/other"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			y := `recipes:
   m:
     image: img
     command: [x]
     sources:
-      - worktree: .
+      - worktree: ` + c.first + `
         path: /work
-      - copy: .
+      - copy: ` + c.second + `
         path: /snap
 `
-	fd := baseData()
-	fd.toplevel["/cwd"] = nil
-	drv := &fakeDriver{built: map[string]bool{"img": true}}
-	err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "m"})
-	if err == nil || !strings.Contains(err.Error(), "one `.` source") {
-		t.Fatalf("want a multiple-`.`-source error, got %v", err)
-	}
-	if len(drv.ups) != 0 || len(fd.worktrees) != 0 {
-		t.Errorf("side effects despite two `.` sources: ups=%v worktrees=%v", drv.ups, fd.worktrees)
+			fd := baseData()
+			fd.toplevel["/cwd"], fd.toplevel["/repo"] = nil, nil
+			fd.exists["/cwd"], fd.exists["/other"] = true, true
+			drv := &fakeDriver{built: map[string]bool{"img": true}}
+			err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "m"})
+			if err == nil || !strings.Contains(err.Error(), "a box stands on one place") {
+				t.Fatalf("want a multiple-place error, got %v", err)
+			}
+			if len(drv.ups) != 0 || len(fd.worktrees) != 0 || len(fd.copies) != 0 {
+				t.Errorf("side effects despite two places: ups=%v worktrees=%v copies=%v", drv.ups, fd.worktrees, fd.copies)
+			}
+		})
 	}
 }
 
@@ -2575,9 +2668,13 @@ func TestRelativeSourceOriginReachesDriverAbsolute(t *testing.T) {
 	if len(ms) != 2 || ms[0].Host != cwd {
 		t.Errorf("Up mounts = %+v, want `.` mounted as the cwd %s", ms, cwd)
 	}
-	// The copy source is staged read-only, then copied in-box.
-	if ms[1].Host != filepath.Join(cwd, "stage") {
-		t.Errorf("copy source host = %q, want %q", ms[1].Host, filepath.Join(cwd, "stage"))
+	// The relative copy origin is anchored on the cwd before it is snapshotted:
+	// the snapshot is taken FROM there, and the box is given the snapshot.
+	if want := filepath.Join(cwd, "stage") + " -> "; len(fd.copies) != 1 || !strings.HasPrefix(fd.copies[0], want) {
+		t.Errorf("host copies = %v, want one taken from %s", fd.copies, want)
+	}
+	if ms[1].Host == filepath.Join(cwd, "stage") {
+		t.Errorf("the copy origin is bound live at %s; want the snapshot dabs owns", ms[1].Path)
 	}
 }
 
@@ -2603,9 +2700,14 @@ recipes:
 	if err := newReal("", fd, drv).Recipe(params.Recipe{NoCommand: true, Args: []string{path}}); err != nil {
 		t.Fatalf("Up: %v", err)
 	}
-	up := onlyUp(t, drv)
-	if ms := sourceMounts(up.Mounts); len(ms) != 1 || ms[0].Host != "/proj/box/assets" {
-		t.Errorf("Up mounts = %+v, want the source anchored on the dabs.yaml dir (/proj/box/assets)", ms)
+	// The `copy:` is snapshotted from the anchored origin — where the bytes were
+	// read is what proves the anchoring, since what the box mounts is the
+	// snapshot dabs made.
+	if len(fd.copies) != 1 || !strings.HasPrefix(fd.copies[0], "/proj/box/assets -> ") {
+		t.Errorf("host copies = %v, want one taken from the dabs.yaml dir (/proj/box/assets)", fd.copies)
+	}
+	if ms := sourceMounts(onlyUp(t, drv).Mounts); len(ms) != 1 || ms[0].Host == "/proj/box/assets" {
+		t.Errorf("Up mounts = %+v, want the snapshot dabs owns, not the origin bound live", ms)
 	}
 }
 

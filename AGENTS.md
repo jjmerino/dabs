@@ -452,10 +452,10 @@ A Dockerfile-backed image is named after its RECIPE, so these build two image
 tags from the one Dockerfile — `dabs build dabseption` does not also ready
 `dabseptionwt` (the layer cache makes the second build cheap).
 
-`dabs recipe dabseptionwt --worktree <wt>` binds an EXISTING worktree instead, and
-also mounts its parent `.git` — so git works in-box. Plain `dabs recipe
-dabseptionwt` cuts a new worktree but does NOT mount the parent `.git`, so git is
-blind in-box; use `--worktree` when a test needs in-box git.
+`dabs recipe dabseptionwt --worktree <wt>` binds an EXISTING worktree instead of
+cutting one. Either way the box also gets the repo's `.git` at its own host
+path, so git works in-box on a worktree dabs just cut and on one an earlier run
+left behind alike.
 
 This covers CLI behaviour, recipe resolution, worktree/keep/rm logic, git
 in-box, nested boots, and error paths — the fast inner loop for changing dabs,

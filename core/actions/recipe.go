@@ -728,6 +728,18 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID, tip string, rec re
 			// worktree and copy own a directory on the host; a `.` mount IS the host
 			// directory. All three are one thing to a driver: a live bind.
 			mounts = append(mounts, sandbox.Mount{Host: rs.origin, Path: boxPath, RO: s.RO})
+			if rs.kind == "worktree" {
+				// A checkout cut off a repo is a LINKED worktree: its `.git` is a file
+				// naming the repo's shared store by absolute host path, so mounting the
+				// checkout alone leaves that pointer dangling and every git command in
+				// the box fails. The store rides in at its own path, writable — git
+				// keeps this worktree's index, refs and HEAD in there.
+				gitDir, gerr := r.data.GitCommonDir(rs.origin)
+				if gerr != nil {
+					return "", fmt.Errorf("recipe %q: worktree %s: %w", recipeName, rs.origin, gerr)
+				}
+				mounts = append(mounts, sandbox.Mount{Host: gitDir, Path: gitDir})
+			}
 		case "mkmount":
 			// The origin is the recipe's to name and dabs's to create — 0700,
 			// because this is where a harness puts a credential.

@@ -312,8 +312,14 @@ func (f *fakeData) GitToplevel(dir string) (string, error) {
 	return "", errors.New("not a git repository")
 }
 func (f *fakeData) GitHasCommits(top string) bool { return !f.noCommits[top] }
-func (f *fakeData) GitAddWorktree(_, _, dest string) error {
+func (f *fakeData) GitAddWorktree(top, _, dest string) error {
 	f.worktrees = append(f.worktrees, dest)
+	// git registers the new checkout against the repo it was cut off: from then on
+	// the checkout answers with that repo's store as its common dir.
+	if f.commondir == nil {
+		f.commondir = map[string]string{}
+	}
+	f.commondir[dest] = filepath.Join(top, ".git")
 	return nil
 }
 func (f *fakeData) ReadDir(dir string) ([]string, error) {
@@ -493,6 +499,50 @@ func TestRecipeWorktreeCreatesAndMounts(t *testing.T) {
 	up := onlyUp(t, drv)
 	if up.Mounts[0].Host != fd.worktrees[0] || up.Mounts[0].Path != "/work" {
 		t.Errorf("Up mount = %+v, want the created worktree at /work", up.Mounts[0])
+	}
+}
+
+// CONTRACT: a box standing on a FRESHLY CUT worktree has a working git — the
+// cut checkout's `.git` names the repo's shared store by absolute host path, so
+// the store is mounted at that same path, exactly as `--worktree` mounts it for
+// a checkout cut by an earlier run. The two ways to stand on a worktree do not
+// disagree about git.
+func TestRecipeFreshWorktreeMountsItsGitStore(t *testing.T) {
+	y := `recipes:
+  w:
+    image: img
+    command: [x]
+    sources:
+      - worktree: .
+        path: /work
+`
+	fd := baseData()
+	fd.toplevel["/cwd"] = nil // the cwd is a repo whose root is the cwd
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	if err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "w"}); err != nil {
+		t.Fatalf("Recipe: %v", err)
+	}
+	if len(fd.worktrees) != 1 {
+		t.Fatalf("want one worktree created, got %v", fd.worktrees)
+	}
+	want := []sandbox.Mount{
+		{Host: fd.worktrees[0], Path: "/work"}, // the checkout that was cut
+		{Host: "/cwd/.git", Path: "/cwd/.git"}, // its store, at its own path
+	}
+	got := sourceMounts(onlyUp(t, drv).Mounts)
+	if len(got) != len(want) {
+		t.Fatalf("mounts = %+v, want %+v", got, want)
+	}
+	for _, w := range want {
+		found := false
+		for _, g := range got {
+			if g == w {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("missing mount %+v; got %+v", w, got)
+		}
 	}
 }
 

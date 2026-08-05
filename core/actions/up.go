@@ -213,7 +213,7 @@ func (r Real) bootDetached(name string, rec recipe.Recipe, worktree, nodeName st
 			return Box{}, "", nil, fmt.Errorf("recipe %q: starting the detached command: %w", name, derr)
 		}
 	}
-	return Box{ID: boxID, Instance: instance}, logFile, kept, nil
+	return Box{ID: boxID, Instance: instance, Parent: tip}, logFile, kept, nil
 }
 
 // printUp reports what the boot did and what to do next. The box has two names:

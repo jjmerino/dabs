@@ -381,6 +381,50 @@ func TestBootBindsAnExistingWorktreeOverAnAbsoluteOrigin(t *testing.T) {
 	}
 }
 
+// CONTRACT: a boot hands back the node it STANDS ON, not only the box node it
+// minted. The box node is per-run; the place outlives it, and naming that place
+// on a later boot is what lands the second run in the first one's checkout
+// instead of cutting a fresh worktree over its uncommitted work.
+func TestBootReportsThePlaceItStandsOn(t *testing.T) {
+	fd := baseData()
+	fd.toplevel["/repo"] = nil
+	fd.exists["/repo"] = true
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	rec := recipe.Recipe{
+		Image:   recipe.ImageRef{Name: "img"},
+		Command: []string{"sh"},
+		Sources: []recipe.Source{{Worktree: "/repo", Path: "/work"}},
+	}
+	first, err := newReal("", fd, drv).Boot(actions.BootSpec{Name: "inmem", Recipe: rec})
+	if err != nil {
+		t.Fatalf("Boot: %v", err)
+	}
+	if first.Parent == "" || first.Parent == first.ID {
+		t.Fatalf("boot reported no place of its own: %+v", first)
+	}
+	// The place it named is a worktree node, and it holds the checkout the box got.
+	fd.commondir = map[string]string{nodeBase + "/" + first.Parent + "/held/worktree": "/repo/.git"}
+	fd.exists["/repo/.git"] = true
+	fd.exists[nodeBase+"/"+first.Parent+"/held/worktree"] = true
+	cut := mountAt(t, onlyUp(t, drv), "/work").Host
+
+	// A second boot naming that place re-enters it: nothing new is cut, and the
+	// box lands on the same checkout.
+	again, err := newReal("", fd, drv).Boot(actions.BootSpec{Name: "inmem", Recipe: rec, Worktree: first.Parent})
+	if err != nil {
+		t.Fatalf("re-boot onto the reported place: %v", err)
+	}
+	if len(fd.worktrees) != 1 {
+		t.Fatalf("the re-boot cut another worktree: %v", fd.worktrees)
+	}
+	if again.Parent != first.Parent {
+		t.Errorf("re-boot stands on %q, want the same place %q", again.Parent, first.Parent)
+	}
+	if got := mountAt(t, drv.ups[1], "/work").Host; got != cut {
+		t.Errorf("re-boot mounts %q, want the first boot's checkout %q", got, cut)
+	}
+}
+
 // mountAt returns the box's mount landing at path, failing when there is none.
 func mountAt(t *testing.T, spec sandbox.Spec, path string) sandbox.Mount {
 	t.Helper()

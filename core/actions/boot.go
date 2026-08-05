@@ -7,12 +7,22 @@ import (
 )
 
 // Box is a booted box's identity, as handed back to a Go caller: the node ID —
-// the canonical, stable handle `exec`/`rm`/`cd` resolve first — and the driver's
-// INSTANCE name, minted after the box comes up and named after the image. Both
-// resolve everywhere a name resolves; the node ID is the one to keep.
+// the canonical, stable handle `exec`/`rm`/`cd` resolve first — the driver's
+// INSTANCE name, minted after the box comes up and named after the image, and
+// the node the box stands ON. Both names resolve everywhere a name resolves; the
+// node ID is the one to keep.
+//
+// A box node is minted fresh for every boot and never returns, so ID is a handle
+// on THIS run alone. Parent is the handle that outlives it.
 type Box struct {
 	ID       string // node id (the recipe name plus a minted suffix, or BootSpec.NodeName)
 	Instance string // driver instance name, as reported by ls
+	// Parent is the node id of the PLACE this box stands on: the worktree a
+	// `worktree:` source cut (or the one BootSpec.Worktree bound), the workdir a
+	// `copy:` source landed in, or the project when the recipe only mounts. A
+	// later boot passes it as BootSpec.Worktree to land in that same checkout
+	// rather than cut another and leave this run's uncommitted work behind.
+	Parent string
 }
 
 // BootSpec is the input to Boot: a recipe VALUE plus the knobs `dabs recipe

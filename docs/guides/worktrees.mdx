@@ -57,11 +57,11 @@ _______ (HEAD -> dabs/________) improve
 _______ (main) first
 ```
 
-<Warning>
-A **static** `worktree: .` source (plain `wt`/`wtbox`) does *not* mount the
-parent `.git` — git is blind inside such a box. The agent edits; you commit on
-the host. Use `--worktree` when a job needs in-box git.
-</Warning>
+<Note>
+A plain `worktree: .` source (`wt`/`wtbox`, no flag) cuts a fresh checkout and
+mounts that same `.git` alongside it, so git works in that box too. `--worktree`
+chooses *which* checkout the box stands on, not whether it can commit.
+</Note>
 
 After an edit the state flips to `has work`:
 

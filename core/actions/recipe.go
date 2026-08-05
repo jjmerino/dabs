@@ -105,6 +105,9 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 	if err := checkSockets(name, rec.Sockets); err != nil {
 		return err
 	}
+	if rec, err = r.resolveOrigins(rec); err != nil {
+		return err
+	}
 	command := append(append([]string{}, rec.Command...), extra...)
 	// A recipe with no image is a recipe for a PLACE, not a box: it provisions its
 	// nodes (a worktree, a directory) and stops. Nodes do not need a box; a box
@@ -425,7 +428,12 @@ func (r Real) spaceVars(id, prefix string) (map[string]string, error) {
 
 // provisionPlaces cuts whatever PLACE a recipe declares — a worktree, a directory
 // holding its own copy — and returns the chain tip a box will stack on, plus the
-// host path each `.` source resolved to.
+// host path each provisioned source landed at.
+//
+// The source KIND decides: `worktree:` and `copy:` make a place, `mount:` and
+// `mkmount:` make none. The origin's spelling never decides, so there is no way
+// to write a `worktree:` or `copy:` source that skips provisioning and reaches
+// buildBox as a live bind of the host directory it named.
 //
 // It runs BEFORE the box node is named, because a box names its parent's spaces
 // ($PARENT_VOLUME) and a parent must exist to be named.
@@ -451,8 +459,8 @@ func (r Real) provisionPlaces(recipeName string, snap *recipe.Recipe, sources []
 		if kerr != nil {
 			return "", "", nil, nil, nil, fmt.Errorf("recipe %q: %w", recipeName, kerr)
 		}
-		if !isDotSource(s) {
-			continue
+		if kind != "worktree" && kind != "copy" {
+			continue // a live bind makes no place: the box stands on the project
 		}
 		host, herr := r.expandPath(origin)
 		if herr != nil {
@@ -508,11 +516,6 @@ func (r Real) provisionPlaces(recipeName string, snap *recipe.Recipe, sources []
 			}
 			tip, hosts[i] = id, at
 			kept = append(kept, "workdir "+at)
-		case "mount":
-			// A live mount provisions no middle node: the box stands directly on
-			// the project (the diamond's direct edge). The place IS the live host
-			// directory, so there is nothing to make.
-			tip, hosts[i] = project, host
 		}
 	}
 	return project, tip, hosts, kept, cut, nil
@@ -576,7 +579,7 @@ func (r Real) validateSources(recipeName string, sources []recipe.Source, vars m
 		if s.NeedsBoxPath() {
 			return nil, fmt.Errorf("recipe %q: source %s:%s has no path — say where it lands in the box", recipeName, kind, origin)
 		}
-		// A `.` source was already provisioned into a place; its host is that place.
+		// A source that made a place was already provisioned; its host is that place.
 		if h, ok := hosts[i]; ok {
 			resolved[i] = resolvedSource{kind: kind, origin: h}
 			continue
@@ -1396,6 +1399,40 @@ func (r Real) hasBundledImage(name string) bool {
 	return err == nil
 }
 
+// resolveOrigins is the file→memory boundary for a recipe's source paths: it
+// returns rec with every RELATIVE origin (`.`, `./stage`) made absolute against
+// the process working directory. Past it a registry recipe holds full host
+// paths — the same representation a Go caller hands Boot — so nothing
+// downstream may key on how an origin was spelled.
+//
+// `~` and `$VAR` origins are left as written, for expandPath at the point of
+// use: they carry their own anchor, and the node space vars ($NODE_*/$PARENT_*)
+// name directories that do not exist until the node owning them is minted,
+// which is later than this.
+//
+// The `..`-escape rule for relative origins is checkSources', and runs before
+// this: once resolved, a relative origin is indistinguishable from an absolute
+// one the user chose deliberately.
+func (r Real) resolveOrigins(rec recipe.Recipe) (recipe.Recipe, error) {
+	wd, err := r.data.Getwd()
+	if err != nil {
+		return recipe.Recipe{}, err
+	}
+	// The registry's own slice is shared with every later lookup in this process,
+	// so the absolute origins land in a copy of it.
+	sources := make([]recipe.Source, len(rec.Sources))
+	copy(sources, rec.Sources)
+	for i := range sources {
+		for _, origin := range []*string{&sources[i].Mount, &sources[i].Mkmount, &sources[i].Worktree, &sources[i].Copy} {
+			if isHostRelative(*origin) {
+				*origin = filepath.Join(wd, *origin)
+			}
+		}
+	}
+	rec.Sources = sources
+	return rec, nil
+}
+
 // absPath makes p absolute against the process working directory, read through
 // the data seam so a fake can control it.
 func (r Real) absPath(p string) (string, error) {
@@ -1577,13 +1614,6 @@ func (r Real) addWorktree(top, recipeName string, snap *recipe.Recipe, parent, n
 	return path, branch, id, nil
 }
 
-// isDotSource reports whether a source names `.` — the code the recipe is about,
-// as opposed to a dir it happens to also need (a login vault, a skill).
-func isDotSource(s recipe.Source) bool {
-	_, origin, err := s.Kind()
-	return err == nil && origin == "."
-}
-
 // ensureProjectNode marks the directory a command ran from — the root of the
 // chain and what `.` falls back to. Its Dir is the user's: dabs records it and
 // never reaps it.
@@ -1691,15 +1721,15 @@ func projectNodeID(dir string) string {
 }
 
 // bindWorktree rewrites a recipe's sources to bind an existing dabs worktree
-// (by name) to the recipe's `.` origin:
-//   - worktree: . / mount: .  → mount the worktree live, PLUS mount its parent
-//     .git at its own absolute path so the worktree's `.git` pointer resolves
-//     and git works inside the box. `worktree:` prints a note that it attached
-//     rather than forking a new branch.
-//   - copy: .                 → snapshot the worktree (git stays blind in-box:
-//     the object store isn't copied — that's inherent to a copy).
+// (by name) onto the source that carries the recipe's WORK:
+//   - a `worktree:` or `mount:` source mounts the worktree live, PLUS its parent
+//     .git at that dir's own absolute path so the worktree's `.git` pointer
+//     resolves and git works inside the box. `worktree:` prints a note that it
+//     attached rather than forking a new branch.
+//   - a `copy:` source snapshots the worktree (git stays blind in-box: the
+//     object store isn't copied — that's inherent to a copy).
 //
-// Sources that don't name `.` (a login dir, a skill) pass through untouched.
+// The other sources (a login dir, a skill) pass through untouched.
 func (r Real) bindWorktree(recipeName string, in []recipe.Source, worktree string) ([]recipe.Source, error) {
 	// The node record is the source of truth for what dabs provisioned — a
 	// worktree node has a `worktree` nest. Anything else isn't ours to bind onto.
@@ -1719,6 +1749,10 @@ func (r Real) bindWorktree(recipeName string, in []recipe.Source, worktree strin
 		return nil, fmt.Errorf("--worktree: %s is not a git worktree: %w", wt, err)
 	}
 
+	project, err := r.data.Getwd()
+	if err != nil {
+		return nil, err
+	}
 	out := make([]recipe.Source, 0, len(in)+1)
 	var gitMounted, bound bool
 	for _, s := range in {
@@ -1726,7 +1760,11 @@ func (r Real) bindWorktree(recipeName string, in []recipe.Source, worktree strin
 		if err != nil {
 			return nil, fmt.Errorf("recipe %q: %w", recipeName, err)
 		}
-		if origin != "." {
+		isWork, err := r.carriesTheWork(kind, origin, project)
+		if err != nil {
+			return nil, fmt.Errorf("recipe %q: %w", recipeName, err)
+		}
+		if !isWork {
 			out = append(out, s)
 			continue
 		}
@@ -1746,9 +1784,32 @@ func (r Real) bindWorktree(recipeName string, in []recipe.Source, worktree strin
 		}
 	}
 	if !bound {
-		return nil, fmt.Errorf("--worktree: recipe %q has no `.` source to bind the worktree to", recipeName)
+		return nil, fmt.Errorf("--worktree: recipe %q has no source carrying its work to bind the worktree to — that is a `worktree:`/`copy:` source, or a `mount:` of the project directory", recipeName)
 	}
 	return out, nil
+}
+
+// carriesTheWork reports whether a source stands for the code a run is ABOUT,
+// as opposed to a directory the box also happens to need (a login vault, a
+// skill). A `worktree:` or `copy:` carries it by kind — it is the place the box
+// will stand on. A live bind carries it only when it names the project
+// directory itself, which is what a recipe's `mount: .` resolves to.
+func (r Real) carriesTheWork(kind, origin, project string) (bool, error) {
+	if makesPlace(kind) {
+		return true, nil
+	}
+	if kind != "mount" {
+		return false, nil
+	}
+	host, err := r.expandPath(origin)
+	if err != nil {
+		return false, err
+	}
+	host, err = r.absPath(host)
+	if err != nil {
+		return false, err
+	}
+	return host == filepath.Clean(project), nil
 }
 
 // resolveWorktreeArg resolves a `--worktree` argument to a full node id by
@@ -1791,10 +1852,13 @@ func (r Real) resolveWorktreeArg(arg string) (string, error) {
 //     cwd would provision a place dabs cannot track or reap. Absolute origins are
 //     the user's explicit choice and pass.
 //
-// A recipe with exactly one `.` source stands on one place; more than one would
-// cut several chain tips a single box cannot all parent.
+// A box stands on ONE place, so a recipe with an image declares at most one
+// source that MAKES one (`worktree:` or `copy:`); several would cut several chain
+// tips a single box cannot all parent. A boxless recipe has no such limit — it
+// exists to make places, and `--name` is what refuses to spread one name over
+// more than one.
 func (r Real) checkSources(recipeName string, sources []recipe.Source, boxless bool) error {
-	dots := 0
+	places := 0
 	for _, s := range sources {
 		kind, origin, err := s.Kind()
 		if err != nil {
@@ -1802,8 +1866,8 @@ func (r Real) checkSources(recipeName string, sources []recipe.Source, boxless b
 			// look-before-run summary); leave its message to that path.
 			continue
 		}
-		if origin == "." {
-			dots++
+		if makesPlace(kind) {
+			places++
 		}
 		if isHostRelative(origin) && escapesRoot(origin) {
 			return fmt.Errorf("recipe %q: source %s:%s escapes the project root with `..` — dabs cannot track or reap a place outside it", recipeName, kind, origin)
@@ -1815,11 +1879,16 @@ func (r Real) checkSources(recipeName string, sources []recipe.Source, boxless b
 			return err
 		}
 	}
-	if dots > 1 {
-		return fmt.Errorf("recipe %q: more than one `.` source — a box stands on one place", recipeName)
+	if !boxless && places > 1 {
+		return fmt.Errorf("recipe %q: %d sources make a place (worktree/copy) — a box stands on one place", recipeName, places)
 	}
 	return nil
 }
+
+// makesPlace reports whether a source KIND provisions a node of its own — a
+// worktree's checkout, a copy's directory. A live bind makes none: the box
+// stands directly on the project.
+func makesPlace(kind string) bool { return kind == "worktree" || kind == "copy" }
 
 // checkBoxPath validates where a source lands inside the box. An empty path is
 // left to validateSources (which frames it as "say where it lands").

@@ -268,6 +268,131 @@ func TestBootRefusesANameThatIsNotAnID(t *testing.T) {
 	}
 }
 
+// CONTRACT: a `worktree:` source is provisioned for the ORIGIN IT NAMES. A Go
+// caller names an absolute repo path, and the box must stand on a fresh checkout
+// of it — never on the repository itself. A bind mount of the origin would hand
+// the caller a live tree while it believed it had an isolated one.
+func TestBootWorktreeFromAbsoluteOriginCutsACheckout(t *testing.T) {
+	fd := baseData()
+	fd.toplevel["/repo"] = nil // /repo is a git repo whose root is itself
+	fd.exists["/repo"] = true
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	if _, err := newReal("", fd, drv).Boot(actions.BootSpec{
+		Name: "inmem",
+		Recipe: recipe.Recipe{
+			Image:   recipe.ImageRef{Name: "img"},
+			Command: []string{"sh"},
+			Sources: []recipe.Source{{Worktree: "/repo", Path: "/work"}},
+		},
+	}); err != nil {
+		t.Fatalf("Boot: %v", err)
+	}
+	if len(fd.worktrees) != 1 {
+		t.Fatalf("want one worktree cut off /repo, got %v", fd.worktrees)
+	}
+	work := mountAt(t, onlyUp(t, drv), "/work")
+	if work.Host == "/repo" {
+		t.Fatalf("the repository itself is bound at /work — a worktree source degraded to a live mount")
+	}
+	if work.Host != fd.worktrees[0] {
+		t.Fatalf("/work mounts %q, want the cut checkout %q", work.Host, fd.worktrees[0])
+	}
+}
+
+// CONTRACT: a `copy:` source is snapshotted for the origin it names, whatever
+// that origin is. The box gets the snapshot dabs owns, never a live bind of the
+// directory the caller asked to be copied.
+func TestBootCopyFromAbsoluteOriginSnapshots(t *testing.T) {
+	fd := baseData()
+	fd.exists["/data"] = true
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	if _, err := newReal("", fd, drv).Boot(actions.BootSpec{
+		Name: "inmem",
+		Recipe: recipe.Recipe{
+			Image:   recipe.ImageRef{Name: "img"},
+			Command: []string{"sh"},
+			Sources: []recipe.Source{{Copy: "/data", Path: "/work"}},
+		},
+	}); err != nil {
+		t.Fatalf("Boot: %v", err)
+	}
+	if len(fd.copies) != 1 || !strings.HasPrefix(fd.copies[0], "/data -> ") {
+		t.Fatalf("want one snapshot of /data, got %v", fd.copies)
+	}
+	work := mountAt(t, onlyUp(t, drv), "/work")
+	if work.Host == "/data" {
+		t.Fatalf("/data is bound live at /work — a copy source degraded to a live mount")
+	}
+	if !strings.HasPrefix(work.Host, "/home/t/.dabs/nodes/") {
+		t.Fatalf("/work mounts %q, want the snapshot dabs owns", work.Host)
+	}
+}
+
+// CONTRACT: a `worktree:` source that CANNOT be provisioned refuses by name. The
+// one outcome it may never have is a box that came up with the origin bound live,
+// which is the isolation the caller asked for silently withdrawn.
+func TestBootWorktreeThatCannotBeProvisionedRefuses(t *testing.T) {
+	fd := baseData() // /repo is not registered as a repo → GitToplevel errors
+	fd.exists["/repo"] = true
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	_, err := newReal("", fd, drv).Boot(actions.BootSpec{
+		Name: "inmem",
+		Recipe: recipe.Recipe{
+			Image:   recipe.ImageRef{Name: "img"},
+			Command: []string{"sh"},
+			Sources: []recipe.Source{{Worktree: "/repo", Path: "/work"}},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "not a git") {
+		t.Fatalf("want a refusal naming the repo, got %v", err)
+	}
+	if len(drv.ups) != 0 {
+		t.Fatalf("a worktree that could not be cut still brought a box up: %v", drv.ups)
+	}
+}
+
+// CONTRACT: a boot BOUND to an existing worktree attaches it, whatever the
+// spelling of the `worktree:` origin the recipe carries. That is how a second
+// boot lands in the checkout a first one minted instead of cutting another and
+// abandoning the work in it.
+func TestBootBindsAnExistingWorktreeOverAnAbsoluteOrigin(t *testing.T) {
+	fd := baseData()
+	fd.toplevel["/repo"] = nil
+	fd.exists["/repo"] = true
+	wt := seedWorktreeNode(fd, "repo-a1b2c3d4", wtState{branch: "dabs/a1b2c3d4"})
+	fd.exists["/repo/.git"] = true
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	if _, err := newReal("", fd, drv).Boot(actions.BootSpec{
+		Name:     "inmem",
+		Worktree: "repo-a1b2c3d4",
+		Recipe: recipe.Recipe{
+			Image:   recipe.ImageRef{Name: "img"},
+			Command: []string{"sh"},
+			Sources: []recipe.Source{{Worktree: "/repo", Path: "/work"}},
+		},
+	}); err != nil {
+		t.Fatalf("Boot onto an existing worktree: %v", err)
+	}
+	if len(fd.worktrees) != 0 {
+		t.Fatalf("a bound boot cut a fresh worktree: %v", fd.worktrees)
+	}
+	if got := mountAt(t, onlyUp(t, drv), "/work").Host; got != wt {
+		t.Fatalf("/work mounts %q, want the bound checkout %q", got, wt)
+	}
+}
+
+// mountAt returns the box's mount landing at path, failing when there is none.
+func mountAt(t *testing.T, spec sandbox.Spec, path string) sandbox.Mount {
+	t.Helper()
+	for _, m := range spec.Mounts {
+		if m.Path == path {
+			return m
+		}
+	}
+	t.Fatalf("no mount at %s: %+v", path, spec.Mounts)
+	return sandbox.Mount{}
+}
+
 // CONTRACT: a recipe with no image provisions a PLACE, not a box, so there is no
 // identity to return — Boot refuses rather than returning an empty Box.
 func TestBootRefusesABoxlessRecipe(t *testing.T) {

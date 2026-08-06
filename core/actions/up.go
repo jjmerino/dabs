@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/jjmerino/dabs/core/proxy"
 	"github.com/jjmerino/dabs/core/recipe"
 	"github.com/jjmerino/dabs/core/sandbox"
 	"github.com/jjmerino/dabs/core/tui"
@@ -116,6 +115,9 @@ func (r Real) bootDetached(name string, rec recipe.Recipe, worktree, nodeName st
 	if err := checkSocketsReachable(name, rec.Sockets, drv); err != nil {
 		return Box{}, "", nil, err
 	}
+	if err := checkPublishReachable(name, rec, drv); err != nil {
+		return Box{}, "", nil, err
+	}
 	// ASK the driver, before the boot, so one that cannot hold a background command
 	// refuses while nothing has been provisioned — never a box that quietly holds
 	// no running command. The question is a METHOD, not a bare type assertion: a
@@ -190,7 +192,7 @@ func (r Real) bootDetached(name string, rec recipe.Recipe, worktree, nodeName st
 	// Enter once with a no-op; if that fails the boot did not really succeed —
 	// reap the box so no unusable instance lingers and surface the driver's message.
 	if _, serr := drv.Exec(instance, []string{"true"}); serr != nil {
-		proxy.Reap(r.boxProxy(instance)) // the box is abandoned; reap its engine too, not just the box
+		r.reapSidecars(instance) // the box is abandoned; reap what it owns on the host too
 		_ = drv.Down(instance)
 		return Box{}, "", nil, fmt.Errorf("boot failed: box is not usable: %w", serr)
 	}
@@ -208,7 +210,7 @@ func (r Real) bootDetached(name string, rec recipe.Recipe, worktree, nodeName st
 	// idle shell the caller believes is working.
 	if startCommand {
 		if derr := detacher.Detach(instance, rec.Command); derr != nil {
-			proxy.Reap(r.boxProxy(instance))
+			r.reapSidecars(instance)
 			_ = drv.Down(instance)
 			return Box{}, "", nil, fmt.Errorf("recipe %q: starting the detached command: %w", name, derr)
 		}

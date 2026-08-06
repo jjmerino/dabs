@@ -168,22 +168,6 @@ type Detacher interface {
 	Detach(instance string, cmd []string) error
 }
 
-// BoxAddresser is an OPTIONAL driver capability: a driver whose boxes have a
-// host-dialable address of their own implements it, so a caller can reach a
-// port a box opened without any publish step. A driver whose boxes share the
-// host's network stack — or whose box is unreachable by construction (no
-// network at all) — does not implement it, or answers with an empty address.
-//
-// The policy sits above: services asks for an address only when a mounted unix
-// socket does not answer, and never treats an empty one as an error. The driver
-// only reports what its own vendor tooling says.
-type BoxAddresser interface {
-	// BoxAddress returns an address the HOST can dial to reach instance's
-	// network namespace (an IP, no port), or "" when the box has none. An error
-	// means the driver could not find out.
-	BoxAddress(instance string) (string, error)
-}
-
 // Image is one built image in a driver's local store: its name (the recipe
 // image name, without any driver-internal prefix) and size in bytes (0 when the
 // driver cannot report it cheaply).
@@ -219,5 +203,4 @@ type Capable interface {
 	EgressEnforcer
 	ImageStore
 	Detacher
-	BoxAddresser
 }

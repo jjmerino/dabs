@@ -45,7 +45,7 @@ func TestBootFromValueNeedsNoRegistry(t *testing.T) {
 // Boot a socket box path that escapes with `..`, or one that lands on a path
 // dabs binds itself, is refused before any box comes up.
 func TestBootRefusesBadSocketBoxPath(t *testing.T) {
-	for _, boxPath := range []string{"/run/dabs/../../etc/passwd", "/run/dabs/services"} {
+	for _, boxPath := range []string{"/run/dabs/../../etc/passwd", "/run/dabs/door.sock"} {
 		t.Run(boxPath, func(t *testing.T) {
 			fd := baseData()
 			listenSocket(fd, "/run/one.sock")

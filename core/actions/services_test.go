@@ -1,20 +1,37 @@
 package actions_test
 
-// Contract tests for the services seam: what every box gets, whatever its
-// recipe asked for.
+// Contract tests for the publishing grant: which boxes get a door, what a box
+// without the grant gets, and what dabs records so the door's relay can be
+// reaped with the box.
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
+	"github.com/jjmerino/dabs/core/door"
 	"github.com/jjmerino/dabs/core/params"
-	"github.com/jjmerino/dabs/egressforwarder/forwarder"
+	"github.com/jjmerino/dabs/core/sandbox"
 )
 
-// CONTRACT: every box is given the services directory — a program inside can
-// publish without its recipe declaring anything — and that directory is the box
-// node's OWN tmp space, so what it publishes dies with the box.
-func TestEveryBoxMountsItsOwnServicesDir(t *testing.T) {
+// errNoRelay is what a host that cannot start a relay says.
+var errNoRelay = errors.New("no relay could be started here")
+
+// doorOf returns the box's door socket among a boot's sockets, or "" when the
+// box was given none.
+func doorOf(up sandbox.Spec) string {
+	for _, s := range up.Sockets {
+		if s.Path == door.BoxPath {
+			return s.Host
+		}
+	}
+	return ""
+}
+
+// CONTRACT: publishing is granted, never ambient. A recipe that does not ask
+// for it boots a box with NO door — nothing attached, no relay started, no
+// registry directory made.
+func TestABoxWithoutTheGrantGetsNoDoor(t *testing.T) {
 	y := `recipes:
   m:
     image: img
@@ -30,81 +47,154 @@ func TestEveryBoxMountsItsOwnServicesDir(t *testing.T) {
 		t.Fatalf("Recipe: %v", err)
 	}
 	up := onlyUp(t, drv)
-	host := ""
-	for _, m := range up.Mounts {
-		if m.Path == forwarder.ServicesDir {
-			host = m.Host
-		}
+	if host := doorOf(up); host != "" {
+		t.Errorf("an ungranted box was given a door at %s", host)
 	}
-	if host == "" {
-		t.Fatalf("no mount at %s; mounts = %+v", forwarder.ServicesDir, up.Mounts)
+	if len(fd.relays) != 0 {
+		t.Errorf("an ungranted box started relays %+v", fd.relays)
 	}
-	if want := "/home/t/.dabs/nodes/mybox/tmp/services"; host != want {
-		t.Errorf("services dir = %q, want the box node's tmp space %q", host, want)
-	}
-	made := false
 	for _, d := range fd.mkdirs {
-		if d == host {
-			made = true
+		if strings.HasSuffix(d, "/services") {
+			t.Errorf("an ungranted box was given a registry at %s", d)
 		}
 	}
-	if !made {
-		t.Errorf("services dir %s was not created; created = %v", host, fd.mkdirs)
+	if len(up.Mounts) != 1 || up.Mounts[0].Path != "/work" {
+		t.Errorf("mounts = %+v, want just the recipe's own source", up.Mounts)
 	}
 }
 
-// CONTRACT: a recipe that declares nothing still gets the services directory —
-// the box side of services is not opt-in.
-func TestABareRecipeStillGetsTheServicesDir(t *testing.T) {
-	y := `recipes:
-  bare:
-    image: img
-    command: [sh]
-`
-	drv := &fakeDriver{built: map[string]bool{"img": true}}
-	if err := newReal(y, baseData(), drv).Recipe(params.Recipe{Name: "bare"}); err != nil {
-		t.Fatalf("Recipe: %v", err)
-	}
-	up := onlyUp(t, drv)
-	if len(up.Mounts) != 1 || up.Mounts[0].Path != forwarder.ServicesDir {
-		t.Fatalf("mounts = %+v, want just the services dir", up.Mounts)
-	}
-	if !strings.HasSuffix(up.Mounts[0].Host, "/tmp/services") {
-		t.Errorf("services dir = %q, want it inside the box node's tmp space", up.Mounts[0].Host)
-	}
-}
-
-// CONTRACT: the outward network door is opened only in a box whose driver
-// reaches it over the network. A box that shares the host's network namespace
-// must never be told to open one — that listener would stand on the host's own
-// interfaces, an unauthenticated way into the box's service.
-func TestOnlyANetworkReachedBoxIsToldToOpenTheOutwardDoor(t *testing.T) {
+// CONTRACT: a recipe that says `publish: true` boots a box whose door is a
+// dabs-owned socket in the box node's OWN tmp space, answered by a relay
+// publishing into that node's registry — so a service cannot outlive its box —
+// and the relay's pid is recorded on the node for whoever reaps the box.
+func TestAGrantedBoxGetsADoorAnsweredByItsOwnRelay(t *testing.T) {
 	y := `recipes:
   m:
     image: img
     command: [sh]
+    publish: true
 `
-	for _, tc := range []struct {
-		kind, egress string
-		want         bool
-	}{
-		{kind: "apple", want: true},
-		{kind: "bwrap"},
-		{kind: "docker"},
-		{kind: "apple", egress: "none"},
+	fd := baseData()
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	// Booted and left up: a box torn down at the end of its command takes its
+	// node record with it, and the record is what this reads.
+	captureStdout(t, func() {
+		if err := newReal(y, fd, drv).Recipe(params.Recipe{Args: []string{"m"}, NoCommand: true, NodeName: "mybox"}); err != nil {
+			t.Fatalf("Recipe: %v", err)
+		}
+	})
+	up := onlyUp(t, drv)
+	wantDoor := "/home/t/.dabs/nodes/mybox/tmp/door.sock"
+	if host := doorOf(up); host != wantDoor {
+		t.Fatalf("the box's door is %q, want the box node's own %q", host, wantDoor)
+	}
+	if len(fd.relays) != 1 {
+		t.Fatalf("relays started = %+v, want exactly one", fd.relays)
+	}
+	got := fd.relays[0]
+	if got.door != wantDoor {
+		t.Errorf("the relay answers %q, want the box's door %q", got.door, wantDoor)
+	}
+	if want := "/home/t/.dabs/nodes/mybox/tmp/services"; got.dir != want {
+		t.Errorf("the relay publishes into %q, want the box node's tmp space %q", got.dir, want)
+	}
+	node := string(fd.files["/home/t/.dabs/nodes/mybox/dabs-node.json"])
+	if !strings.Contains(strings.ReplaceAll(node, " ", ""), `"relayPid":4001`) {
+		t.Errorf("the box node does not record the relay's pid, so nothing can reap it:\n%s", node)
+	}
+}
+
+// CONTRACT: a relay that cannot be started fails the boot. A box booted with a
+// door onto nothing would take every publish and answer none of them.
+func TestABoxIsNotBootedWithADoorNothingAnswers(t *testing.T) {
+	y := `recipes:
+  m:
+    image: img
+    command: [sh]
+    publish: true
+`
+	fd := baseData()
+	fd.relayErr = errNoRelay
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "m"})
+	if err == nil {
+		t.Fatal("the boot succeeded with no relay behind the door")
+	}
+	if !strings.Contains(err.Error(), errNoRelay.Error()) {
+		t.Errorf("the boot failed with %v, want it to name what the relay said", err)
+	}
+	if len(drv.ups) != 0 {
+		t.Errorf("a box was booted anyway: %+v", drv.ups)
+	}
+}
+
+// CONTRACT: a grant dabs cannot realize refuses BY NAME, before anything is
+// provisioned — a place has no box to open a door into, and a box on another
+// machine has no path to a relay on this one.
+func TestAGrantThatCannotBeRealizedIsRefusedByName(t *testing.T) {
+	for _, tc := range []struct{ what, yaml, kind, want string }{
+		{
+			what: "a recipe with no image",
+			yaml: `recipes:
+  m:
+    command: [sh]
+    publish: true
+    sources:
+      - copy: /data
+        path: /work
+`,
+			want: "only makes places",
+		},
+		{
+			what: "a recipe on a server",
+			yaml: `recipes:
+  m:
+    image: img
+    command: [sh]
+    publish: true
+`,
+			kind: "ssh",
+			want: "another machine",
+		},
 	} {
-		recipes := y
-		if tc.egress != "" {
-			recipes += "    egress: " + tc.egress + "\n"
-		}
+		fd := baseData()
+		fd.exists["/data"] = true
+		fd.isDir["/data"] = true
 		drv := &fakeDriver{built: map[string]bool{"img": true}, kind: tc.kind}
-		if err := newReal(recipes, baseData(), drv).Recipe(params.Recipe{Name: "m"}); err != nil {
-			t.Fatalf("%s/%s: Recipe: %v", tc.kind, tc.egress, err)
+		err := newReal(tc.yaml, fd, drv).Recipe(params.Recipe{Name: "m"})
+		if err == nil {
+			t.Errorf("%s: the boot was allowed", tc.what)
+			continue
 		}
-		up := onlyUp(t, drv)
-		_, told := up.Env[forwarder.BridgeEnv]
-		if told != tc.want {
-			t.Errorf("%s driver, egress %q: %s set = %v, want %v", tc.kind, tc.egress, forwarder.BridgeEnv, told, tc.want)
+		if !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: refused with %q, want it to say %q", tc.what, err, tc.want)
 		}
+		if len(fd.relays) != 0 {
+			t.Errorf("%s: a relay was started anyway: %+v", tc.what, fd.relays)
+		}
+	}
+}
+
+// CONTRACT: the door is one of dabs's own box paths, so a recipe socket may not
+// land on it — a recipe masking the door would take publishing away from the
+// box with nothing failing until a program in it reached for the door.
+func TestARecipeSocketMayNotLandOnTheDoor(t *testing.T) {
+	y := `recipes:
+  m:
+    image: img
+    command: [sh]
+    sockets:
+      - socket: /run/agent.sock
+        path: ` + door.BoxPath + `
+`
+	fd := baseData()
+	listenSocket(fd, "/run/agent.sock")
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "m"})
+	if err == nil {
+		t.Fatal("a recipe socket was allowed to land on the door")
+	}
+	if !strings.Contains(err.Error(), door.BoxPath) {
+		t.Errorf("refused with %q, want it to name the door path", err)
 	}
 }

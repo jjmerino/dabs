@@ -1,0 +1,223 @@
+// Package door is the box door: one dabs-owned unix socket per box, over which
+// everything that crosses the box boundary travels. The HOST side listens (the
+// relay), the box side dials, and every crossing is a connection of its own
+// whose first line says what it is. Connections, not streams multiplexed onto
+// one: a connection is what per-caller identity attaches to (SO_PEERCRED reads
+// a connection), and what a pure byte relay can hand over without reading a
+// byte past that first line.
+//
+// This file is the wire. A crossing opens with one header line
+//
+//	DABS-DOOR/1 PUBLISH <name> <type> <port>
+//	DABS-DOOR/1 STREAM <id>
+//
+// which the relay answers with one reply line
+//
+//	DABS-DOOR/1 OK
+//	DABS-DOOR/1 ERR <reason>
+//
+// after which the crossing is whatever its verb makes it: a PUBLISH crossing is
+// held open and carries line messages (PING/PONG, and the relay's STREAM
+// requests); a STREAM crossing carries raw bytes and nothing reads them again.
+//
+// The banner carries the version, and it is on EVERY line that opens or answers
+// a crossing — the two sides are separately built (dabs on the host, the
+// forwarder in the box, from whatever image the recipe named), so each has to
+// be able to tell an older or newer peer from a broken one.
+package door
+
+import (
+	"bufio"
+	"errors"
+	"fmt"
+	"io"
+	"strconv"
+	"strings"
+)
+
+const (
+	// BoxPath is where a box that was granted a door finds it. It is dabs's own
+	// box-path namespace, fixed by contract: the box side is a binary from the
+	// image, which has nothing to read a configured path out of.
+	BoxPath = "/run/dabs/door.sock"
+
+	// Banner opens every header and every reply. The number is the protocol
+	// version: a change that an older peer would misread takes a new one.
+	Banner = "DABS-DOOR/1"
+
+	// MaxLine caps a header, reply or control line. Every line the protocol
+	// defines is a few tens of bytes; the cap is what keeps a peer from making
+	// the other side buffer without end before it has said anything.
+	MaxLine = 512
+)
+
+// The verbs a crossing may open with.
+const (
+	// VerbPublish opens the crossing that IS a published service: the box holds
+	// it, and the relay asks for streams over it. Args: name, type, box port.
+	VerbPublish = "PUBLISH"
+	// VerbStream opens one carrying crossing, claiming the id the relay asked
+	// for on a held PUBLISH crossing. Args: id.
+	VerbStream = "STREAM"
+)
+
+// The control messages a held PUBLISH crossing carries, one per line. PING is
+// the relay's liveness question and PONG the box's answer: a connection that is
+// merely OPEN proves nothing about the peer's health, so the crossing is judged
+// by an answer that had to be produced.
+const (
+	MsgPing = "PING"
+	MsgPong = "PONG"
+	// MsgStream asks the box to open a carrying crossing for the id that
+	// follows: `STREAM <id>`.
+	MsgStream = "STREAM"
+)
+
+// ErrClosed is what reading a line reports when the peer went away.
+var ErrClosed = errors.New("door: the crossing closed")
+
+// Header is a crossing's opening line: what this connection is, and the
+// arguments the verb takes.
+type Header struct {
+	Verb string
+	Args []string
+}
+
+// PublishHeader is the header a box opens a publishing crossing with.
+func PublishHeader(name, typ string, port int) Header {
+	return Header{Verb: VerbPublish, Args: []string{name, typ, strconv.Itoa(port)}}
+}
+
+// StreamHeader is the header a box opens a carrying crossing with.
+func StreamHeader(id uint64) Header {
+	return Header{Verb: VerbStream, Args: []string{strconv.FormatUint(id, 10)}}
+}
+
+// Line renders the header as it goes on the wire, without the newline.
+func (h Header) Line() string {
+	return strings.Join(append([]string{Banner, h.Verb}, h.Args...), " ")
+}
+
+// Publication reads a PUBLISH header's arguments.
+func (h Header) Publication() (name, typ string, port int, err error) {
+	if len(h.Args) != 3 {
+		return "", "", 0, fmt.Errorf("door: %s takes a name, a type and a port", VerbPublish)
+	}
+	port, err = strconv.Atoi(h.Args[2])
+	if err != nil || port <= 0 || port > 65535 {
+		return "", "", 0, fmt.Errorf("door: %q is not a port", h.Args[2])
+	}
+	if err := CheckServiceName(h.Args[0]); err != nil {
+		return "", "", 0, err
+	}
+	if err := CheckServiceType(h.Args[1]); err != nil {
+		return "", "", 0, err
+	}
+	return h.Args[0], h.Args[1], port, nil
+}
+
+// StreamID reads a STREAM header's argument.
+func (h Header) StreamID() (uint64, error) {
+	if len(h.Args) != 1 {
+		return 0, fmt.Errorf("door: %s takes one id", VerbStream)
+	}
+	id, err := strconv.ParseUint(h.Args[0], 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("door: %q is not a stream id", h.Args[0])
+	}
+	return id, nil
+}
+
+// WriteHeader sends a crossing's opening line.
+func WriteHeader(w io.Writer, h Header) error {
+	return WriteLine(w, h.Line())
+}
+
+// ReadHeader reads a crossing's opening line. A line that does not carry this
+// protocol's banner is refused by name rather than parsed as far as it goes:
+// whatever dialed, it is not speaking to this door.
+func ReadHeader(r *bufio.Reader) (Header, error) {
+	line, err := ReadLine(r)
+	if err != nil {
+		return Header{}, err
+	}
+	fields := strings.Fields(line)
+	if len(fields) < 2 || fields[0] != Banner {
+		return Header{}, fmt.Errorf("door: %q does not open with %s", clip(line), Banner)
+	}
+	return Header{Verb: fields[1], Args: fields[2:]}, nil
+}
+
+// WriteReply answers a header: OK when reason is nil, else ERR and why. The
+// reason travels on one line, so its newlines are flattened — a message that
+// forged a second line would be read as the next thing the peer said.
+func WriteReply(w io.Writer, reason error) error {
+	if reason == nil {
+		return WriteLine(w, Banner+" OK")
+	}
+	return WriteLine(w, Banner+" ERR "+oneLine(reason.Error()))
+}
+
+// ReadReply reads the answer to a header: nil when the crossing was accepted,
+// else the refusal the other side named.
+func ReadReply(r *bufio.Reader) error {
+	line, err := ReadLine(r)
+	if err != nil {
+		return err
+	}
+	rest, ok := strings.CutPrefix(line, Banner+" ")
+	if !ok {
+		return fmt.Errorf("door: %q does not open with %s", clip(line), Banner)
+	}
+	switch {
+	case rest == "OK":
+		return nil
+	case strings.HasPrefix(rest, "ERR "):
+		return errors.New(strings.TrimPrefix(rest, "ERR "))
+	}
+	return fmt.Errorf("door: %q is not OK or ERR", clip(rest))
+}
+
+// WriteLine sends one protocol line.
+func WriteLine(w io.Writer, s string) error {
+	_, err := io.WriteString(w, s+"\n")
+	return err
+}
+
+// ReadLine reads one protocol line, without its newline, refusing one longer
+// than MaxLine. It reads byte by byte on purpose: the reader is shared with the
+// raw bytes that follow a header, and buffering past the newline would swallow
+// the first bytes of the payload.
+func ReadLine(r *bufio.Reader) (string, error) {
+	var b strings.Builder
+	for {
+		c, err := r.ReadByte()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return "", ErrClosed
+			}
+			return "", err
+		}
+		if c == '\n' {
+			return strings.TrimSuffix(b.String(), "\r"), nil
+		}
+		if b.Len() >= MaxLine {
+			return "", fmt.Errorf("door: a line ran past %d bytes", MaxLine)
+		}
+		b.WriteByte(c)
+	}
+}
+
+// oneLine flattens a message to a single wire line.
+func oneLine(s string) string {
+	return clip(strings.NewReplacer("\n", " ", "\r", " ").Replace(s))
+}
+
+// clip shortens a peer-written string to what fits on one line, so a refusal
+// quoting it stays a line.
+func clip(s string) string {
+	if len(s) > 120 {
+		return s[:120] + "…"
+	}
+	return s
+}

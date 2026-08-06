@@ -1,13 +1,13 @@
-// Package services is the host half of box-published services: reading what a
-// box published into its mounted services directory, holding a stable local
-// port per service name, and serving each one on 127.0.0.1 so a browser or a
-// client on the host can reach a program that only ever bound box-local
-// loopback.
+// Package services is the host half of box-published services: reading each
+// box's registry, holding a stable local port per service name, and serving
+// each one on 127.0.0.1 so a browser or a client on the host can reach a
+// program that only ever bound box-local loopback.
 //
-// A box registers by running the forwarder's `publish` mode, which writes a
-// socket and a descriptor into the directory dabs bound into it. The directory
-// is the whole registry: no control protocol, and a service is gone the moment
-// its socket stops accepting.
+// A box registers by running the forwarder's `publish` mode, which holds a
+// crossing open on the box's door; the box node's relay stands the socket and
+// writes the descriptor on the HOST side of that door. Reading the registry
+// therefore needs no process to talk to and no way into the box: they are plain
+// host files, and the socket beside each descriptor is one this machine opened.
 package services
 
 import (
@@ -16,30 +16,22 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 	"unicode"
 
-	"github.com/jjmerino/dabs/egressforwarder/forwarder"
+	"github.com/jjmerino/dabs/core/door"
 )
 
 // Service is one published service as the host sees it: the name it was
-// published under, its type, the box-local port the socket leads to, the host
-// path of that socket, and which box published it.
+// published under, its type, the box-local port the crossings lead to, the host
+// path of the socket standing in front of it, and which box published it.
 type Service struct {
-	Name    string
-	Type    string
-	BoxPort int
-	Socket  string // host path of the unix socket the box listens on
-	// BridgePort is the port the publisher listens on across every interface of
-	// the box, from the descriptor. Zero when the publisher opened no such door.
-	BridgePort int
-	// BoxAddr is an address the HOST can dial to reach the box's own network
-	// namespace, supplied by the caller (which knows the driver). Empty when the
-	// box has none, or the driver cannot say.
-	BoxAddr  string
-	Node     string // id of the node whose services directory holds it
+	Name     string
+	Type     string
+	BoxPort  int
+	Socket   string // host path of the unix socket the box node's relay listens on
+	Node     string // id of the node whose registry holds it
 	Instance string // the driver's name for that node's box
 	// Conflict marks a service whose name another box claimed first. One name
 	// means one host port, so only the first claimant is reachable; the rest are
@@ -91,14 +83,14 @@ func Printable(s string) string {
 // directly would otherwise land on a neighbour's printed name and take its
 // ownership.
 func nameIsUsable(name string) bool {
-	return name != "" && len(name) <= forwarder.MaxServiceNameLen && Printable(name) == name
+	return name != "" && len(name) <= door.MaxServiceNameLen && Printable(name) == name
 }
 
-// ScanDir returns the services published into one box's services directory. A
-// descriptor without its socket is a service whose publisher died; it is not
-// reported, because nothing can be dialed. A name the host cannot print as
-// written is not reported either — see nameIsUsable. An absent directory holds no
-// services and is not an error — most boxes publish nothing.
+// ScanDir returns the services published into one box's registry. A descriptor
+// without its socket is a service whose publisher died; it is not reported,
+// because nothing can be dialed. A name the host cannot print as written is not
+// reported either — see nameIsUsable. An absent directory holds no services and
+// is not an error — most boxes publish nothing.
 func ScanDir(dir string) ([]Service, error) {
 	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
@@ -117,11 +109,11 @@ func ScanDir(dir string) ([]Service, error) {
 		if err != nil {
 			continue
 		}
-		var d forwarder.Descriptor
+		var d door.Descriptor
 		if err := json.Unmarshal(b, &d); err != nil {
 			continue
 		}
-		sock := filepath.Join(dir, forwarder.SocketName(name))
+		sock := filepath.Join(dir, door.SocketName(name))
 		if _, err := os.Stat(sock); err != nil {
 			continue
 		}
@@ -130,53 +122,40 @@ func ScanDir(dir string) ([]Service, error) {
 		}
 		// The descriptor's own fields are box-written too, and unlike the name they
 		// key nothing — printable is enough.
-		out = append(out, Service{Name: name, Type: Printable(d.Type), BoxPort: d.Port, BridgePort: d.Bridge, Socket: sock})
+		out = append(out, Service{Name: name, Type: Printable(d.Type), BoxPort: d.Port, Socket: sock})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
 }
 
-// Route is where the host dials to reach one service.
-type Route struct {
-	Network string // "unix" or "tcp"
-	Addr    string // socket path, or host:port
-}
-
-// dialTimeout is how long a reachability probe waits. Both candidates are on
-// this machine or one hop into a local VM, so slow means unreachable.
+// dialTimeout is how long a reachability probe waits. The socket is on this
+// machine, so slow means unreachable.
 const dialTimeout = 500 * time.Millisecond
 
-// Route reports where to reach the service, and whether anything answers. The
-// mounted socket is tried first: it is the direct door, and it is the only one
-// where the host shares the box's kernel. Where it does not answer, the box's
-// own address plus the publisher's outward port is the other way in — a box
-// whose filesystem crosses a VM boundary hands the host a socket file it cannot
-// dial, but its network is still reachable.
+// Route reports the socket to reach the service on, and whether it answers.
+// There is ONE way in — the socket the box node's relay stands in front of the
+// service — and it is the same way on every driver, because the host is the
+// side that opened it: what crosses the box boundary is the door, and it
+// crosses as filesystem, not network.
 //
-// A socket file left behind by a dead publisher refuses, which is the
+// A socket file left behind by a relay that is gone refuses, which is the
 // difference between a listed service and a reachable one.
-func (s Service) Route() (Route, bool) {
-	if dials("unix", s.Socket) {
-		return Route{Network: "unix", Addr: s.Socket}, true
+func (s Service) Route() (string, bool) {
+	if dials(s.Socket) {
+		return s.Socket, true
 	}
-	if s.BoxAddr != "" && s.BridgePort != 0 {
-		addr := net.JoinHostPort(s.BoxAddr, strconv.Itoa(s.BridgePort))
-		if dials("tcp", addr) {
-			return Route{Network: "tcp", Addr: addr}, true
-		}
-	}
-	return Route{}, false
+	return "", false
 }
 
-// Up reports whether the service answers on any route.
+// Up reports whether the service answers.
 func (s Service) Up() bool {
 	_, ok := s.Route()
 	return ok
 }
 
-// dials reports whether a connection can be opened.
-func dials(network, addr string) bool {
-	conn, err := net.DialTimeout(network, addr, dialTimeout)
+// dials reports whether the socket can be connected to.
+func dials(socket string) bool {
+	conn, err := net.DialTimeout("unix", socket, dialTimeout)
 	if err != nil {
 		return false
 	}

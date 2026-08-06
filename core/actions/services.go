@@ -8,14 +8,14 @@ import (
 	"sort"
 	"syscall"
 
+	"github.com/jjmerino/dabs/core/door"
 	"github.com/jjmerino/dabs/core/params"
-	"github.com/jjmerino/dabs/core/sandbox"
 	"github.com/jjmerino/dabs/core/services"
 	"github.com/jjmerino/dabs/core/tui"
 )
 
-// servicesSubdir is the directory, inside a box node's tmp space, that is bound
-// into the box as its services directory. Naming it under tmp is what makes a
+// servicesSubdir is the directory, inside a box node's tmp space, that the
+// box's door relay publishes into. Naming it under tmp is what makes a
 // published service die with the box: `rm` reaps that space without asking.
 const servicesSubdir = "services"
 
@@ -23,39 +23,8 @@ const servicesSubdir = "services"
 // service keeps its port across boxes, so a URL survives a re-up.
 const portsFileName = "service-ports.json"
 
-// networkDoorKinds are the driver kinds whose boxes the host reaches over the
-// network — the ones that carry a network namespace of their own AND an address
-// the host can dial (see sandbox.BoxAddresser). Everywhere else the mounted
-// socket is the way in, and a listener on the box's interfaces would be a door
-// dabs opened for no one: in a box that shares the host's namespace it would
-// stand on the host's own NICs.
-var networkDoorKinds = map[string]bool{"apple": true}
-
-// NetworkDoorKinds names those kinds. It is exported so the composition root —
-// the one place that builds real drivers — can pin this list against the
-// drivers that actually implement sandbox.BoxAddresser, in both directions: a
-// kind here without the capability opens a listener nothing uses, and a driver
-// with the capability missing from here has its services read down for ever.
-func NetworkDoorKinds() []string {
-	out := make([]string, 0, len(networkDoorKinds))
-	for kind := range networkDoorKinds {
-		out = append(out, kind)
-	}
-	sort.Strings(out)
-	return out
-}
-
-// boxNeedsNetworkDoor reports whether a service published in a box of this kind
-// should open a listener on the box's network. The DRIVER KIND is the form of
-// the question that can be answered before the box exists, which is when the
-// box's environment is built. A box with no network (egress none or proxy) has
-// no address to be reached at, so it gets no door either.
-func boxNeedsNetworkDoor(kind, egress string) bool {
-	return networkDoorKinds[kind] && egress == sandbox.EgressOpen
-}
-
-// resolveServicesDir returns the host directory a box node publishes its
-// services into.
+// resolveServicesDir returns the host directory a box node's relay publishes
+// its services into.
 func (r Real) resolveServicesDir(nodeID string) (string, error) {
 	tmp, err := r.resolveNodeSpace(nodeID, SpaceTmp)
 	if err != nil {
@@ -73,11 +42,15 @@ func (r Real) resolvePortsFile() (string, error) {
 	return filepath.Join(home, ".dabs", portsFileName), nil
 }
 
-// Services runs `dabs services [serve]`: with no subcommand it lists what the
-// boxes publish; `serve` forwards each one from a stable loopback port and
-// serves an index of them until interrupted.
+// Services runs `dabs services [serve | relay]`: with no subcommand it lists
+// what the boxes publish; `serve` forwards each one from a stable loopback port
+// and serves an index of them until interrupted; `relay` answers ONE box's
+// door, which is what dabs starts for a box whose recipe grants publishing.
 func (r Real) Services(p params.Services) error {
-	if p.Serve {
+	switch {
+	case p.Relay:
+		return door.Run(p.Door, p.Dir, os.Stderr)
+	case p.Serve:
 		return r.serveServices()
 	}
 	return r.listServices()
@@ -92,7 +65,6 @@ func (r Real) scanServices() ([]services.Service, error) {
 		return nil, err
 	}
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].ID < nodes[j].ID })
-	addrs := boxAddrs{}
 	var out []services.Service
 	for _, n := range nodes {
 		if n.Kind != KindBox {
@@ -108,55 +80,12 @@ func (r Real) scanServices() ([]services.Service, error) {
 		}
 		for _, s := range found {
 			s.Node, s.Instance = n.ID, n.Instance
-			// The mounted socket is the direct door and needs nothing from the
-			// driver. Only when it does not answer is the box's own address worth
-			// asking for — the question costs a vendor-CLI call per box.
-			if _, reachable := s.Route(); !reachable {
-				s.BoxAddr = addrs.of(r, n)
-			}
 			out = append(out, s)
 		}
 	}
 	// One name means one host port. Nodes are walked in id order, so which box
 	// owns a name is the same answer here and in the serving process.
 	return services.MarkConflicts(out), nil
-}
-
-// boxAddrs remembers each box's host-dialable address for the length of one
-// scan, so a box publishing several services is asked about once.
-type boxAddrs map[string]string
-
-// of returns the address the host can dial to reach the node's box, or "" when
-// it has none, the driver cannot say, or the driver has no such notion. A box
-// nobody can address is a normal answer here: the socket is the other way in.
-func (a boxAddrs) of(r Real, n Node) string {
-	if n.Instance == "" {
-		return ""
-	}
-	if addr, ok := a[n.Instance]; ok {
-		return addr
-	}
-	target := ""
-	if n.RecipeSpec != nil {
-		target = n.RecipeSpec.Target
-	}
-	addr := ""
-	if drv, err := r.driverFor(target); err == nil {
-		if ba, can := drv.(sandbox.BoxAddresser); can {
-			got, err := ba.BoxAddress(n.Instance)
-			switch {
-			case err != nil:
-				// A driver that cannot answer is not a box without a network, and
-				// the difference is the difference between "nothing to reach" and
-				// "dabs is broken". Said once per box per scan, on stderr.
-				fmt.Fprintln(os.Stderr, tui.Warn("services: %s: asking the driver where the box is: %v", n.ID, err))
-			default:
-				addr = got
-			}
-		}
-	}
-	a[n.Instance] = addr
-	return addr
 }
 
 // listServices prints one row per published service: what it is called, what

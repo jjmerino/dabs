@@ -2,18 +2,17 @@
 // bridges between a box's loopback ports and the unix sockets dabs mounts into
 // it. dabs carries it as embedded bytes and drops a copy into a box at
 // forwarder.ForwardPath — the box never receives the dabs CLI. It is NOT a dabs
-// subcommand: it has its own main and no dabs dependencies beyond the plumbing
-// package.
+// subcommand: it has its own main, and depends only on the plumbing packages.
 //
 // Egress: it bridges a loopback TCP port to the mounted host proxy socket and
 // brackets the box's real command.
 //
-// Ingress: `forward publish` exposes a box-local port to the host as a named
-// service, by listening on a unix socket in the mounted services directory.
+// Ingress: `forward publish` puts a box-local port behind a name on the box
+// door, the one socket dabs mounts for everything that crosses the boundary.
 //
 // Usage: forward <socket> <port> [-- cmd…]
 //
-//	forward publish <name> --type webui|general --port <n> [--bridge]
+//	forward publish <name> --type webui|general --port <n>
 package main
 
 import (
@@ -24,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/jjmerino/dabs/core/door"
 	"github.com/jjmerino/dabs/egressforwarder/forwarder"
 )
 
@@ -59,18 +59,14 @@ func main() {
 	os.Exit(code)
 }
 
-// publish serves one named service until the process dies. --dir overrides the
-// services directory, for a box that mounts it elsewhere and for tests.
+// publish serves one named service until the process dies. --door overrides the
+// box door, for a box that mounts it elsewhere and for tests.
 func publish(args []string) {
 	fs := flag.NewFlagSet("publish", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	typ := fs.String("type", forwarder.TypeGeneral, "service type: webui|general")
+	typ := fs.String("type", door.TypeGeneral, "service type: webui|general")
 	port := fs.Int("port", 0, "box-local loopback port to serve")
-	dir := fs.String("dir", forwarder.ServicesDir, "directory the socket and descriptor are written to")
-	// The box cannot tell whether a host can dial its socket; dabs, which chose
-	// the driver, says so in the environment. The flag overrides it either way.
-	bridge := fs.Bool("bridge", forwarder.BridgeWanted(os.Getenv(forwarder.BridgeEnv)),
-		"also listen across every interface of the box, for a host that cannot dial the socket")
+	doorPath := fs.String("door", door.BoxPath, "the box door this service is published on")
 	fail := func(msg string) {
 		fmt.Fprintf(os.Stderr, "forward publish: %s\nusage: forward publish <name> --type webui|general --port <n>\n", msg)
 		os.Exit(2)
@@ -91,7 +87,10 @@ func publish(args []string) {
 	if *port <= 0 || *port > 65535 {
 		fail(fmt.Sprintf("--port %d is not a port", *port))
 	}
-	if err := forwarder.Publish(*dir, name, *typ, *port, *bridge); err != nil {
+	// Publishing runs until the process dies; anything it returns ended it. The
+	// box was not granted a door, the door refused this service, or the door
+	// stopped answering — each says which, in one line, on stderr.
+	if err := door.NewPublisher(*doorPath, os.Stderr).Publish(name, *typ, *port); err != nil {
 		fmt.Fprintf(os.Stderr, "forward publish: %v\n", err)
 		os.Exit(1)
 	}

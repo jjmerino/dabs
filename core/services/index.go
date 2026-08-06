@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"sort"
 
-	"github.com/jjmerino/dabs/egressforwarder/forwarder"
+	"github.com/jjmerino/dabs/core/door"
 )
 
 // sortServed orders services by name, so the index reads the same way twice in
@@ -37,7 +37,7 @@ var indexPage = template.Must(template.New("index").Parse(`<!doctype html>
 // IsLink reports whether the index renders the service as a link: a browsable
 // service that is answering. A link says the address leads somewhere, so a
 // service nothing answers behind is named, not linked.
-func (s Served) IsLink() bool { return s.Type == forwarder.TypeWebUI && !s.Down }
+func (s Served) IsLink() bool { return s.Type == door.TypeWebUI && !s.Down }
 
 // indexData is what the index page renders: what the host forwards, and what it
 // cannot because the name is taken.

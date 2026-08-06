@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jjmerino/dabs/core/proxy"
 	"github.com/jjmerino/dabs/core/sandbox"
 	"github.com/jjmerino/dabs/core/tui"
 )
@@ -205,7 +204,7 @@ func (r Real) liveByWorktree() map[string]string {
 // entry.
 func (r Real) teardown(drv sandbox.Driver, instance string) {
 	drv.Down(instance)
-	proxy.Reap(r.boxProxy(instance)) // before reapBoxNode removes the node the PID lives on
+	r.reapSidecars(instance) // before reapBoxNode removes the node the pids live on
 	r.logWorktreeDown(instance)
 	r.reapBoxNode(instance)
 }

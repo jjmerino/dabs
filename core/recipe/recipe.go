@@ -40,6 +40,7 @@ type Recipe struct {
 	Sockets     []Socket          `json:"sockets,omitempty" yaml:"sockets,omitempty"`         // host unix sockets the box may talk to
 	Target      string            `json:"target,omitempty" yaml:"target,omitempty"`           // which fleet driver runs it (e.g. "docker", a server); default local
 	Keep        bool              `json:"keep,omitempty" yaml:"keep,omitempty"`               // keep the box alive after the command (default: delete it)
+	Publish     bool              `json:"publish,omitempty" yaml:"publish,omitempty"`         // may the box publish services on its door (default: it may not)
 	Egress      Egress            `json:"egress,omitempty" yaml:"egress,omitempty"`           // the box's outbound network: open | none | {allow/deny/http_proxy}
 }
 
@@ -795,6 +796,9 @@ func Validate(name string, rec Recipe) error {
 	if err := validateSockets(name, rec, seen); err != nil {
 		return err
 	}
+	if err := validatePublish(name, rec); err != nil {
+		return err
+	}
 	for k, v := range rec.Env {
 		if err := rejectControl(fmt.Sprintf("env key in recipe %q", name), k); err != nil {
 			return err
@@ -839,6 +843,21 @@ func validateSockets(name string, rec Recipe, seen map[string]bool) error {
 			return fmt.Errorf("recipe %q attaches two things at the same box path %q; each box path must be unique", name, s.Path)
 		}
 		seen[path.Clean(s.Path)] = true
+	}
+	return nil
+}
+
+// validatePublish checks a recipe's grant to publish services. The grant is
+// realized as a door into the box, so a recipe with no image is refused here
+// rather than provisioning a place that quietly grants nothing. Whether the
+// box's driver can reach the door's relay — a process on THIS host — is settled
+// once the target resolves to a driver (checkPublishReachable).
+func validatePublish(name string, rec Recipe) error {
+	if !rec.Publish {
+		return nil
+	}
+	if rec.Image.Name == "" && rec.Image.Dockerfile == "" {
+		return fmt.Errorf("recipe %q: says `publish: true` but has no image — publishing is a door into a box, and this recipe only makes places", name)
 	}
 	return nil
 }

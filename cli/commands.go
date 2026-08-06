@@ -56,12 +56,20 @@ var commandDocs = map[string]cmdDoc{
 			"+  staged   *  unstaged   %  untracked\n" +
 			"⇡N ahead    ⇣N behind    (clean = branch name only)",
 	},
-	"info":     {Help: "show one node's full model: its kind and id, the place it marks, its three spaces (volume/held/tmp), and the recipe that provisioned it (from the snapshot taken at creation, else the current registry by name): info <node>", Args: "info <node>"},
-	"rm":       {Help: "stop a box and remove its node and what it holds (--keep keeps the record instead; --clean-worktrees sweeps every worktree with no unreviewed work; --inactive sweeps every inactive subtree): rm <node> [-y] [--keep] [--volume] [--multiple] [--dry] [--force] | rm --clean-worktrees [--force] [--dry] | rm --inactive [--dry]", Args: "rm <node> [-y] [--keep] [--volume] [--multiple] [--dry] [--force] | rm --clean-worktrees [--force] [--dry] | rm --inactive [--dry]"},
-	"prune":    {Help: "reclaim built box images (they rebuild on the next build); --dry lists what exists, --force removes even images a live box uses", Args: "prune [--dry] [--force]"},
-	"services": {Help: "list the services the boxes publish — name, type, box and instance, the host address `services serve` gives it, and its state (up | down | conflict, when another box owns the name). `services serve` forwards each one from a stable 127.0.0.1 port (a name keeps its port across boxes) and serves an index of them at 127.0.0.1:28080 until interrupted. A box publishes by running the in-box forwarder: `forward publish <name> --type webui|general --port <n>` (name: [a-z0-9._-], starting with a letter or digit, max 64 bytes)", Args: "services [serve]"},
-	"version":  {Help: "print which dabs this is, as one line: the release tag of a released binary, else the commit a source build came from", Args: "version"},
-	"servers":  {Help: "manage registered servers: servers [ls] | add <name> [host] | rm <name>", Args: "servers [ls | add <name> [host] | rm <name>]"},
+	"info":  {Help: "show one node's full model: its kind and id, the place it marks, its three spaces (volume/held/tmp), and the recipe that provisioned it (from the snapshot taken at creation, else the current registry by name): info <node>", Args: "info <node>"},
+	"rm":    {Help: "stop a box and remove its node and what it holds (--keep keeps the record instead; --clean-worktrees sweeps every worktree with no unreviewed work; --inactive sweeps every inactive subtree): rm <node> [-y] [--keep] [--volume] [--multiple] [--dry] [--force] | rm --clean-worktrees [--force] [--dry] | rm --inactive [--dry]", Args: "rm <node> [-y] [--keep] [--volume] [--multiple] [--dry] [--force] | rm --clean-worktrees [--force] [--dry] | rm --inactive [--dry]"},
+	"prune": {Help: "reclaim built box images (they rebuild on the next build); --dry lists what exists, --force removes even images a live box uses", Args: "prune [--dry] [--force]"},
+	"services": {
+		Help:       "list the services the boxes publish — name, type, box and instance, the host address `services serve` gives it, and its state (up | down | conflict, when another box owns the name). `services serve` forwards each one from a stable 127.0.0.1 port (a name keeps its port across boxes) and serves an index of them at 127.0.0.1:28080 until interrupted. A box whose recipe says `publish: true` publishes by running the in-box forwarder: `forward publish <name> --type webui|general --port <n>` (name: [a-z0-9._-], starting with a letter or digit, max 64 bytes)",
+		Args:       "services [serve | relay --door <sock> --dir <dir>]",
+		NotesTitle: "the relay:",
+		Notes: "" +
+			"`services relay` answers ONE box's door — the socket everything crossing that\n" +
+			"box's boundary travels over. dabs starts it when it boots a box granted\n" +
+			"`publish: true`, and reaps it with the box; nothing needs to run it by hand.",
+	},
+	"version": {Help: "print which dabs this is, as one line: the release tag of a released binary, else the commit a source build came from", Args: "version"},
+	"servers": {Help: "manage registered servers: servers [ls] | add <name> [host] | rm <name>", Args: "servers [ls | add <name> [host] | rm <name>]"},
 }
 
 func (c *CLI) runRecipe(args []string) error {

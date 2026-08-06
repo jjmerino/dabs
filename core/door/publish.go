@@ -46,13 +46,6 @@ func (e NotGranted) Error() string {
 	return fmt.Sprintf("this box was not granted service publishing: there is no door at %s — the recipe that boots the box must say `publish: true`", e.Path)
 }
 
-// Refused is the door's own answer to a crossing it will not take (a name
-// already published in this box, a service type it does not know). The relay
-// decided, so retrying decides nothing.
-type Refused struct{ Reason string }
-
-func (e Refused) Error() string { return e.Reason }
-
 // Publisher publishes one box-local port on the box's door.
 type Publisher struct {
 	// Door is the box path of the door socket.
@@ -134,9 +127,9 @@ func (p Publisher) session(name, typ string, port int) (held bool, err error) {
 		return false, err
 	}
 	if err := ReadReply(br); err != nil {
-		// The reply is the relay's own words. Anything it says is a decision about
-		// this publication, and repeating the request cannot change it.
-		return false, Refused{Reason: err.Error()}
+		// A Refused is the relay's own decision about this publication and travels
+		// up as one; anything else is the transport, and the transport is retried.
+		return false, err
 	}
 	p.say("%s: published on %s (box port %d)", name, p.Door, port)
 	for {

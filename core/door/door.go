@@ -76,6 +76,16 @@ const (
 // ErrClosed is what reading a line reports when the peer went away.
 var ErrClosed = errors.New("door: the crossing closed")
 
+// Refused is the DOOR'S OWN answer to a crossing it will not take (a name
+// already published in this box, a service type it does not know): an ERR reply
+// that was read off the wire. It is the one failure retrying cannot change, and
+// it is deliberately distinct from a transport failure — a dial that connects
+// and then goes quiet is a moment, not a decision, and treating the two alike
+// is what turns one bad moment into a box that can never publish again.
+type Refused struct{ Reason string }
+
+func (e Refused) Error() string { return e.Reason }
+
 // Header is a crossing's opening line: what this connection is, and the
 // arguments the verb takes.
 type Header struct {
@@ -158,8 +168,9 @@ func WriteReply(w io.Writer, reason error) error {
 	return WriteLine(w, Banner+" ERR "+oneLine(reason.Error()))
 }
 
-// ReadReply reads the answer to a header: nil when the crossing was accepted,
-// else the refusal the other side named.
+// ReadReply reads the answer to a header: nil when the crossing was accepted, a
+// Refused carrying what the other side named, or a plain error when the reply
+// could not be read or was not this protocol's.
 func ReadReply(r *bufio.Reader) error {
 	line, err := ReadLine(r)
 	if err != nil {
@@ -173,7 +184,7 @@ func ReadReply(r *bufio.Reader) error {
 	case rest == "OK":
 		return nil
 	case strings.HasPrefix(rest, "ERR "):
-		return errors.New(strings.TrimPrefix(rest, "ERR "))
+		return Refused{Reason: strings.TrimPrefix(rest, "ERR ")}
 	}
 	return fmt.Errorf("door: %q is not OK or ERR", clip(rest))
 }

@@ -262,6 +262,55 @@ func TestADoorThatNeverAnswersFailsThePublish(t *testing.T) {
 	}
 }
 
+// CONTRACT: a door that ACCEPTS and then says nothing is a transport failure,
+// not a refusal: it is retried for the whole redial window and then fails with
+// a named error. It is what a box sees when the host-side listener is gone but
+// the path it dials still accepts — the very case that must never be read as
+// "the door decided against this service".
+func TestADoorThatAcceptsAndGoesQuietIsRetriedNotRefused(t *testing.T) {
+	dir := sockDir(t)
+	doorPath := filepath.Join(dir, "door.sock")
+	ln, err := net.Listen("unix", doorPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	dialled := make(chan struct{}, 32)
+	go func() {
+		var held []net.Conn
+		defer func() {
+			for _, c := range held {
+				_ = c.Close()
+			}
+		}()
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			held = append(held, conn) // accepted, never answered
+			select {
+			case dialled <- struct{}{}:
+			default:
+			}
+		}
+	}()
+
+	p := quickPublisher(doorPath)
+	p.Idle, p.Redial = 100*time.Millisecond, 700*time.Millisecond
+	err = p.Publish("web", door.TypeGeneral, 8080)
+	var refused door.Refused
+	if errors.As(err, &refused) {
+		t.Fatalf("a quiet door was read as a refusal: %v", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "has not answered") {
+		t.Fatalf("Publish = %v, want it to say the door never answered", err)
+	}
+	if len(dialled) < 2 {
+		t.Errorf("the publisher dialled %d times, want it to have tried again", len(dialled))
+	}
+}
+
 // CONTRACT: one name is one publication in one box, and the second claimant is
 // told so — a refusal the box must not retry, because retrying decides nothing.
 func TestASecondClaimOfALiveNameIsRefused(t *testing.T) {

@@ -161,11 +161,16 @@ type fakeData struct {
 	prompts     map[string]data.GitPrompt // GitPromptStatus: dir -> prompt state; an absent dir errors (not a git repo)
 	relays      []relayCall               // every door relay a boot asked for
 	relayErr    error                     // if non-nil, starting a relay fails with it
+	reaped      []int                     // every pid a teardown asked the relay reaper for
 }
 
 // relayCall is one door relay a boot started: the socket it answers and the
 // registry it publishes into.
 type relayCall struct{ door, dir, log string }
+
+// reapRelay stands in for signalling a relay's process group: it records the
+// pid a teardown asked for, so a test can see the reap reach the relay.
+func (f *fakeData) reapRelay(pid int) { f.reaped = append(f.reaped, pid) }
 
 // startRelay stands in for spawning a relay process: it records what was asked
 // for and answers with a pid, so a boot can be driven without a host process.
@@ -403,7 +408,7 @@ func newReal(recipesYAML string, fd *fakeData, drv sandbox.Driver, bundledImages
 		fd.files[fd.home+"/.dabs/recipes.yaml"] = []byte(recipesYAML)
 	}
 	drivers := map[string]sandbox.Driver{"local": drv}
-	return actions.New(drivers, []string{"local"}, imgs, fd).WithRelay(fd.startRelay)
+	return actions.New(drivers, []string{"local"}, imgs, fd).WithRelay(fd.startRelay).WithRelayReaper(fd.reapRelay)
 }
 
 // withRecipes plants a recipes.yaml in the fake home, for a test that builds its
@@ -1079,10 +1084,10 @@ func TestRecipeSocketNodeIDExpandsInBoxPath(t *testing.T) {
 	}
 }
 
-// CONTRACT: dabs binds paths of its own into a box — the services directory
-// every box publishes into, and the egress socket, forwarder and detached-log
-// paths. A socket is bound after the recipe's mounts, so one aimed at any of
-// them (or at a directory holding them) would mask dabs's own door with nothing
+// CONTRACT: dabs binds paths of its own into a box — the door a box granted
+// publishing gets, and the egress socket, forwarder and detached-log paths. A
+// socket is bound after the recipe's mounts, so one aimed at any of them (or at
+// a directory holding them) would mask what dabs binds there, with nothing
 // failing until a program in the box reached for it. Refuse by name instead.
 func TestRecipeSocketCannotMaskDabsOwnPaths(t *testing.T) {
 	for _, boxPath := range []string{

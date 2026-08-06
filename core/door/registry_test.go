@@ -17,7 +17,7 @@ func TestDescriptorIsNeverReadableHalfWritten(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	path := filepath.Join(dir, DescriptorName("web"))
+	path := filepath.Join(dir, NameDescriptor("web"))
 
 	stop := make(chan struct{})
 	torn := make(chan []byte, 1)
@@ -61,12 +61,12 @@ func TestDescriptorIsNeverReadableHalfWritten(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 1 || entries[0].Name() != DescriptorName("web") {
+	if len(entries) != 1 || entries[0].Name() != NameDescriptor("web") {
 		names := make([]string, 0, len(entries))
 		for _, e := range entries {
 			names = append(names, e.Name())
 		}
-		t.Errorf("directory holds %v, want only %s", names, DescriptorName("web"))
+		t.Errorf("directory holds %v, want only %s", names, NameDescriptor("web"))
 	}
 }
 
@@ -83,7 +83,7 @@ func TestRemovingADescriptorUnpublishesAndIsIdempotent(t *testing.T) {
 			t.Fatalf("RemoveDescriptor (call %d): %v", i+1, err)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(dir, DescriptorName("web"))); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(dir, NameDescriptor("web"))); !os.IsNotExist(err) {
 		t.Errorf("the descriptor is still there: %v", err)
 	}
 }

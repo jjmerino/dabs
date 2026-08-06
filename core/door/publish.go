@@ -19,8 +19,8 @@ import (
 // box is the dialing side on every driver, because the one mechanism that
 // carries a socket into a box on all of them relays a host listener inward.
 
-// Default timings of a publisher. Fields on Publisher, so a test can drive the
-// same code on a scale it can wait for.
+// Defaults for a publisher's timing FIELDS, which are fields on Publisher so a
+// test can drive the same code on a scale it can wait for.
 const (
 	// DefaultRedial is how long the publisher keeps trying a door that does not
 	// answer before giving up and saying so. A dial that fails is a moment, not
@@ -37,12 +37,12 @@ const (
 	DefaultPublisherIdle = 20 * time.Second
 )
 
-// NotGranted is what a box that may not publish gets when it tries: the door is
-// simply not there. It is a refusal by NAME, not a missing file — a box told
-// "no" must be able to say so, and a bare ENOENT reads as a broken box.
-type NotGranted struct{ Path string }
+// NotGrantedError is what a box that may not publish gets when it tries: the
+// door is simply not there. It is a refusal by NAME, not a missing file — a box
+// told "no" must be able to say so, and a bare ENOENT reads as a broken box.
+type NotGrantedError struct{ Path string }
 
-func (e NotGranted) Error() string {
+func (e NotGrantedError) Error() string {
 	return fmt.Sprintf("this box was not granted service publishing: there is no door at %s — the recipe that boots the box must say `publish: true`", e.Path)
 }
 
@@ -83,7 +83,7 @@ func (p Publisher) Publish(name, typ string, port int) error {
 	}
 	if _, err := os.Stat(p.Door); err != nil {
 		if os.IsNotExist(err) {
-			return NotGranted{Path: p.Door}
+			return NotGrantedError{Path: p.Door}
 		}
 		return err
 	}
@@ -91,7 +91,7 @@ func (p Publisher) Publish(name, typ string, port int) error {
 	answered := time.Now()
 	for {
 		held, err := p.session(name, typ, port)
-		var refused Refused
+		var refused RefusedError
 		if errors.As(err, &refused) {
 			return err
 		}
@@ -127,8 +127,9 @@ func (p Publisher) session(name, typ string, port int) (held bool, err error) {
 		return false, err
 	}
 	if err := ReadReply(br); err != nil {
-		// A Refused is the relay's own decision about this publication and travels
-		// up as one; anything else is the transport, and the transport is retried.
+		// A RefusedError is the relay's own decision about this publication and
+		// travels up as one; anything else is the transport, and the transport is
+		// retried.
 		return false, err
 	}
 	p.say("%s: published on %s (box port %d)", name, p.Door, port)
@@ -190,11 +191,11 @@ func (p Publisher) carry(id string, port int) {
 		return
 	}
 	defer up.Close()
-	forwarder.Couple(buffered(conn, br), up)
+	forwarder.Couple(bufferConn(conn, br), up)
 }
 
 // say reports one line about what the publisher is doing.
-func (p Publisher) say(format string, args ...interface{}) {
+func (p Publisher) say(format string, args ...any) {
 	if p.Log == nil {
 		return
 	}

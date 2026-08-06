@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/jjmerino/dabs/egressforwarder/forwarder"
@@ -20,8 +21,8 @@ import (
 // box's node lives, so the path a box dials is answered from the moment the box
 // exists: a box never dials into a gap.
 
-// Default timings of a relay. They are fields rather than constants so a test
-// can drive the same code on a scale it can wait for.
+// Defaults for a relay's timing FIELDS, which are fields rather than constants
+// so a test can drive the same code on a scale it can wait for.
 const (
 	// DefaultPingEvery is how often the relay asks a held crossing to prove it
 	// is alive.
@@ -38,21 +39,40 @@ const (
 	DefaultStreamWait = 15 * time.Second
 )
 
+// What one box may make the host allocate. The box is the untrusted side of
+// this socket: every crossing costs the host a goroutine and a read buffer, and
+// every publication costs it a listener and two files — so both are capped, and
+// over-cap is refused by name rather than served until something else on the
+// host runs out.
+const (
+	// MaxPublications is the most services one box may have published at once.
+	MaxPublications = 32
+	// MaxOpeningCrossings is the most crossings that may be waiting to say what
+	// they are at one time. A crossing that has stated its business is no longer
+	// counted here — it is a publication or a stream, each capped by what it is.
+	MaxOpeningCrossings = 64
+)
+
 // Relay serves one box's door: it accepts crossings on the door socket, holds
 // each published service's crossing open, and stands a host listener in front
 // of every service so anything on the host can dial it as a plain unix socket.
 type Relay struct {
-	// PingEvery, Idle, HeaderWait and StreamWait are the timings above.
+	// PingEvery, Idle, HeaderWait and StreamWait are the timings above. They are
+	// read by the goroutines Serve starts, so they are set before Serve is called
+	// and not after.
 	PingEvery, Idle, HeaderWait, StreamWait time.Duration
 
 	dir string // the registry directory, on the host
 	log io.Writer
 
+	// opening bounds the crossings that have not yet said what they are.
+	opening chan struct{}
+
 	mu        sync.Mutex
 	ln        net.Listener
+	lock      *os.File // the exclusive claim on this door, held for the relay's life
 	closed    bool
 	published map[string]*publication
-	pending   map[uint64]net.Conn
 	next      uint64
 }
 
@@ -63,7 +83,8 @@ func NewRelay(dir string, log io.Writer) *Relay {
 		PingEvery: DefaultPingEvery, Idle: DefaultIdle,
 		HeaderWait: DefaultHeaderWait, StreamWait: DefaultStreamWait,
 		dir: dir, log: log,
-		published: map[string]*publication{}, pending: map[uint64]net.Conn{},
+		opening:   make(chan struct{}, MaxOpeningCrossings),
+		published: map[string]*publication{},
 	}
 }
 
@@ -80,24 +101,54 @@ func Run(doorPath, dir string, log io.Writer) error {
 // Open binds the door socket. It returns once the path is listening, so a
 // caller that boots a box next knows the box's door answers from its first
 // instant — the box side never has to dial a path nothing holds.
+//
+// One door is one relay, and the claim is an exclusive lock on a file beside
+// the socket, taken BEFORE the socket is replaced: binding a unix socket means
+// unlinking whatever stands there, so a second relay aimed at a live box's door
+// would take that box's crossings with nothing failing — the first relay keeps
+// its listening descriptor and its registry, now describing services nothing
+// reaches. The lock turns that into a refusal by name.
 func (r *Relay) Open(doorPath string) error {
-	if err := os.MkdirAll(r.dir, 0o755); err != nil {
+	// The registry is the host's alone: the sockets in it are the only route
+	// into a published service, so the directory is not other users' business.
+	if err := os.MkdirAll(r.dir, 0o700); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(doorPath), 0o700); err != nil {
 		return err
 	}
+	lock, err := claimDoor(doorPath)
+	if err != nil {
+		return err
+	}
 	// A socket file left by a relay whose process is gone refuses the bind. Its
-	// owner died with the node's previous relay, so the file is debris.
+	// owner is gone — the claim above just proved it — so the file is debris.
 	_ = os.Remove(doorPath)
 	ln, err := net.Listen("unix", doorPath)
 	if err != nil {
+		_ = lock.Close()
 		return fmt.Errorf("door: open %s: %w", doorPath, err)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.ln = ln
+	r.ln, r.lock = ln, lock
 	return nil
+}
+
+// claimDoor takes the exclusive claim on a door, as a lock file beside it. The
+// kernel releases the lock when the holder's process dies, so a relay that was
+// killed leaves the door claimable rather than locked for ever.
+func claimDoor(doorPath string) (*os.File, error) {
+	lockPath := doorPath + ".lock"
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("door: claim %s: %w", lockPath, err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("door: a relay is already answering %s", doorPath)
+	}
+	return f, nil
 }
 
 // Serve accepts crossings until the relay is closed or the listener fails.
@@ -131,22 +182,17 @@ func (r *Relay) Close() error {
 		return nil
 	}
 	r.closed = true
-	ln := r.ln
+	ln, lock := r.ln, r.lock
 	pubs := make([]*publication, 0, len(r.published))
 	for _, p := range r.published {
 		pubs = append(pubs, p)
-	}
-	parked := make([]net.Conn, 0, len(r.pending))
-	for id, c := range r.pending {
-		parked = append(parked, c)
-		delete(r.pending, id)
 	}
 	r.mu.Unlock()
 	for _, p := range pubs {
 		p.close()
 	}
-	for _, c := range parked {
-		_ = c.Close()
+	if lock != nil {
+		_ = lock.Close() // releases the door claim
 	}
 	if ln != nil {
 		return ln.Close()
@@ -156,6 +202,17 @@ func (r *Relay) Close() error {
 
 // cross reads one crossing's opening line and does what the line says.
 func (r *Relay) cross(conn net.Conn) {
+	select {
+	case r.opening <- struct{}{}:
+		defer func() { <-r.opening }()
+	default:
+		// More crossings are waiting to introduce themselves than the host will
+		// hold open for one box. Named, so the box learns what it hit.
+		_ = WriteReply(conn, fmt.Errorf("door: %d crossings are already waiting to say what they are", MaxOpeningCrossings))
+		_ = conn.Close()
+		r.say("a crossing was turned away: %d already opening", MaxOpeningCrossings)
+		return
+	}
 	br := bufio.NewReader(conn)
 	_ = conn.SetDeadline(time.Now().Add(r.HeaderWait))
 	h, err := ReadHeader(br)
@@ -185,25 +242,16 @@ func (r *Relay) publish(conn net.Conn, br *bufio.Reader, h Header) {
 		_ = conn.Close()
 		return
 	}
-	p := &publication{relay: r, name: name, typ: typ, port: port, conn: conn, br: br, done: make(chan struct{})}
-	r.mu.Lock()
-	if r.closed {
-		r.mu.Unlock()
-		_ = WriteReply(conn, errors.New("door: the relay is closing"))
+	p := &publication{
+		relay: r, name: name, typ: typ, port: port,
+		conn: conn, br: br, done: make(chan struct{}),
+		pending: map[uint64]net.Conn{},
+	}
+	if err := r.hold(p); err != nil {
+		_ = WriteReply(conn, err)
 		_ = conn.Close()
 		return
 	}
-	if _, taken := r.published[name]; taken {
-		r.mu.Unlock()
-		// One name is one listener in one box. The host resolves a name claimed by
-		// TWO boxes as a conflict; inside one box the second claimant is simply
-		// wrong, and is told so instead of being left publishing into nothing.
-		_ = WriteReply(conn, fmt.Errorf("door: %q is already published in this box", name))
-		_ = conn.Close()
-		return
-	}
-	r.published[name] = p
-	r.mu.Unlock()
 	if err := p.open(); err != nil {
 		r.drop(name, p)
 		_ = WriteReply(conn, err)
@@ -215,7 +263,28 @@ func (r *Relay) publish(conn net.Conn, br *bufio.Reader, h Header) {
 		return
 	}
 	r.say("%s: published (%s, box port %d)", name, typ, port)
-	p.hold()
+	p.serve()
+}
+
+// hold registers a publication under its name, or says why it cannot: the relay
+// is closing, the box is at its limit, or the name is already published here.
+// One name is one listener in one box — the host resolves a name claimed by TWO
+// boxes as a conflict, but inside one box the second claimant is simply wrong,
+// and is told so instead of being left publishing into nothing.
+func (r *Relay) hold(p *publication) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	switch {
+	case r.closed:
+		return errors.New("door: the relay is closing")
+	case len(r.published) >= MaxPublications:
+		return fmt.Errorf("door: this box already publishes %d services, the most one door carries", MaxPublications)
+	}
+	if _, taken := r.published[p.name]; taken {
+		return fmt.Errorf("door: %q is already published in this box", p.name)
+	}
+	r.published[p.name] = p
+	return nil
 }
 
 // stream hands a parked client connection to the crossing the box opened for
@@ -244,30 +313,36 @@ func (r *Relay) stream(conn net.Conn, br *bufio.Reader, h Header) {
 	_ = conn.SetDeadline(time.Time{})
 	defer conn.Close()
 	defer client.Close()
-	forwarder.Couple(client, buffered(conn, br))
+	forwarder.Couple(client, bufferConn(conn, br))
 }
 
-// park holds a client connection until the box opens a crossing for it, and
-// returns the id the box is asked to claim it with.
-func (r *Relay) park(c net.Conn) uint64 {
+// mintStreamID returns an id no live crossing is using. Ids are minted here, so
+// they are unique across the whole door even though each parked connection is
+// held by the publication that parked it.
+func (r *Relay) mintStreamID() uint64 {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.next++
-	id := r.next
-	r.pending[id] = c
-	return id
+	return r.next
 }
 
-// claim takes a parked connection, or nil when nothing is parked under that id.
+// claim takes the connection parked under an id, or nil when nothing is parked
+// under it. A parked connection is held by the publication that parked it, so
+// the search is over the publications — an id can never name a connection that
+// belongs to another one.
 func (r *Relay) claim(id uint64) net.Conn {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	c, ok := r.pending[id]
-	if !ok {
-		return nil
+	pubs := make([]*publication, 0, len(r.published))
+	for _, p := range r.published {
+		pubs = append(pubs, p)
 	}
-	delete(r.pending, id)
-	return c
+	r.mu.Unlock()
+	for _, p := range pubs {
+		if c := p.claim(id); c != nil {
+			return c
+		}
+	}
+	return nil
 }
 
 // drop forgets a publication, if it is still the one registered under its name.
@@ -280,7 +355,7 @@ func (r *Relay) drop(name string, p *publication) {
 }
 
 // say reports one line of what the relay did.
-func (r *Relay) say(format string, args ...interface{}) {
+func (r *Relay) say(format string, args ...any) {
 	if r.log == nil {
 		return
 	}
@@ -288,9 +363,10 @@ func (r *Relay) say(format string, args ...interface{}) {
 }
 
 // publication is one service the box published: the crossing the box holds, the
-// host listener standing in front of it, and the descriptor that makes it
-// visible to `dabs services`. All three appear together and go together — the
-// registry never describes a service nothing answers for.
+// host listener standing in front of it, the client connections waiting for a
+// crossing to carry them, and the descriptor that makes it visible to
+// `dabs services`. They appear together and go together — the registry never
+// describes a service nothing answers for.
 type publication struct {
 	relay *Relay
 	name  string
@@ -299,16 +375,23 @@ type publication struct {
 
 	conn net.Conn
 	br   *bufio.Reader
-	ln   net.Listener
 
 	wmu  sync.Mutex // one writer at a time on the held crossing
 	once sync.Once
 	done chan struct{}
+
+	mu      sync.Mutex
+	ln      net.Listener
+	shut    bool
+	pending map[uint64]net.Conn
 }
 
-// open stands the host listener up and writes the descriptor beside it.
+// open stands the host listener up and writes the descriptor beside it. A
+// publication closed while this was running (the relay shutting down between
+// the two) is undone here, rather than left holding a listener and a descriptor
+// nothing will ever take away.
 func (p *publication) open() error {
-	sock := filepath.Join(p.relay.dir, SocketName(p.name))
+	sock := filepath.Join(p.relay.dir, NameSocket(p.name))
 	_ = os.Remove(sock)
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
@@ -318,14 +401,22 @@ func (p *publication) open() error {
 		_ = ln.Close()
 		return fmt.Errorf("door: describe %q: %w", p.name, err)
 	}
+	p.mu.Lock()
+	if p.shut {
+		p.mu.Unlock()
+		_ = ln.Close()
+		_ = RemoveDescriptor(p.relay.dir, p.name)
+		return errors.New("door: the relay is closing")
+	}
 	p.ln = ln
-	go p.accept()
+	p.mu.Unlock()
+	go p.accept(ln)
 	return nil
 }
 
-// hold keeps the crossing alive: it asks for a heartbeat on a schedule and
+// serve keeps the crossing alive: it asks for a heartbeat on a schedule and
 // reads the answers, and closes the publication the moment either stops.
-func (p *publication) hold() {
+func (p *publication) serve() {
 	defer p.close()
 	go p.ping()
 	for {
@@ -360,9 +451,9 @@ func (p *publication) ping() {
 }
 
 // accept forwards every host-side connection into a crossing of its own.
-func (p *publication) accept() {
+func (p *publication) accept(ln net.Listener) {
 	for {
-		conn, err := p.ln.Accept()
+		conn, err := ln.Accept()
 		if err != nil {
 			return
 		}
@@ -375,20 +466,48 @@ func (p *publication) accept() {
 // connection, so the wait is bounded: the client is closed rather than held for
 // ever by a publisher that stopped answering.
 func (p *publication) carry(client net.Conn) {
-	id := p.relay.park(client)
+	id := p.relay.mintStreamID()
+	if !p.park(id, client) {
+		_ = client.Close()
+		return
+	}
 	if err := p.send(fmt.Sprintf("%s %d", MsgStream, id)); err != nil {
-		if c := p.relay.claim(id); c != nil {
+		if c := p.claim(id); c != nil {
 			_ = c.Close()
 		}
 		p.close()
 		return
 	}
 	time.AfterFunc(p.relay.StreamWait, func() {
-		if c := p.relay.claim(id); c != nil {
+		if c := p.claim(id); c != nil {
 			p.relay.say("%s: the box did not open stream %d", p.name, id)
 			_ = c.Close()
 		}
 	})
+}
+
+// park holds a client connection until the box opens a crossing for it, and
+// reports whether it was taken — a publication already closed takes none.
+func (p *publication) park(id uint64, client net.Conn) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.shut {
+		return false
+	}
+	p.pending[id] = client
+	return true
+}
+
+// claim takes this publication's connection parked under id, or nil.
+func (p *publication) claim(id uint64) net.Conn {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	c, ok := p.pending[id]
+	if !ok {
+		return nil
+	}
+	delete(p.pending, id)
+	return c
 }
 
 // send writes one control line to the box, one writer at a time.
@@ -402,13 +521,25 @@ func (p *publication) send(line string) error {
 }
 
 // close takes the whole publication down: the listener (which unlinks its
-// socket), the descriptor, and the crossing itself. What the host scans and
-// what the host can dial disappear together.
+// socket), the descriptor, every connection still parked, and the crossing
+// itself. What the host scans and what the host can dial disappear together.
 func (p *publication) close() {
 	p.once.Do(func() {
 		close(p.done)
-		if p.ln != nil {
-			_ = p.ln.Close()
+		p.mu.Lock()
+		p.shut = true
+		ln := p.ln
+		parked := make([]net.Conn, 0, len(p.pending))
+		for id, c := range p.pending {
+			parked = append(parked, c)
+			delete(p.pending, id)
+		}
+		p.mu.Unlock()
+		if ln != nil {
+			_ = ln.Close()
+		}
+		for _, c := range parked {
+			_ = c.Close()
 		}
 		_ = RemoveDescriptor(p.relay.dir, p.name)
 		_ = p.conn.Close()
@@ -417,9 +548,9 @@ func (p *publication) close() {
 	})
 }
 
-// buffered returns a connection whose reads start with whatever the header read
-// already pulled off the wire, so a byte read early is not a byte lost.
-func buffered(conn net.Conn, br *bufio.Reader) net.Conn {
+// bufferConn returns a connection whose reads start with whatever the header
+// read already pulled off the wire, so a byte read early is not a byte lost.
+func bufferConn(conn net.Conn, br *bufio.Reader) net.Conn {
 	return bufferedConn{Conn: conn, br: br}
 }
 

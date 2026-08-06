@@ -113,7 +113,7 @@ func ScanDir(dir string) ([]Service, error) {
 		if err := json.Unmarshal(b, &d); err != nil {
 			continue
 		}
-		sock := filepath.Join(dir, door.SocketName(name))
+		sock := filepath.Join(dir, door.NameSocket(name))
 		if _, err := os.Stat(sock); err != nil {
 			continue
 		}

@@ -60,11 +60,15 @@ func quickRelay(t *testing.T, dir string) (*door.Relay, string) {
 }
 
 // openRelay opens a relay on an exact door path, reporting what it does to log,
-// and serves it until the test ends.
-func openRelay(t *testing.T, dir, doorPath string, log io.Writer) *door.Relay {
+// and serves it until the test ends. tune, when given, adjusts the relay's
+// timings BEFORE it serves — they are read by the goroutines serving starts.
+func openRelay(t *testing.T, dir, doorPath string, log io.Writer, tune ...func(*door.Relay)) *door.Relay {
 	t.Helper()
 	r := door.NewRelay(filepath.Join(dir, "registry"), log)
 	r.PingEvery, r.Idle, r.HeaderWait, r.StreamWait = 20*time.Millisecond, 400*time.Millisecond, time.Second, time.Second
+	for _, fn := range tune {
+		fn(r)
+	}
 	if err := r.Open(doorPath); err != nil {
 		t.Fatalf("open the door: %v", err)
 	}
@@ -144,7 +148,7 @@ func TestAPublishedServiceCarriesBytesBothWays(t *testing.T) {
 	port := boxService(t, "from-the-box:")
 	failed := publishing(t, quickPublisher(doorPath), "web", door.TypeWebUI, port)
 
-	sock := filepath.Join(dir, "registry", door.SocketName("web"))
+	sock := filepath.Join(dir, "registry", door.NameSocket("web"))
 	waitFor(t, "the relay to stand a listener at "+sock, func() bool { return exists(sock) })
 
 	for i := 0; i < 3; i++ { // every client is its own crossing
@@ -184,8 +188,8 @@ func TestTheRegistryHoldsOnlyWhatTheDoorHolds(t *testing.T) {
 	p.Redial = 10 * time.Millisecond // stop trying once the relay is closed
 	publishing(t, p, "web", door.TypeGeneral, port)
 
-	desc := filepath.Join(dir, "registry", door.DescriptorName("web"))
-	sock := filepath.Join(dir, "registry", door.SocketName("web"))
+	desc := filepath.Join(dir, "registry", door.NameDescriptor("web"))
+	sock := filepath.Join(dir, "registry", door.NameSocket("web"))
 	waitFor(t, "the registry to describe web", func() bool { return exists(desc) && exists(sock) })
 
 	_ = relay.Close()
@@ -199,9 +203,9 @@ func TestAnUngrantedBoxIsRefusedByName(t *testing.T) {
 	dir := sockDir(t)
 	missing := filepath.Join(dir, "door.sock")
 	err := quickPublisher(missing).Publish("web", door.TypeGeneral, 8080)
-	var not door.NotGranted
+	var not door.NotGrantedError
 	if !errors.As(err, &not) {
-		t.Fatalf("Publish = %v, want a NotGranted refusal", err)
+		t.Fatalf("Publish = %v, want a NotGrantedError refusal", err)
 	}
 	if !strings.Contains(err.Error(), "publish: true") {
 		t.Errorf("the refusal does not say what the recipe must set: %v", err)
@@ -234,7 +238,7 @@ func TestADoorThatAnswersLateIsStillPublishedOn(t *testing.T) {
 
 	time.Sleep(200 * time.Millisecond)
 	openRelay(t, dir, doorPath, io.Discard)
-	sock := filepath.Join(dir, "registry", door.SocketName("web"))
+	sock := filepath.Join(dir, "registry", door.NameSocket("web"))
 	waitFor(t, "the late door to publish web", func() bool { return exists(sock) })
 	select {
 	case err := <-failed:
@@ -299,7 +303,7 @@ func TestADoorThatAcceptsAndGoesQuietIsRetriedNotRefused(t *testing.T) {
 	p := quickPublisher(doorPath)
 	p.Idle, p.Redial = 100*time.Millisecond, 700*time.Millisecond
 	err = p.Publish("web", door.TypeGeneral, 8080)
-	var refused door.Refused
+	var refused door.RefusedError
 	if errors.As(err, &refused) {
 		t.Fatalf("a quiet door was read as a refusal: %v", err)
 	}
@@ -319,13 +323,13 @@ func TestASecondClaimOfALiveNameIsRefused(t *testing.T) {
 	port := boxService(t, "x")
 	publishing(t, quickPublisher(doorPath), "web", door.TypeGeneral, port)
 	waitFor(t, "web to be published", func() bool {
-		return exists(filepath.Join(dir, "registry", door.SocketName("web")))
+		return exists(filepath.Join(dir, "registry", door.NameSocket("web")))
 	})
 
 	err := quickPublisher(doorPath).Publish("web", door.TypeGeneral, port)
-	var refused door.Refused
+	var refused door.RefusedError
 	if !errors.As(err, &refused) {
-		t.Fatalf("second claim = %v, want a Refused", err)
+		t.Fatalf("second claim = %v, want a RefusedError", err)
 	}
 	if !strings.Contains(err.Error(), "already published") {
 		t.Errorf("the refusal does not say why: %v", err)
@@ -350,7 +354,7 @@ func TestACrossingThatStopsAnsweringIsDropped(t *testing.T) {
 	if err := door.ReadReply(br); err != nil {
 		t.Fatalf("the door refused a valid publish: %v", err)
 	}
-	sock := filepath.Join(dir, "registry", door.SocketName("mute"))
+	sock := filepath.Join(dir, "registry", door.NameSocket("mute"))
 	waitFor(t, "mute to be published", func() bool { return exists(sock) })
 	// The crossing is open and the socket file is there, but nobody answers the
 	// pings the relay is now sending.
@@ -369,7 +373,7 @@ func TestAnIdleServiceStaysPublished(t *testing.T) {
 	port := boxService(t, "still-here:")
 	failed := publishing(t, quickPublisher(doorPath), "web", door.TypeGeneral, port)
 
-	sock := filepath.Join(dir, "registry", door.SocketName("web"))
+	sock := filepath.Join(dir, "registry", door.NameSocket("web"))
 	waitFor(t, "web to be published", func() bool { return exists(sock) })
 	// Nothing dials it for several times as long as the relay waits before
 	// judging a crossing dead.

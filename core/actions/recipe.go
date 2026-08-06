@@ -769,7 +769,9 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID, tip string, rec re
 		if derr != nil {
 			return "", derr
 		}
-		if derr := r.data.MkdirAll(svcDir, 0o755); derr != nil {
+		// The registry is the host's own — the sockets the relay stands in it are
+		// the only route into this box's services.
+		if derr := r.data.MkdirAll(svcDir, 0o700); derr != nil {
 			return "", fmt.Errorf("recipe %q: services dir %s: %w", recipeName, svcDir, derr)
 		}
 		doorPath, derr := r.resolveDoorPath(boxID)

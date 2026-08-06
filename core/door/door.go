@@ -76,15 +76,15 @@ const (
 // ErrClosed is what reading a line reports when the peer went away.
 var ErrClosed = errors.New("door: the crossing closed")
 
-// Refused is the DOOR'S OWN answer to a crossing it will not take (a name
+// RefusedError is the DOOR'S OWN answer to a crossing it will not take (a name
 // already published in this box, a service type it does not know): an ERR reply
 // that was read off the wire. It is the one failure retrying cannot change, and
 // it is deliberately distinct from a transport failure — a dial that connects
 // and then goes quiet is a moment, not a decision, and treating the two alike
 // is what turns one bad moment into a box that can never publish again.
-type Refused struct{ Reason string }
+type RefusedError struct{ Reason string }
 
-func (e Refused) Error() string { return e.Reason }
+func (e RefusedError) Error() string { return e.Reason }
 
 // Header is a crossing's opening line: what this connection is, and the
 // arguments the verb takes.
@@ -165,12 +165,12 @@ func WriteReply(w io.Writer, reason error) error {
 	if reason == nil {
 		return WriteLine(w, Banner+" OK")
 	}
-	return WriteLine(w, Banner+" ERR "+oneLine(reason.Error()))
+	return WriteLine(w, Banner+" ERR "+flattenLine(reason.Error()))
 }
 
 // ReadReply reads the answer to a header: nil when the crossing was accepted, a
-// Refused carrying what the other side named, or a plain error when the reply
-// could not be read or was not this protocol's.
+// RefusedError carrying what the other side named, or a plain error when the
+// reply could not be read or was not this protocol's.
 func ReadReply(r *bufio.Reader) error {
 	line, err := ReadLine(r)
 	if err != nil {
@@ -184,7 +184,7 @@ func ReadReply(r *bufio.Reader) error {
 	case rest == "OK":
 		return nil
 	case strings.HasPrefix(rest, "ERR "):
-		return Refused{Reason: strings.TrimPrefix(rest, "ERR ")}
+		return RefusedError{Reason: strings.TrimPrefix(rest, "ERR ")}
 	}
 	return fmt.Errorf("door: %q is not OK or ERR", clip(rest))
 }
@@ -219,16 +219,27 @@ func ReadLine(r *bufio.Reader) (string, error) {
 	}
 }
 
-// oneLine flattens a message to a single wire line.
-func oneLine(s string) string {
+// flattenLine flattens a message to a single wire line.
+func flattenLine(s string) string {
 	return clip(strings.NewReplacer("\n", " ", "\r", " ").Replace(s))
 }
 
 // clip shortens a peer-written string to what fits on one line, so a refusal
-// quoting it stays a line.
+// quoting it stays a line. It cuts on a RUNE boundary: what a peer wrote is
+// arbitrary bytes, and cutting mid-rune would put a broken one in the message.
 func clip(s string) string {
-	if len(s) > 120 {
-		return s[:120] + "…"
+	if len(s) <= clipAt {
+		return s
 	}
-	return s
+	cut := 0
+	for i := range s {
+		if i > clipAt {
+			break
+		}
+		cut = i
+	}
+	return s[:cut] + "…"
 }
+
+// clipAt is how much of a peer-written string a message quotes.
+const clipAt = 120

@@ -104,6 +104,40 @@ func TestAGrantedBoxGetsADoorAnsweredByItsOwnRelay(t *testing.T) {
 	}
 }
 
+// CONTRACT: bringing a box down reaps the relay answering its door, by the pid
+// its node records — a recorded pid nothing ever kills leaves a host process
+// (and a live socket) behind every reaped box.
+func TestReapingABoxReapsTheRelayAnsweringItsDoor(t *testing.T) {
+	y := `recipes:
+  m:
+    image: img
+    command: [sh]
+    publish: true
+`
+	fd := baseData()
+	drv := &fakeDriver{built: map[string]bool{"img": true}, infos: []sandbox.Info{{Name: "img-inst", Driver: "fake"}}}
+	r := newReal(y, fd, drv)
+	captureStdout(t, func() {
+		if err := r.Recipe(params.Recipe{Args: []string{"m"}, NoCommand: true, NodeName: "mybox"}); err != nil {
+			t.Fatalf("Recipe: %v", err)
+		}
+	})
+	if len(fd.relays) != 1 {
+		t.Fatalf("relays started = %+v, want exactly one", fd.relays)
+	}
+	if len(fd.reaped) != 0 {
+		t.Fatalf("a live box's relay was reaped: %v", fd.reaped)
+	}
+	captureStdout(t, func() {
+		if err := r.Rm(params.Rm{Node: "mybox", Yes: true}); err != nil {
+			t.Fatalf("Rm: %v", err)
+		}
+	})
+	if len(fd.reaped) != 1 || fd.reaped[0] != 4001 {
+		t.Errorf("reaped pids = %v, want the relay pid the node recorded (4001)", fd.reaped)
+	}
+}
+
 // CONTRACT: a relay that cannot be started fails the boot. A box booted with a
 // door onto nothing would take every publish and answer none of them.
 func TestABoxIsNotBootedWithADoorNothingAnswers(t *testing.T) {

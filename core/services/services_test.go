@@ -38,10 +38,10 @@ func writeDescriptor(t *testing.T, dir, name, typ string, port int, withSocket b
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, door.DescriptorName(name)), b, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, door.NameDescriptor(name)), b, 0o644); err != nil {
 		t.Fatalf("descriptor: %v", err)
 	}
-	sock := filepath.Join(dir, door.SocketName(name))
+	sock := filepath.Join(dir, door.NameSocket(name))
 	if withSocket {
 		ln, err := net.Listen("unix", sock)
 		if err != nil {
@@ -81,7 +81,7 @@ func TestScanDirOfAnAbsentDirectoryFindsNothing(t *testing.T) {
 // listing and reachability are different questions.
 func TestUpDistinguishesAnAnsweringSocket(t *testing.T) {
 	dir := shortTempDir(t)
-	sock := filepath.Join(dir, door.SocketName("web"))
+	sock := filepath.Join(dir, door.NameSocket("web"))
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -152,7 +152,7 @@ func TestAssignSkipsPortsAlreadyBound(t *testing.T) {
 // service's socket, and drops the listener when the service goes away.
 func TestServerForwardsLoopbackIntoTheSocket(t *testing.T) {
 	dir := shortTempDir(t)
-	sock := filepath.Join(dir, door.SocketName("web"))
+	sock := filepath.Join(dir, door.NameSocket("web"))
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -459,7 +459,7 @@ func TestScanDirDropsNamesTheHostCannotPrintAsWritten(t *testing.T) {
 	writeDescriptor(t, dir, long, door.TypeWebUI, 5173, false)
 	// A plain file stands in for the long name's socket: ScanDir only asks
 	// whether one is there, and a path that long cannot be bound.
-	if err := os.WriteFile(filepath.Join(dir, door.SocketName(long)), nil, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, door.NameSocket(long)), nil, 0o644); err != nil {
 		t.Fatalf("long socket: %v", err)
 	}
 	writeDescriptor(t, dir, "web", "webui\x1b[31m", 5173, true)

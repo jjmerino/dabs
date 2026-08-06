@@ -119,7 +119,7 @@ func reapRelay(pid int) {
 // that started neither.
 func (r Real) reapSidecars(instance string) {
 	proxy.Reap(r.boxProxy(instance))
-	reapRelay(r.boxRelay(instance))
+	r.unrelay(r.boxRelay(instance))
 }
 
 // boxRelay returns the door relay's pid as recorded on the box node named by

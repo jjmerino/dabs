@@ -29,11 +29,11 @@ type Descriptor struct {
 	Port int    `json:"port"`
 }
 
-// DescriptorName is the descriptor file a service of the given name gets.
-func DescriptorName(name string) string { return name + ".json" }
+// NameDescriptor returns the descriptor file a service of the given name gets.
+func NameDescriptor(name string) string { return name + ".json" }
 
-// SocketName is the socket file the relay listens on for a service.
-func SocketName(name string) string { return name + ".sock" }
+// NameSocket returns the socket file the relay listens on for a service.
+func NameSocket(name string) string { return name + ".sock" }
 
 // MaxServiceNameLen is the longest a service name may be.
 const MaxServiceNameLen = 64
@@ -88,10 +88,12 @@ func WriteDescriptor(dir, name, typ string, port int) error {
 	if err := tmp.Close(); err != nil {
 		return clean(err)
 	}
-	if err := os.Chmod(tmp.Name(), 0o644); err != nil {
+	// The registry is the host's own: the descriptor names a socket that is the
+	// only route into the box's service, so it is not other users' business.
+	if err := os.Chmod(tmp.Name(), 0o600); err != nil {
 		return clean(err)
 	}
-	if err := os.Rename(tmp.Name(), filepath.Join(dir, DescriptorName(name))); err != nil {
+	if err := os.Rename(tmp.Name(), filepath.Join(dir, NameDescriptor(name))); err != nil {
 		return clean(err)
 	}
 	return nil
@@ -100,7 +102,7 @@ func WriteDescriptor(dir, name, typ string, port int) error {
 // RemoveDescriptor takes a service's descriptor out of the registry, which is
 // what un-publishes it: what the host scans is the file.
 func RemoveDescriptor(dir, name string) error {
-	err := os.Remove(filepath.Join(dir, DescriptorName(name)))
+	err := os.Remove(filepath.Join(dir, NameDescriptor(name)))
 	if os.IsNotExist(err) {
 		return nil
 	}

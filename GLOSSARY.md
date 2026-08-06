@@ -334,7 +334,9 @@ services.
 ### crossing
 One connection over a door. Each opens with a single header line carrying the
 protocol banner and version (`DABS-DOOR/1 PUBLISH <name> <type> <port>`,
-`DABS-DOOR/1 STREAM <id>`), answered `DABS-DOOR/1 OK` or `… ERR <reason>`. A
+`DABS-DOOR/1 STREAM <id>`), answered `DABS-DOOR/1 OK`, `… ERR <reason>` or
+`… BUSY <reason>` — ERR is a decision, so the box gives up on it; BUSY is a
+load limit, so the box comes back. A
 PUBLISH crossing is held open and carries the heartbeat and the relay's stream
 requests; every other call is a fresh dial rather than a stream multiplexed onto
 one connection, so what identifies a caller stays attached to the connection it

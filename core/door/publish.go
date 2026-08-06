@@ -91,17 +91,26 @@ func (p Publisher) Publish(name, typ string, port int) error {
 	}
 	wait := p.DialEvery
 	answered := time.Now()
+	busy := false
 	for {
 		held, err := p.session(name, typ, port)
 		var refused RefusedError
 		if errors.As(err, &refused) {
 			return err
 		}
+		var wasBusy BusyError
+		busy = errors.As(err, &wasBusy)
 		if held {
 			answered = time.Now()
 			wait = p.DialEvery
 		}
 		if time.Since(answered) > p.Redial {
+			// A door that was BUSY the whole time ANSWERED, every time; saying it
+			// never answered would send whoever reads this looking for a relay that
+			// is dead, when what it is is full.
+			if busy {
+				return fmt.Errorf("the box door at %s was busy for %s: %w", p.Door, p.Redial, err)
+			}
 			return fmt.Errorf("the box door at %s has not answered for %s: %w", p.Door, p.Redial, err)
 		}
 		p.say("%s: %v — dialing the door again in %s", name, err, wait)

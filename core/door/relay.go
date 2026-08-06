@@ -21,8 +21,8 @@ import (
 // box's node lives, so the path a box dials is answered from the moment the box
 // exists: a box never dials into a gap.
 
-// Defaults for a relay's timings, which are fields on Relay so a test can drive
-// the same code on a scale it can wait for.
+// Defaults for a relay's timings, which are fields on Relay so a test can
+// drive the same code on a scale it can wait for.
 const (
 	// DefaultPingEvery is how often the relay asks a held crossing to prove it
 	// is alive.
@@ -58,9 +58,14 @@ const (
 	MaxOpeningCrossings = 64
 )
 
-// acceptRetry is how long the relay waits after a momentary accept failure
-// before accepting again.
-const acceptRetry = 20 * time.Millisecond
+// How long the relay waits after a momentary accept failure before accepting
+// again: a short first pause, doubling to a ceiling. The failures worth waiting
+// out include running out of descriptors, which does not clear in a
+// millisecond — a flat retry would spin against it, and say so on every turn.
+const (
+	acceptRetryFirst  = 5 * time.Millisecond
+	acceptRetryAtMost = time.Second
+)
 
 // Relay serves one box's door: it accepts crossings on the door socket, holds
 // each published service's crossing open, and stands a host listener in front
@@ -142,7 +147,12 @@ func (r *Relay) Open(doorPath string) error {
 		return err
 	}
 	// The opening semaphore is built here, from the cap as it stands, so it is
-	// the one Serve's goroutines will use.
+	// the one Serve's goroutines will use. A cap of zero would be a door that
+	// turns EVERY crossing away, which is nobody's intent — a relay built by
+	// hand rather than by NewRelay gets the default.
+	if r.OpeningCap <= 0 {
+		r.OpeningCap = MaxOpeningCrossings
+	}
 	r.opening = make(chan struct{}, r.OpeningCap)
 	// A socket file left by a relay whose process is gone refuses the bind. Its
 	// owner is gone — the claim above just proved it — so the file is debris.
@@ -182,6 +192,10 @@ func (r *Relay) Serve() error {
 	if ln == nil {
 		return errors.New("door: the relay was never opened")
 	}
+	// wait is where the current run of accept failures has backed off to; zero
+	// means accepting is healthy, and is what makes the report below one per
+	// episode rather than one per attempt.
+	wait := time.Duration(0)
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -194,18 +208,48 @@ func (r *Relay) Serve() error {
 			// A momentary accept failure (the host out of descriptors, a peer gone
 			// between connect and accept) must not end the door: this relay is the
 			// only thing answering it and nothing restarts one, so returning here
-			// would take the box's publishing for the rest of its life. Wait a beat
-			// and keep accepting; only a listener that is really gone ends Serve.
-			var ne net.Error
-			if errors.As(err, &ne) && ne.Timeout() || errors.Is(err, syscall.ECONNABORTED) || errors.Is(err, syscall.EMFILE) || errors.Is(err, syscall.ENFILE) || errors.Is(err, syscall.EINTR) {
-				r.say("accept: %v — still answering", err)
-				time.Sleep(acceptRetry)
-				continue
+			// would take the box's publishing for the rest of its life. Back off and
+			// keep accepting; only a listener that is really gone ends Serve.
+			if !keepsAccepting(err) {
+				return err
 			}
-			return err
+			if wait == 0 {
+				wait = acceptRetryFirst
+				r.say("accept: %v — still answering", err)
+			} else {
+				wait *= 2
+				if wait > acceptRetryAtMost {
+					wait = acceptRetryAtMost
+				}
+			}
+			time.Sleep(wait)
+			continue
 		}
+		wait = 0 // accepting works again; the next failure starts a new episode
 		go r.cross(conn)
 	}
+}
+
+// keepsAccepting reports whether the relay carries on after an accept failure.
+// The failures it survives are the ones that describe a MOMENT — the host out
+// of descriptors, a peer that hung up between connect and accept, a signal, a
+// deadline — because nothing restarts a relay, so ending the loop on one would
+// take the box's publishing with it. A listener that is really closed, or any
+// error that says the door itself is gone, ends the loop.
+func keepsAccepting(err error) bool {
+	switch {
+	case err == nil:
+		return false
+	case errors.Is(err, net.ErrClosed):
+		return false
+	case errors.Is(err, syscall.ECONNABORTED),
+		errors.Is(err, syscall.EMFILE),
+		errors.Is(err, syscall.ENFILE),
+		errors.Is(err, syscall.EINTR):
+		return true
+	}
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
 }
 
 // Close stops the relay and every service it publishes.

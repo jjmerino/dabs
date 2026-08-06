@@ -15,8 +15,11 @@
 //
 //	DABS-DOOR/1 OK
 //	DABS-DOOR/1 ERR <reason>
+//	DABS-DOOR/1 BUSY <reason>
 //
-// after which the crossing is whatever its verb makes it: a PUBLISH crossing is
+// where ERR is a DECISION (asking again cannot change it, so the box gives up)
+// and BUSY is LOAD (the door is at a limit, so the box comes back). After the
+// reply the crossing is whatever its verb makes it: a PUBLISH crossing is
 // held open and carries line messages (PING/PONG, and the relay's STREAM
 // requests); a STREAM crossing carries raw bytes and nothing reads them again.
 //

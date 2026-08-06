@@ -367,6 +367,62 @@ func TestCrossingsThatSayNothingAreCapped(t *testing.T) {
 	}
 }
 
+// CONTRACT: a relay built by hand, with no cap set, answers crossings — a zero
+// cap would be a door that turns everything away for ever, which is nobody's
+// intent and looks exactly like a box that may not publish.
+func TestARelayWithNoCapSetStillTakesCrossings(t *testing.T) {
+	dir := sockDir(t)
+	doorPath := filepath.Join(dir, "door.sock")
+	r := door.NewRelay(filepath.Join(dir, "registry"), io.Discard)
+	r.OpeningCap = 0
+	if err := r.Open(doorPath); err != nil {
+		t.Fatalf("open the door: %v", err)
+	}
+	go func() { _ = r.Serve() }()
+	t.Cleanup(func() { _ = r.Close() })
+
+	conn, br := openCrossing(t, doorPath, publishLine("web", 8080))
+	defer conn.Close()
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if err := door.ReadReply(br); err != nil {
+		t.Fatalf("a crossing was turned away by a door with no cap set: %v", err)
+	}
+}
+
+// CONTRACT: a publisher that spent its whole window being told BUSY says the
+// door was BUSY — not that it never answered. It answered every time, and
+// whoever reads the message must not go looking for a dead relay when what the
+// door is is full.
+func TestAPublisherSaysBusyWhenTheDoorWasBusy(t *testing.T) {
+	dir := sockDir(t)
+	_, doorPath := quickRelay(t, dir)
+	crowd := make([]net.Conn, 0, door.MaxPublications)
+	defer func() {
+		for _, c := range crowd {
+			_ = c.Close()
+		}
+	}()
+	for i := 0; i < door.MaxPublications; i++ {
+		conn, br := openCrossing(t, doorPath, publishLine("svc"+strconv.Itoa(i), 8080))
+		if err := door.ReadReply(br); err != nil {
+			t.Fatalf("publication %d was turned away: %v", i, err)
+		}
+		crowd = append(crowd, conn)
+	}
+	p := quickPublisher(doorPath)
+	p.Redial = 300 * time.Millisecond
+	err := p.Publish("mine", door.TypeGeneral, 8080)
+	if err == nil {
+		t.Fatal("publishing into a full door succeeded")
+	}
+	if !strings.Contains(err.Error(), "was busy for") {
+		t.Errorf("gave up with %q, want it to say the door was busy", err)
+	}
+	if strings.Contains(err.Error(), "has not answered") {
+		t.Errorf("gave up with %q, which sends the reader after a dead relay", err)
+	}
+}
+
 // CONTRACT: the registry is the host's own. The sockets in it are the only
 // route into a box's published service, so neither the directory nor the
 // descriptors are readable by other users on this machine.

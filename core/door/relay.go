@@ -21,8 +21,8 @@ import (
 // box's node lives, so the path a box dials is answered from the moment the box
 // exists: a box never dials into a gap.
 
-// Defaults for a relay's timing FIELDS, which are fields rather than constants
-// so a test can drive the same code on a scale it can wait for.
+// Defaults for a relay's timings, which are fields on Relay so a test can drive
+// the same code on a scale it can wait for.
 const (
 	// DefaultPingEvery is how often the relay asks a held crossing to prove it
 	// is alive.
@@ -40,33 +40,53 @@ const (
 )
 
 // What one box may make the host allocate. The box is the untrusted side of
-// this socket: every crossing costs the host a goroutine and a read buffer, and
-// every publication costs it a listener and two files — so both are capped, and
-// over-cap is refused by name rather than served until something else on the
-// host runs out.
+// this socket: a crossing that has not yet said what it is costs the host a
+// goroutine and a read buffer for nothing in particular, and a publication
+// costs it a listener and two files — so both are capped. A limit here is a
+// LOAD limit, so hitting one is answered BUSY, never ERR: the amount going on
+// changes, and a box must be able to come back rather than lose publishing for
+// the rest of its life over a busy moment.
 const (
 	// MaxPublications is the most services one box may have published at once.
 	MaxPublications = 32
-	// MaxOpeningCrossings is the most crossings that may be waiting to say what
-	// they are at one time. A crossing that has stated its business is no longer
-	// counted here — it is a publication or a stream, each capped by what it is.
+	// MaxOpeningCrossings is the most crossings that may be reading their
+	// opening line at one time. A crossing that has said what it is no longer
+	// counts here — from that point it is a publication (capped above) or a
+	// stream carrying bytes for one of them, and it may live as long as it is
+	// used. Streams are how an ordinary web UI works: one connection per client,
+	// held open, and they must never crowd out the next publish.
 	MaxOpeningCrossings = 64
 )
+
+// acceptRetry is how long the relay waits after a momentary accept failure
+// before accepting again.
+const acceptRetry = 20 * time.Millisecond
 
 // Relay serves one box's door: it accepts crossings on the door socket, holds
 // each published service's crossing open, and stands a host listener in front
 // of every service so anything on the host can dial it as a plain unix socket.
 type Relay struct {
-	// PingEvery, Idle, HeaderWait and StreamWait are the timings above. They are
-	// read by the goroutines Serve starts, so they are set before Serve is called
-	// and not after.
+	// PingEvery, Idle, HeaderWait and StreamWait are the timings above, and
+	// OpeningCap is the limit above. They are read by the goroutines Serve
+	// starts, so they are set before Open and Serve are called, not after.
 	PingEvery, Idle, HeaderWait, StreamWait time.Duration
+	// OpeningCap is how many crossings may be reading their opening line at one
+	// time; MaxOpeningCrossings by default.
+	OpeningCap int
 
 	dir string // the registry directory, on the host
 	log io.Writer
 
 	// opening bounds the crossings that have not yet said what they are.
 	opening chan struct{}
+
+	// beforeOpen and afterOpen, when set, run either side of a publication's
+	// listener being stood up. Nothing in production sets them: they exist so a
+	// test can hold a publication inside that window, land a Close in it, and
+	// then look at what the relay left — with no waiting on timing to decide
+	// whether it has finished (see relay_export_test.go).
+	beforeOpen func()
+	afterOpen  func(error)
 
 	mu        sync.Mutex
 	ln        net.Listener
@@ -82,8 +102,8 @@ func NewRelay(dir string, log io.Writer) *Relay {
 	return &Relay{
 		PingEvery: DefaultPingEvery, Idle: DefaultIdle,
 		HeaderWait: DefaultHeaderWait, StreamWait: DefaultStreamWait,
-		dir: dir, log: log,
-		opening:   make(chan struct{}, MaxOpeningCrossings),
+		OpeningCap: MaxOpeningCrossings,
+		dir:        dir, log: log,
 		published: map[string]*publication{},
 	}
 }
@@ -121,6 +141,9 @@ func (r *Relay) Open(doorPath string) error {
 	if err != nil {
 		return err
 	}
+	// The opening semaphore is built here, from the cap as it stands, so it is
+	// the one Serve's goroutines will use.
+	r.opening = make(chan struct{}, r.OpeningCap)
 	// A socket file left by a relay whose process is gone refuses the bind. Its
 	// owner is gone — the claim above just proved it — so the file is debris.
 	_ = os.Remove(doorPath)
@@ -168,6 +191,17 @@ func (r *Relay) Serve() error {
 			if closed {
 				return nil
 			}
+			// A momentary accept failure (the host out of descriptors, a peer gone
+			// between connect and accept) must not end the door: this relay is the
+			// only thing answering it and nothing restarts one, so returning here
+			// would take the box's publishing for the rest of its life. Wait a beat
+			// and keep accepting; only a listener that is really gone ends Serve.
+			var ne net.Error
+			if errors.As(err, &ne) && ne.Timeout() || errors.Is(err, syscall.ECONNABORTED) || errors.Is(err, syscall.EMFILE) || errors.Is(err, syscall.ENFILE) || errors.Is(err, syscall.EINTR) {
+				r.say("accept: %v — still answering", err)
+				time.Sleep(acceptRetry)
+				continue
+			}
 			return err
 		}
 		go r.cross(conn)
@@ -200,22 +234,27 @@ func (r *Relay) Close() error {
 	return nil
 }
 
-// cross reads one crossing's opening line and does what the line says.
+// cross reads one crossing's opening line and does what the line says. The
+// opening slot is given back as soon as the line is read, whether it read or
+// not: what it bounds is the crossings the host is holding open for nothing —
+// a publication or a stream is bounded by what it is, and lives as long as it
+// is used.
 func (r *Relay) cross(conn net.Conn) {
 	select {
 	case r.opening <- struct{}{}:
-		defer func() { <-r.opening }()
 	default:
-		// More crossings are waiting to introduce themselves than the host will
-		// hold open for one box. Named, so the box learns what it hit.
-		_ = WriteReply(conn, fmt.Errorf("door: %d crossings are already waiting to say what they are", MaxOpeningCrossings))
+		// More crossings are reading their opening line at once than the host will
+		// hold for one box. BUSY, and named, so the box learns what it hit and
+		// knows to come back.
+		_ = WriteBusy(conn, fmt.Errorf("door: %d crossings are already opening", r.OpeningCap))
 		_ = conn.Close()
-		r.say("a crossing was turned away: %d already opening", MaxOpeningCrossings)
+		r.say("a crossing was turned away: %d already opening", r.OpeningCap)
 		return
 	}
 	br := bufio.NewReader(conn)
 	_ = conn.SetDeadline(time.Now().Add(r.HeaderWait))
 	h, err := ReadHeader(br)
+	<-r.opening
 	if err != nil {
 		r.say("crossing refused: %v", err)
 		_ = conn.Close()
@@ -248,13 +287,32 @@ func (r *Relay) publish(conn net.Conn, br *bufio.Reader, h Header) {
 		pending: map[uint64]net.Conn{},
 	}
 	if err := r.hold(p); err != nil {
-		_ = WriteReply(conn, err)
+		// A limit says BUSY and a decision says ERR, because the box side must
+		// treat them differently: it comes back from one and gives up on the other.
+		var busy BusyError
+		if errors.As(err, &busy) {
+			_ = WriteBusy(conn, err)
+		} else {
+			_ = WriteReply(conn, err)
+		}
 		_ = conn.Close()
 		return
 	}
-	if err := p.open(); err != nil {
+	if r.beforeOpen != nil {
+		r.beforeOpen()
+	}
+	err = p.open()
+	if r.afterOpen != nil {
+		r.afterOpen(err)
+	}
+	if err != nil {
 		r.drop(name, p)
-		_ = WriteReply(conn, err)
+		var busy BusyError
+		if errors.As(err, &busy) {
+			_ = WriteBusy(conn, err)
+		} else {
+			_ = WriteReply(conn, err)
+		}
 		_ = conn.Close()
 		return
 	}
@@ -266,19 +324,21 @@ func (r *Relay) publish(conn net.Conn, br *bufio.Reader, h Header) {
 	p.serve()
 }
 
-// hold registers a publication under its name, or says why it cannot: the relay
-// is closing, the box is at its limit, or the name is already published here.
-// One name is one listener in one box — the host resolves a name claimed by TWO
-// boxes as a conflict, but inside one box the second claimant is simply wrong,
-// and is told so instead of being left publishing into nothing.
+// hold registers a publication under its name, or says why it cannot. Two of
+// the three refusals are BUSY — a relay that is closing and a box at its
+// publication limit are both states of the moment, and a publisher that comes
+// back may well get in. The third is a decision: one name is one listener in
+// one box, so the second claimant of a live name is simply wrong, and is told
+// so rather than left retrying a name it will never get. (The host resolves a
+// name claimed by TWO boxes as a conflict; this is one box's own doing.)
 func (r *Relay) hold(p *publication) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	switch {
 	case r.closed:
-		return errors.New("door: the relay is closing")
+		return BusyError{Reason: "door: the relay is closing"}
 	case len(r.published) >= MaxPublications:
-		return fmt.Errorf("door: this box already publishes %d services, the most one door carries", MaxPublications)
+		return BusyError{Reason: fmt.Sprintf("door: this box already publishes %d services, the most one door carries at once", MaxPublications)}
 	}
 	if _, taken := r.published[p.name]; taken {
 		return fmt.Errorf("door: %q is already published in this box", p.name)
@@ -406,7 +466,7 @@ func (p *publication) open() error {
 		p.mu.Unlock()
 		_ = ln.Close()
 		_ = RemoveDescriptor(p.relay.dir, p.name)
-		return errors.New("door: the relay is closing")
+		return BusyError{Reason: "door: the relay is closing"}
 	}
 	p.ln = ln
 	p.mu.Unlock()

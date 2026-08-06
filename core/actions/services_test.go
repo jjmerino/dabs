@@ -138,6 +138,32 @@ func TestReapingABoxReapsTheRelayAnsweringItsDoor(t *testing.T) {
 	}
 }
 
+// CONTRACT: reaping a box that was never granted a door asks nothing of the
+// relay reaper — there is no relay, and no pid is no call.
+func TestReapingAnUngrantedBoxReapsNoRelay(t *testing.T) {
+	y := `recipes:
+  m:
+    image: img
+    command: [sh]
+`
+	fd := baseData()
+	drv := &fakeDriver{built: map[string]bool{"img": true}, infos: []sandbox.Info{{Name: "img-inst", Driver: "fake"}}}
+	r := newReal(y, fd, drv)
+	captureStdout(t, func() {
+		if err := r.Recipe(params.Recipe{Args: []string{"m"}, NoCommand: true, NodeName: "mybox"}); err != nil {
+			t.Fatalf("Recipe: %v", err)
+		}
+	})
+	captureStdout(t, func() {
+		if err := r.Rm(params.Rm{Node: "mybox", Yes: true}); err != nil {
+			t.Fatalf("Rm: %v", err)
+		}
+	})
+	if len(fd.reaped) != 0 {
+		t.Errorf("reaped pids = %v, want none for a box that never had a door", fd.reaped)
+	}
+}
+
 // CONTRACT: a relay that cannot be started fails the boot. A box booted with a
 // door onto nothing would take every publish and answer none of them.
 func TestABoxIsNotBootedWithADoorNothingAnswers(t *testing.T) {

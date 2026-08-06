@@ -19,8 +19,8 @@ import (
 // box is the dialing side on every driver, because the one mechanism that
 // carries a socket into a box on all of them relays a host listener inward.
 
-// Defaults for a publisher's timing FIELDS, which are fields on Publisher so a
-// test can drive the same code on a scale it can wait for.
+// Defaults for a publisher's timings, which are fields on Publisher so a test
+// can drive the same code on a scale it can wait for.
 const (
 	// DefaultRedial is how long the publisher keeps trying a door that does not
 	// answer before giving up and saying so. A dial that fails is a moment, not
@@ -67,10 +67,12 @@ func NewPublisher(doorPath string, log io.Writer) Publisher {
 // this IS the registration, and the crossing closing IS the deregistration: the
 // relay takes the service out of the registry the moment this stops answering.
 //
-// A door that does not answer is retried, so a host-side listener that was
-// restarted, or is a moment late, costs one dial and not the box's whole life.
-// A door that is NOT THERE is refused at once and by name: that box was never
-// granted publishing, and no amount of retrying grants it.
+// A door that does not answer, or that answers BUSY, is retried: a host-side
+// listener a moment late and a door at a load limit are both moments, and a
+// moment must not cost the box its whole life. Only two things end this — a
+// door that is NOT THERE (that box was never granted publishing, and retrying
+// grants nothing) and the door's own ERR (a decision about this publication,
+// which asking again cannot change).
 func (p Publisher) Publish(name, typ string, port int) error {
 	if err := CheckServiceName(name); err != nil {
 		return err

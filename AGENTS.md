@@ -299,6 +299,17 @@ past that line the relay reads nothing and decides nothing. A held crossing
 carries a heartbeat, and both sides read on deadlines: an open connection proves
 nothing about the peer, so liveness is an answer that had to be produced.
 
+**What a door refuses.** The box is the untrusted side, so a door carries at
+most 32 published services at once and holds at most 64 crossings that have not
+yet said what they are; over either, the crossing is answered `BUSY` and the
+publisher comes back — a busy moment must never cost a box its ability to
+publish. A crossing that has said what it is stops counting against the second
+limit, so a web UI holding connections open cannot crowd out the next publish.
+`ERR` is only for a decision (a name already published in that box, an unknown
+type), and the box gives up on those. One door is also one relay: a second
+`dabs services relay` aimed at a live box's door is refused by name rather than
+quietly taking its crossings.
+
 A name keeps its port (42000–42999, persisted in `~/.dabs/service-ports.json`),
 so n worktrees of one web project each get their own address and never fight
 over a host port. `webui` only makes the index render a link; routing is raw TCP

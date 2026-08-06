@@ -79,12 +79,20 @@ var ErrClosed = errors.New("door: the crossing closed")
 // RefusedError is the DOOR'S OWN answer to a crossing it will not take (a name
 // already published in this box, a service type it does not know): an ERR reply
 // that was read off the wire. It is the one failure retrying cannot change, and
-// it is deliberately distinct from a transport failure — a dial that connects
-// and then goes quiet is a moment, not a decision, and treating the two alike
-// is what turns one bad moment into a box that can never publish again.
+// it is deliberately distinct from every failure that CAN — a dial that
+// connects and then goes quiet, a door at its limit — because treating the two
+// alike is what turns one bad moment into a box that can never publish again.
 type RefusedError struct{ Reason string }
 
 func (e RefusedError) Error() string { return e.Reason }
+
+// BusyError is the door saying "not now": it is at a limit that depends on how
+// much is going on, and how much is going on changes. It is a reply of its own
+// rather than an ERR precisely so the box side can tell it from a decision and
+// come back — a service that exists is not un-published by a busy moment.
+type BusyError struct{ Reason string }
+
+func (e BusyError) Error() string { return e.Reason }
 
 // Header is a crossing's opening line: what this connection is, and the
 // arguments the verb takes.
@@ -168,8 +176,16 @@ func WriteReply(w io.Writer, reason error) error {
 	return WriteLine(w, Banner+" ERR "+flattenLine(reason.Error()))
 }
 
+// WriteBusy answers a header with "not now, and it is worth asking again". It
+// is what a load limit says, so a crossing that hit one is never mistaken for
+// one the door decided against.
+func WriteBusy(w io.Writer, reason error) error {
+	return WriteLine(w, Banner+" BUSY "+flattenLine(reason.Error()))
+}
+
 // ReadReply reads the answer to a header: nil when the crossing was accepted, a
-// RefusedError carrying what the other side named, or a plain error when the
+// RefusedError when the door decided against it, a BusyError when the door is
+// at a limit and the same request may work later, or a plain error when the
 // reply could not be read or was not this protocol's.
 func ReadReply(r *bufio.Reader) error {
 	line, err := ReadLine(r)
@@ -185,8 +201,10 @@ func ReadReply(r *bufio.Reader) error {
 		return nil
 	case strings.HasPrefix(rest, "ERR "):
 		return RefusedError{Reason: strings.TrimPrefix(rest, "ERR ")}
+	case strings.HasPrefix(rest, "BUSY "):
+		return BusyError{Reason: strings.TrimPrefix(rest, "BUSY ")}
 	}
-	return fmt.Errorf("door: %q is not OK or ERR", clip(rest))
+	return fmt.Errorf("door: %q is not OK, ERR or BUSY", clip(rest))
 }
 
 // WriteLine sends one protocol line.

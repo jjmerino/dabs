@@ -119,7 +119,12 @@ func reapRelay(pid int) {
 // that started neither.
 func (r Real) reapSidecars(instance string) {
 	proxy.Reap(r.boxProxy(instance))
-	r.unrelay(r.boxRelay(instance))
+	// A box with no door has no relay, and asking to stop one that never existed
+	// is not a no-op worth making: the pid is the whole handle, so no pid is no
+	// call.
+	if pid := r.boxRelay(instance); pid != 0 {
+		r.unrelay(pid)
+	}
 }
 
 // boxRelay returns the door relay's pid as recorded on the box node named by

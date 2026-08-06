@@ -300,13 +300,23 @@ the per-box **relay** dabs starts for itself.
 *Where:* `Services`, `services.Server`, `services.Ports`, `door.Run`.
 
 ### door
-The one dabs-owned unix socket a box's crossings travel over — `/run/dabs/door.sock`
-in a box whose recipe says `publish: true`. dabs opens it on the HOST (see
-**relay**) before the box boots and carries it in exactly as it carries a
-recipe's own `sockets:`, so the box dials and the host listens on every driver.
-The door is the GRANT: a box that was not given one cannot publish, and the
-forwarder in it says so by name.
-*Where:* `door.BoxPath`, `recipe.Recipe.Publish`, `buildBox`.
+The one dabs-owned unix socket a box's crossings travel over —
+`/run/dabs/door.sock` in a box whose recipe says `publish: true`. dabs opens it
+on the HOST (see **relay**) before the box boots and carries it in exactly as it
+carries a recipe's own `sockets:`, so the box dials and the host listens on
+every driver. The door is the GRANT: a box that was not given one cannot
+publish, and the forwarder in it says so by name.
+
+**What a door will not do.** The box is the untrusted side, so a door carries at
+most 32 publications at once and holds at most 64 crossings that have not yet
+said what they are. Both are LOAD limits and are answered `BUSY`, which the box
+side retries — a busy moment never un-publishes a service or costs a box its
+ability to publish. A crossing that has said what it is no longer counts against
+the second limit, so held streams (a web UI's connections) cannot crowd out the
+next publish. Only a decision is answered `ERR`, and the box side gives up on
+one: a name already published in that box, an unknown service type, a stream id
+nothing is waiting for.
+*Where:* `door.BoxPath`, `recipe.Recipe.Publish`, `buildBox`, `door.BusyError`.
 
 ### relay
 The host-side process answering ONE box's door: `dabs services relay --door
@@ -314,7 +324,12 @@ The host-side process answering ONE box's door: `dabs services relay --door
 box (its pid is on the box node). It is a PURE byte relay — it reads each
 crossing's opening line and nothing after it — and its life is the node's, so
 the door answers from the box's first instant and a box never dials into a gap.
-*Where:* `door.Relay`, `spawnRelay`, `reapSidecars`.
+One door is one relay: binding a unix socket unlinks whatever stands there, so
+a relay takes an exclusive lock beside the socket first and a second relay aimed
+at a live door is refused by name. The relay owns the registry it publishes into
+(0700, descriptors 0600) — the sockets in it are the only route into the box's
+services.
+*Where:* `door.Relay`, `claimDoor`, `spawnRelay`, `reapSidecars`.
 
 ### crossing
 One connection over a door. Each opens with a single header line carrying the

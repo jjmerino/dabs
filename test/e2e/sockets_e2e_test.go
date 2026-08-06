@@ -110,7 +110,7 @@ func TestSocketRefusalsLeaveNoBox(t *testing.T) {
 
 	for _, tc := range []struct{ name, hostSock, boxPath, want string }{
 		{"missing", filepath.Join(dir, "run", "absent.sock"), "/run/dabs/probe.sock", "does not exist"},
-		{"reserved", live, "/run/dabs/services", "collides"},
+		{"reserved", live, "/run/dabs/door.sock", "collides"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			node := "e2e-sock-" + tc.name

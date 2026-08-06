@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -31,20 +32,38 @@ func sockDir(t *testing.T) string {
 	return dir
 }
 
+// syncBuffer collects a relay's log while the test reads it.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 // quickRelay returns a relay wired to timings a test can wait for, already
 // serving the door path it returns.
 func quickRelay(t *testing.T, dir string) (*door.Relay, string) {
 	t.Helper()
 	doorPath := filepath.Join(dir, "door.sock")
-	r := openRelay(t, dir, doorPath)
+	r := openRelay(t, dir, doorPath, io.Discard)
 	return r, doorPath
 }
 
-// openRelay opens a relay on an exact door path and serves it until the test
-// ends.
-func openRelay(t *testing.T, dir, doorPath string) *door.Relay {
+// openRelay opens a relay on an exact door path, reporting what it does to log,
+// and serves it until the test ends.
+func openRelay(t *testing.T, dir, doorPath string, log io.Writer) *door.Relay {
 	t.Helper()
-	r := door.NewRelay(filepath.Join(dir, "registry"), io.Discard)
+	r := door.NewRelay(filepath.Join(dir, "registry"), log)
 	r.PingEvery, r.Idle, r.HeaderWait, r.StreamWait = 20*time.Millisecond, 400*time.Millisecond, time.Second, time.Second
 	if err := r.Open(doorPath); err != nil {
 		t.Fatalf("open the door: %v", err)
@@ -214,7 +233,7 @@ func TestADoorThatAnswersLateIsStillPublishedOn(t *testing.T) {
 	failed := publishing(t, quickPublisher(doorPath), "web", door.TypeGeneral, port)
 
 	time.Sleep(200 * time.Millisecond)
-	openRelay(t, dir, doorPath)
+	openRelay(t, dir, doorPath, io.Discard)
 	sock := filepath.Join(dir, "registry", door.SocketName("web"))
 	waitFor(t, "the late door to publish web", func() bool { return exists(sock) })
 	select {
@@ -287,6 +306,57 @@ func TestACrossingThatStopsAnsweringIsDropped(t *testing.T) {
 	// The crossing is open and the socket file is there, but nobody answers the
 	// pings the relay is now sending.
 	waitFor(t, "the relay to drop the mute crossing", func() bool { return !exists(sock) })
+}
+
+// CONTRACT: an IDLE service is not a dead one. A publisher nobody dials must
+// stay published across many idle periods — which is what the heartbeat buys:
+// without something to answer, silence and death would look the same and a
+// healthy service would be dropped for being quiet.
+func TestAnIdleServiceStaysPublished(t *testing.T) {
+	dir := sockDir(t)
+	log := &syncBuffer{}
+	doorPath := filepath.Join(dir, "door.sock")
+	relay := openRelay(t, dir, doorPath, log)
+	port := boxService(t, "still-here:")
+	failed := publishing(t, quickPublisher(doorPath), "web", door.TypeGeneral, port)
+
+	sock := filepath.Join(dir, "registry", door.SocketName("web"))
+	waitFor(t, "web to be published", func() bool { return exists(sock) })
+	// Nothing dials it for several times as long as the relay waits before
+	// judging a crossing dead.
+	time.Sleep(3 * relay.Idle)
+	if !exists(sock) {
+		t.Fatal("an idle service was dropped")
+	}
+	conn, err := net.Dial("unix", sock)
+	if err != nil {
+		t.Fatalf("dial after idling: %v", err)
+	}
+	defer conn.Close()
+	if _, err := conn.Write([]byte("hello")); err != nil {
+		t.Fatalf("write after idling: %v", err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	got, err := io.ReadAll(conn)
+	if err != nil {
+		t.Fatalf("read after idling: %v", err)
+	}
+	if string(got) != "still-here:hello" {
+		t.Errorf("after idling the crossing carried %q", got)
+	}
+	// The SAME crossing all along: a service dropped for being quiet and
+	// re-published looks identical from outside, and is not what was asked for.
+	if n := strings.Count(log.String(), "published"); n != 1 {
+		t.Errorf("the relay published %d times while the service idled:\n%s", n, log.String())
+	}
+	if strings.Contains(log.String(), "gone") {
+		t.Errorf("the relay dropped the idle crossing:\n%s", log.String())
+	}
+	select {
+	case err := <-failed:
+		t.Fatalf("the publisher stopped while idle: %v", err)
+	default:
+	}
 }
 
 // CONTRACT: a crossing that does not open with this protocol's banner is

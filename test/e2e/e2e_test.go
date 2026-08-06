@@ -664,6 +664,15 @@ const e2eRecipes = `recipes:
   svcbox:
     image: dabs-e2e
     command: [sh]
+    publish: true
+    sources:
+      - mkmount: ~/.dabs/e2e-svcbin
+        path: /opt/bin
+  # The same box WITHOUT the grant: everything needed to publish except the
+  # permission to.
+  mutebox:
+    image: dabs-e2e
+    command: [sh]
     sources:
       - mkmount: ~/.dabs/e2e-svcbin
         path: /opt/bin

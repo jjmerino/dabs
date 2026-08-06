@@ -19,6 +19,7 @@ recipes:
     env: { KEY: value }            # environment inside the box
     target: my-server              # route to a registered server; omit for local
     egress: open                   # outbound network: open (default) | none | {allow/deny/http_proxy}
+    publish: true                  # the box may publish services (default: it may not)
     sources:
       - mount: .                   # live bind; origin must exist
         path: /work
@@ -53,6 +54,16 @@ recipes:
   space variable mixed into one is still rejected — and the id is validated as a
   slug before it is substituted, so `$NODE_ID` can never become a traversal out
   of the directory the path names. See [Sources](/guides/sources).
+- **publish** — grants the box the ability to publish services (`forward
+  publish <name> --type webui|general --port <n>` inside it, reached from the
+  host with `dabs services`). It grants the ABILITY, not a list of names: what a
+  box publishes is chosen at run time by the program in it. dabs realizes the
+  grant as the box's **door** — one dabs-owned unix socket, answered on the host
+  by a relay that lives as long as the box's node — so it needs a box (a recipe
+  with no `image:` is refused) and a local target (a box on another machine has
+  no path to a relay on this host). Without the grant there is no door, and
+  `forward publish` in the box refuses by name instead of failing on a missing
+  file.
 - **target** — `""` (local) or a server from `dabs servers`. The reserved
   `INTERNAL-docker-privileged-for-nested-sandboxing` target exists for boxes
   that must boot nested sandboxes.

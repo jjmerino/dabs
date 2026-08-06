@@ -326,36 +326,6 @@ func (Driver) CheckEgress(mode string) error {
 	return nil
 }
 
-// BoxAddress reports the container's own vmnet IP, which the host can dial
-// directly — a port a program in the box opened on 0.0.0.0 needs no publish
-// step to be reachable at it. A container run without a network has none, and
-// reports "".
-func (Driver) BoxAddress(instance string) (string, error) {
-	out, err := exec.Command("container", "inspect", containerName(instance)).Output()
-	if err != nil {
-		return "", fmt.Errorf("apple: inspect %s: %w", instance, err)
-	}
-	var inspected []struct {
-		Status struct {
-			Networks []struct {
-				IPv4Address string `json:"ipv4Address"`
-			} `json:"networks"`
-		} `json:"status"`
-	}
-	if err := json.Unmarshal(out, &inspected); err != nil {
-		return "", fmt.Errorf("apple: inspect %s: %w", instance, err)
-	}
-	if len(inspected) == 0 || len(inspected[0].Status.Networks) == 0 {
-		return "", nil
-	}
-	// The first network is the box's: `container` attaches one by default and
-	// reports them in its own order, which is the order this reads.
-	// The address is reported with its prefix length ("192.168.64.2/24"); what a
-	// dialer needs is the address.
-	addr, _, _ := strings.Cut(inspected[0].Status.Networks[0].IPv4Address, "/")
-	return addr, nil
-}
-
 // Images lists the images dabs built under this driver — the `container` image
 // tags carrying dabs's prefix, reported under their recipe image name. Size is
 // left 0: `container` does not report it in the listing, and a prune reaps by

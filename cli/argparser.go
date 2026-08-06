@@ -164,19 +164,36 @@ func parseLs(args []string) (params.Ls, error) {
 	return p, nil
 }
 
-// parseServices parses `dabs services [serve]`. Listing is the bare verb;
-// `serve` is the one subcommand, and it takes nothing else.
+// parseServices parses `dabs services [serve | relay --door <sock> --dir <dir>]`.
+// Listing is the bare verb; `serve` takes nothing else; `relay` needs both
+// paths, since it answers one named box's door and publishes into that box's
+// own registry.
 func parseServices(args []string) (params.Services, error) {
 	var p params.Services
 	if wantsHelp(args) {
 		return p, HelpRequestedError{helpText("services", newFlagSet("services"))}
 	}
+	badArgs := BadArgsError{Cmd: "services", Reason: "usage: services [serve | relay --door <sock> --dir <dir>]"}
 	switch {
 	case len(args) == 0:
-	case len(args) == 1 && args[0] == "serve":
+	case args[0] == "serve":
+		if len(args) != 1 {
+			return params.Services{}, badArgs
+		}
 		p.Serve = true
+	case args[0] == "relay":
+		fs := newFlagSet("services")
+		doorPath := fs.String("door", "", "the box door socket to answer")
+		dir := fs.String("dir", "", "the registry directory to publish into")
+		if err := fs.Parse(args[1:]); err != nil {
+			return params.Services{}, BadArgsError{Cmd: "services", Reason: err.Error()}
+		}
+		if *doorPath == "" || *dir == "" || fs.NArg() != 0 {
+			return params.Services{}, badArgs
+		}
+		p.Relay, p.Door, p.Dir = true, *doorPath, *dir
 	default:
-		return p, BadArgsError{Cmd: "services", Reason: "usage: services [serve]"}
+		return params.Services{}, badArgs
 	}
 	return p, nil
 }

@@ -17,6 +17,7 @@ import (
 
 	yaml "go.yaml.in/yaml/v2"
 
+	"github.com/jjmerino/dabs/core/door"
 	"github.com/jjmerino/dabs/core/params"
 	"github.com/jjmerino/dabs/core/proxy"
 	"github.com/jjmerino/dabs/core/recipe"
@@ -167,6 +168,9 @@ func (r Real) runRecipe(reg recipe.Registry, name, worktree string, extra []stri
 		return err
 	}
 	if err := checkSocketsReachable(name, rec.Sockets, drv); err != nil {
+		return err
+	}
+	if err := checkPublishReachable(name, rec, drv); err != nil {
 		return err
 	}
 	// The claim runs after the confirm and after every name-independent
@@ -749,19 +753,49 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID, tip string, rec re
 			mounts = append(mounts, sandbox.Mount{Host: rs.origin, Path: boxPath, RO: s.RO})
 		}
 	}
-	// Every box gets the services directory, whatever its recipe says: a program
-	// in the box publishes a named service by writing a socket there, and the host
-	// serves it from a stable loopback port. The directory is the box node's own
-	// tmp space, so a service cannot outlive the box that published it, and no
-	// recipe has to opt in.
-	svcDir, err := r.resolveServicesDir(boxID)
-	if err != nil {
-		return "", err
+	// A box may publish services only if its recipe grants it — `publish: true` —
+	// and the DOOR is the grant: the one dabs-owned socket everything crossing
+	// this box's boundary travels over. dabs opens it on the HOST (a relay whose
+	// life is the node's) before the box exists, so the box's first dial is
+	// answered, and hands the box the socket exactly as it hands it one the recipe
+	// declared. A box without the grant has no door — which is what lets the
+	// forwarder in it refuse a publish BY NAME instead of failing on a missing
+	// file. The registry the relay publishes into is the box node's own tmp space,
+	// so a service cannot outlive the box that published it.
+	relayPID := 0
+	boxDoor := sandbox.Mount{}
+	if rec.Publish {
+		svcDir, derr := r.resolveServicesDir(boxID)
+		if derr != nil {
+			return "", derr
+		}
+		// The registry is the host's own — the sockets the relay stands in it are
+		// the only route into this box's services.
+		if derr := r.data.MkdirAll(svcDir, 0o700); derr != nil {
+			return "", fmt.Errorf("recipe %q: services dir %s: %w", recipeName, svcDir, derr)
+		}
+		doorPath, derr := r.resolveDoorPath(boxID)
+		if derr != nil {
+			return "", derr
+		}
+		logPath, derr := r.resolveDoorLog(boxID)
+		if derr != nil {
+			return "", derr
+		}
+		pid, derr := r.relay(doorPath, svcDir, logPath)
+		if derr != nil {
+			return "", fmt.Errorf("recipe %q: %w", recipeName, derr)
+		}
+		relayPID = pid
+		// The relay is listening now, but the box node that carries its pid is not
+		// written until the box is up: until then nothing else can reap it.
+		defer func() {
+			if err != nil {
+				reapRelay(relayPID)
+			}
+		}()
+		boxDoor = sandbox.Mount{Host: doorPath, Path: door.BoxPath}
 	}
-	if err := r.data.MkdirAll(svcDir, 0o755); err != nil {
-		return "", fmt.Errorf("recipe %q: services dir %s: %w", recipeName, svcDir, err)
-	}
-	mounts = append(mounts, sandbox.Mount{Host: svcDir, Path: forwarder.ServicesDir})
 	// A non-empty proxies chain makes the engine's socket the box's only way out:
 	// start it, mount its CA, point the box's HTTP_PROXY at the in-box forwarder.
 	// The engine runs for the box's lifetime; its PID/dir are recorded on the box
@@ -797,15 +831,6 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID, tip string, rec re
 	case recipe.EgressOpen:
 		egressMode = sandbox.EgressOpen // full outbound; nothing to provision
 	}
-	// Whether a service published in this box needs a door on the box's network
-	// is dabs's question, not the publisher's: the box cannot tell whose network
-	// namespace it is in. A box the driver can address, and that HAS a network,
-	// gets the answer in its environment; every other box publishes on its socket
-	// alone, so no listener of ours ever stands on an interface the box shares
-	// with the host.
-	if boxNeedsNetworkDoor(drv.Kind(), egressMode) {
-		env = withEnv(env, forwarder.BridgeEnv, "1")
-	}
 	sortMountsByDepth(mounts)
 
 	// $NODE_ID resolves in the workdir just as it does in a mount destination, so
@@ -837,6 +862,14 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID, tip string, rec re
 			return "", err
 		}
 	}
+	// The door rides with the recipe's own sockets — one mechanism, so every
+	// driver carries it exactly as it carries a declared one. It joins them after
+	// the check above, which asks whether a HOST PROGRAM the recipe named is
+	// listening; the door's listener is dabs's own, and the relay was already
+	// waited for.
+	if boxDoor.Path != "" {
+		sockets = append(sockets, boxDoor)
+	}
 	instance, err = drv.Up(sandbox.Spec{Name: image, Workdir: workdir, Env: env, Mounts: mounts, Sockets: sockets, Egress: egressMode, ProxySock: proxySock, ForwarderBin: forwarderBin})
 	if err != nil {
 		return "", err
@@ -856,6 +889,7 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID, tip string, rec re
 		Extra:      extra,
 	}
 	box.ProxyPID, box.ProxyDir = proxyPID, proxyDir
+	box.RelayPID = relayPID
 	if err := r.writeNode(box); err != nil {
 		return "", err
 	}
@@ -1926,17 +1960,28 @@ func checkBoxPath(recipeName, kind, origin, boxPath string) error {
 }
 
 // reservedBoxPaths are the paths dabs binds into a box ITSELF, whatever the
-// recipe says: the services directory every box publishes into, and the egress
-// socket, forwarder binary, CA directory and detached-log directory a proxied or
+// recipe says: the door a box that may publish gets, and the egress socket,
+// forwarder binary, CA directory and detached-log directory a proxied or
 // detached box gets. A recipe source is bound before them and is simply
 // overridden; a socket is bound after, and would mask dabs's own door with
 // nothing failing until a program inside the box reached for it.
 var reservedBoxPaths = []string{
-	forwarder.ServicesDir,
+	door.BoxPath,
 	forwarder.SockPath,
 	forwarder.ForwardPath,
 	proxy.CABoxDir,
 	sandbox.DetachedLogDir,
+}
+
+// checkPublishReachable refuses a recipe's publishing grant on a driver whose
+// boxes run somewhere other than this host. The door is answered by a relay
+// process on THIS machine, over a host path only this machine has; a box on
+// another machine has no path to it, and would boot with a door onto nothing.
+func checkPublishReachable(recipeName string, rec recipe.Recipe, drv sandbox.Driver) error {
+	if !rec.Publish || !isServer(drv.Kind()) {
+		return nil
+	}
+	return fmt.Errorf("recipe %q: says `publish: true` and runs on %s, a box on another machine — the door is answered by a relay on this host, which that box has no path to", recipeName, drv.Kind())
 }
 
 // checkSocketsReachable refuses a recipe's sockets on a driver whose boxes run

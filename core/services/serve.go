@@ -65,7 +65,7 @@ type forward struct {
 
 	mu     sync.Mutex
 	served Served
-	route  Route
+	socket string
 }
 
 // markDown records that the service is still published but did not answer this
@@ -78,20 +78,20 @@ func (f *forward) markDown(svc Service) {
 	f.served.Down = true
 }
 
-// target is where the forward currently dials.
-func (f *forward) target() Route {
+// target is the socket the forward currently dials.
+func (f *forward) target() string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.route
+	return f.socket
 }
 
-// retarget points the forward at svc over route, keeping its port and listener.
-func (f *forward) retarget(svc Service, route Route) {
+// retarget points the forward at svc over socket, keeping its port and listener.
+func (f *forward) retarget(svc Service, socket string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.served.Service = svc
 	f.served.Down = false
-	f.route = route
+	f.socket = socket
 }
 
 // snapshot is what the index renders for this forward.
@@ -155,7 +155,7 @@ func (s *Server) Sync() error {
 		// its listener whatever the probe says. Whether it ANSWERS is a separate
 		// question, asked again every scan.
 		live[svc.Name] = true
-		route, reachable := svc.Route()
+		socket, reachable := svc.Route()
 		s.mu.Lock()
 		existing, held := s.serving[svc.Name]
 		s.mu.Unlock()
@@ -167,10 +167,10 @@ func (s *Server) Sync() error {
 			// Where the name answers may have moved — a re-up publishes it from a
 			// new node directory — and the port must follow it, or it forwards into
 			// a dead door for ever.
-			if existing.target() != route {
-				fmt.Fprintf(s.log, "%s → %s (moved)\n", svc.Name, route.Addr)
+			if existing.target() != socket {
+				fmt.Fprintf(s.log, "%s → %s (moved)\n", svc.Name, socket)
 			}
-			existing.retarget(svc, route)
+			existing.retarget(svc, socket)
 			continue
 		}
 		// Nothing is listening for this name yet and nothing answers behind it:
@@ -178,7 +178,7 @@ func (s *Server) Sync() error {
 		if !reachable {
 			continue
 		}
-		f, err := s.open(svc, route)
+		f, err := s.open(svc, socket)
 		if err != nil {
 			fmt.Fprintf(s.log, "%s: %v\n", svc.Name, err)
 			continue
@@ -208,7 +208,7 @@ func (s *Server) Sync() error {
 // have been taken by something else in the meantime, and retrying it every scan
 // would never come back — so a refused port is given up and a fresh one probed
 // and persisted in its place.
-func (s *Server) open(svc Service, route Route) (*forward, error) {
+func (s *Server) open(svc Service, socket string) (*forward, error) {
 	port, err := s.ports.Assign(svc.Name, FreeOnLoopback)
 	if err != nil {
 		return nil, err
@@ -225,7 +225,7 @@ func (s *Server) open(svc Service, route Route) (*forward, error) {
 			return nil, err
 		}
 	}
-	return &forward{ln: ln, served: Served{Service: svc, Port: port}, route: route}, nil
+	return &forward{ln: ln, served: Served{Service: svc, Port: port}, socket: socket}, nil
 }
 
 // tell reports a name a second box also claims — once per claimant, not once
@@ -294,8 +294,7 @@ func acceptInto(f *forward) {
 		}
 		go func(conn net.Conn) {
 			defer conn.Close()
-			route := f.target()
-			up, err := net.Dial(route.Network, route.Addr)
+			up, err := net.Dial("unix", f.target())
 			if err != nil {
 				return
 			}

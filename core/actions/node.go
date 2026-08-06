@@ -60,6 +60,11 @@ type Node struct {
 	// and its temp files when the box comes down. Zero when the box has no proxy.
 	ProxyPID int    `json:"proxyPid,omitempty"`
 	ProxyDir string `json:"proxyDir,omitempty"`
+	// RelayPID tracks a box's door relay — the host-side process answering the
+	// door of a box whose recipe granted it publishing. It lets any later dabs
+	// process reap the relay when the box comes down. Zero when the box has no
+	// door.
+	RelayPID int `json:"relayPid,omitempty"`
 }
 
 // NodeKind is what a node marks. The chain a recipe builds is constrained to

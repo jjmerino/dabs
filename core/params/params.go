@@ -165,15 +165,21 @@ type Info struct {
 	Node string // node id/name (or box instance), git-style prefixes accepted
 }
 
-// Services are the inputs to the services action: what the boxes publish. A
-// box publishes a service by running the in-box forwarder's publish mode, which
-// writes a socket into the services directory dabs binds into every box.
+// Services are the inputs to the services action: what the boxes publish. A box
+// publishes a service by running the in-box forwarder's publish mode, which
+// holds a crossing open on the box's door — the socket dabs mounts into a box
+// whose recipe grants publishing.
 //
 // Serve flips the action from listing to serving: it forwards every published
 // service from a stable loopback port and serves an index of them, until
-// interrupted.
+// interrupted. Relay flips it to answering ONE box's door, at Door, publishing
+// into the registry directory Dir — the host side of the door, which dabs
+// starts for itself when it boots a box that may publish.
 type Services struct {
 	Serve bool
+	Relay bool
+	Door  string
+	Dir   string
 }
 
 // Actions is the contract every action provider satisfies: the real

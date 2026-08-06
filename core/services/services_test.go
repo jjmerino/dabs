@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jjmerino/dabs/core/door"
 	"github.com/jjmerino/dabs/core/services"
-	"github.com/jjmerino/dabs/egressforwarder/forwarder"
 )
 
 // shortTempDir is a temp directory with a SHORT path: a unix socket path has a
@@ -34,14 +34,14 @@ func shortTempDir(t *testing.T) string {
 // writeDescriptor puts a descriptor in dir, with or without its socket.
 func writeDescriptor(t *testing.T, dir, name, typ string, port int, withSocket bool) string {
 	t.Helper()
-	b, err := json.Marshal(forwarder.Descriptor{Type: typ, Port: port})
+	b, err := json.Marshal(door.Descriptor{Type: typ, Port: port})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, forwarder.DescriptorName(name)), b, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, door.NameDescriptor(name)), b, 0o644); err != nil {
 		t.Fatalf("descriptor: %v", err)
 	}
-	sock := filepath.Join(dir, forwarder.SocketName(name))
+	sock := filepath.Join(dir, door.NameSocket(name))
 	if withSocket {
 		ln, err := net.Listen("unix", sock)
 		if err != nil {
@@ -56,8 +56,8 @@ func writeDescriptor(t *testing.T, dir, name, typ string, port int, withSocket b
 // descriptor left behind by a publisher that died names nothing dialable.
 func TestScanDirReportsOnlyServicesWithSockets(t *testing.T) {
 	dir := shortTempDir(t)
-	writeDescriptor(t, dir, "web", forwarder.TypeWebUI, 5173, true)
-	writeDescriptor(t, dir, "orphan", forwarder.TypeGeneral, 9000, false)
+	writeDescriptor(t, dir, "web", door.TypeWebUI, 5173, true)
+	writeDescriptor(t, dir, "orphan", door.TypeGeneral, 9000, false)
 	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("x"), 0o644); err != nil {
 		t.Fatalf("stray file: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestScanDirReportsOnlyServicesWithSockets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ScanDir: %v", err)
 	}
-	if len(found) != 1 || found[0].Name != "web" || found[0].Type != forwarder.TypeWebUI || found[0].BoxPort != 5173 {
+	if len(found) != 1 || found[0].Name != "web" || found[0].Type != door.TypeWebUI || found[0].BoxPort != 5173 {
 		t.Fatalf("ScanDir = %+v, want just web/webui/5173", found)
 	}
 }
@@ -81,7 +81,7 @@ func TestScanDirOfAnAbsentDirectoryFindsNothing(t *testing.T) {
 // listing and reachability are different questions.
 func TestUpDistinguishesAnAnsweringSocket(t *testing.T) {
 	dir := shortTempDir(t)
-	sock := filepath.Join(dir, forwarder.SocketName("web"))
+	sock := filepath.Join(dir, door.NameSocket("web"))
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -152,7 +152,7 @@ func TestAssignSkipsPortsAlreadyBound(t *testing.T) {
 // service's socket, and drops the listener when the service goes away.
 func TestServerForwardsLoopbackIntoTheSocket(t *testing.T) {
 	dir := shortTempDir(t)
-	sock := filepath.Join(dir, forwarder.SocketName("web"))
+	sock := filepath.Join(dir, door.NameSocket("web"))
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -161,7 +161,7 @@ func TestServerForwardsLoopbackIntoTheSocket(t *testing.T) {
 	go http.Serve(ln, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, "in the box")
 	}))
-	writeDescriptor(t, dir, "web", forwarder.TypeWebUI, 5173, false)
+	writeDescriptor(t, dir, "web", door.TypeWebUI, 5173, false)
 
 	ports, err := services.LoadPorts(filepath.Join(dir, "ports.json"))
 	if err != nil {
@@ -172,7 +172,7 @@ func TestServerForwardsLoopbackIntoTheSocket(t *testing.T) {
 		if !live {
 			return nil, nil
 		}
-		return []services.Service{{Name: "web", Type: forwarder.TypeWebUI, BoxPort: 5173, Socket: sock, Instance: "demo-0"}}, nil
+		return []services.Service{{Name: "web", Type: door.TypeWebUI, BoxPort: 5173, Socket: sock, Instance: "demo-0"}}, nil
 	}
 	srv := services.NewServer(src, ports, io.Discard)
 	if err := srv.Sync(); err != nil {
@@ -221,8 +221,8 @@ func TestIndexLinksWebUIsOnly(t *testing.T) {
 	serveBody(t, db, "db")
 	src := func() ([]services.Service, error) {
 		return []services.Service{
-			{Name: "web", Type: forwarder.TypeWebUI, Socket: web},
-			{Name: "db", Type: forwarder.TypeGeneral, Socket: db},
+			{Name: "web", Type: door.TypeWebUI, Socket: web},
+			{Name: "db", Type: door.TypeGeneral, Socket: db},
 		}, nil
 	}
 	srv := services.NewServer(src, ports, io.Discard)
@@ -303,7 +303,7 @@ func TestServiceThatMovesSocketKeepsItsPortAndReachesTheNewBox(t *testing.T) {
 	}
 	sock := oldSock
 	src := func() ([]services.Service, error) {
-		return []services.Service{{Name: "web", Type: forwarder.TypeWebUI, Socket: sock}}, nil
+		return []services.Service{{Name: "web", Type: door.TypeWebUI, Socket: sock}}, nil
 	}
 	srv := services.NewServer(src, ports, io.Discard)
 	if err := srv.Sync(); err != nil {
@@ -390,7 +390,7 @@ func TestAnUnbindableAssignmentIsMovedAndPersisted(t *testing.T) {
 	sock := filepath.Join(dir, "a.sock")
 	serveBody(t, sock, "in the box")
 	src := func() ([]services.Service, error) {
-		return []services.Service{{Name: "web", Type: forwarder.TypeWebUI, Socket: sock}}, nil
+		return []services.Service{{Name: "web", Type: door.TypeWebUI, Socket: sock}}, nil
 	}
 	srv := services.NewServer(src, ports, io.Discard)
 	if err := srv.Sync(); err != nil {
@@ -454,12 +454,12 @@ func TestPortsStoreSurvivesConcurrentWritersAndReaders(t *testing.T) {
 func TestScanDirDropsNamesTheHostCannotPrintAsWritten(t *testing.T) {
 	dir := shortTempDir(t)
 	forged := "web\n  evil  general  127.0.0.1:1  up"
-	long := strings.Repeat("w", forwarder.MaxServiceNameLen+1)
-	writeDescriptor(t, dir, forged, forwarder.TypeWebUI, 5173, true)
-	writeDescriptor(t, dir, long, forwarder.TypeWebUI, 5173, false)
+	long := strings.Repeat("w", door.MaxServiceNameLen+1)
+	writeDescriptor(t, dir, forged, door.TypeWebUI, 5173, true)
+	writeDescriptor(t, dir, long, door.TypeWebUI, 5173, false)
 	// A plain file stands in for the long name's socket: ScanDir only asks
 	// whether one is there, and a path that long cannot be bound.
-	if err := os.WriteFile(filepath.Join(dir, forwarder.SocketName(long)), nil, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, door.NameSocket(long)), nil, 0o644); err != nil {
 		t.Fatalf("long socket: %v", err)
 	}
 	writeDescriptor(t, dir, "web", "webui\x1b[31m", 5173, true)
@@ -483,7 +483,7 @@ func TestScanDirDropsNamesTheHostCannotPrintAsWritten(t *testing.T) {
 // path, and the port is assigned to that key.
 func TestScanDirKeepsAUsableNameExactly(t *testing.T) {
 	dir := shortTempDir(t)
-	writeDescriptor(t, dir, "web-ui_2.0", forwarder.TypeGeneral, 9000, true)
+	writeDescriptor(t, dir, "web-ui_2.0", door.TypeGeneral, 9000, true)
 	found, err := services.ScanDir(dir)
 	if err != nil {
 		t.Fatalf("ScanDir: %v", err)
@@ -509,8 +509,8 @@ func TestIndexNamesConflictsWithoutLinkingThem(t *testing.T) {
 	serveBody(t, second, "second box")
 	src := func() ([]services.Service, error) {
 		return services.MarkConflicts([]services.Service{
-			{Name: "web", Type: forwarder.TypeWebUI, Node: "box-a", Socket: first},
-			{Name: "web", Type: forwarder.TypeWebUI, Node: "box-b", Socket: second},
+			{Name: "web", Type: door.TypeWebUI, Node: "box-a", Socket: first},
+			{Name: "web", Type: door.TypeWebUI, Node: "box-b", Socket: second},
 		}), nil
 	}
 	srv := services.NewServer(src, ports, io.Discard)
@@ -526,76 +526,18 @@ func TestIndexNamesConflictsWithoutLinkingThem(t *testing.T) {
 	}
 }
 
-// serveBodyTCP runs an HTTP server on 127.0.0.1 answering body, and returns its
-// address — the stand-in for a box the host reaches over the network rather
-// than through a mounted socket.
-func serveBodyTCP(t *testing.T, body string) (host string, port int) {
-	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	t.Cleanup(func() { _ = ln.Close() })
-	go http.Serve(ln, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(w, body)
-	}))
-	addr := ln.Addr().(*net.TCPAddr)
-	return "127.0.0.1", addr.Port
-}
-
-// CONTRACT: the mounted socket is the route whenever it answers, even when the
-// box also carries a network door — it is the direct one, and it is what a
-// host sharing the box's kernel should use.
-func TestRoutePrefersTheSocketWhenItAnswers(t *testing.T) {
-	dir := shortTempDir(t)
-	sock := filepath.Join(dir, "web.sock")
-	serveBody(t, sock, "through the socket")
-	host, port := serveBodyTCP(t, "through the box network")
-	svc := services.Service{Name: "web", Socket: sock, BoxAddr: host, BridgePort: port}
-	route, ok := svc.Route()
-	if !ok || route.Network != "unix" || route.Addr != sock {
-		t.Fatalf("Route = %+v,%v; want the socket", route, ok)
-	}
-}
-
-// CONTRACT: a box whose socket the host cannot dial — its filesystem crosses a
-// VM boundary — is still reachable at its own address, on the port the
-// publisher opened across the box's interfaces.
-func TestRouteFallsBackToTheBoxNetworkWhenTheSocketIsUndialable(t *testing.T) {
-	dir := shortTempDir(t)
-	sock := filepath.Join(dir, "web.sock")
-	// A socket FILE that is not a listener: exactly what the host sees when the
-	// box created it on the far side of a VM boundary.
-	if err := os.WriteFile(sock, nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	host, port := serveBodyTCP(t, "through the box network")
-	svc := services.Service{Name: "web", Socket: sock, BoxAddr: host, BridgePort: port}
-	route, ok := svc.Route()
-	if !ok {
-		t.Fatalf("Route reported nothing reachable; want the box network at %s:%d", host, port)
-	}
-	if route.Network != "tcp" || route.Addr != net.JoinHostPort(host, strconv.Itoa(port)) {
-		t.Errorf("Route = %+v, want tcp %s:%d", route, host, port)
-	}
-	if !svc.Up() {
-		t.Error("Up() = false for a service reachable over the box network")
-	}
-}
-
-// CONTRACT: no socket and no box address (an apple box with its network cut, a
-// driver that cannot say) is honestly unreachable — not a route that fails at
-// the first byte.
-func TestRouteReportsNothingWhenNeitherDoorAnswers(t *testing.T) {
+// CONTRACT: a socket file nothing listens on is honestly unreachable — not a
+// route that fails at the first byte. It is what a relay that is gone leaves,
+// and what tells a listed service from a reachable one.
+func TestRouteReportsNothingWhenTheSocketDoesNotAnswer(t *testing.T) {
 	dir := shortTempDir(t)
 	sock := filepath.Join(dir, "web.sock")
 	if err := os.WriteFile(sock, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	for _, svc := range []services.Service{
-		{Name: "web", Socket: sock},                       // no address at all
-		{Name: "web", Socket: sock, BoxAddr: "192.0.2.1"}, // address, publisher opened no door
-		{Name: "web", Socket: sock, BridgePort: 6000},     // door, no address
+		{Name: "web", Socket: sock},                            // a file, no listener
+		{Name: "web", Socket: filepath.Join(dir, "gone.sock")}, // not even a file
 	} {
 		if _, ok := svc.Route(); ok {
 			t.Errorf("Route(%+v) reported something reachable", svc)
@@ -606,32 +548,16 @@ func TestRouteReportsNothingWhenNeitherDoorAnswers(t *testing.T) {
 	}
 }
 
-// CONTRACT: the server forwards over whichever door is live — a box reached
-// only over its network round-trips through the same stable host port.
-func TestServerForwardsOverTheBoxNetworkWhenTheSocketIsUndialable(t *testing.T) {
+// CONTRACT: the one route is the socket the box node's relay stands in front of
+// the service — the same way in on every driver.
+func TestRouteIsTheSocketTheRelayStands(t *testing.T) {
 	dir := shortTempDir(t)
 	sock := filepath.Join(dir, "web.sock")
-	if err := os.WriteFile(sock, nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	host, port := serveBodyTCP(t, "through the box network")
-	ports, err := services.LoadPorts(filepath.Join(dir, "ports.json"))
-	if err != nil {
-		t.Fatalf("LoadPorts: %v", err)
-	}
-	src := func() ([]services.Service, error) {
-		return []services.Service{{Name: "web", Type: forwarder.TypeWebUI, Socket: sock, BoxAddr: host, BridgePort: port}}, nil
-	}
-	srv := services.NewServer(src, ports, io.Discard)
-	if err := srv.Sync(); err != nil {
-		t.Fatalf("Sync: %v", err)
-	}
-	serving := srv.Serving()
-	if len(serving) != 1 {
-		t.Fatalf("Serving = %+v, want the service forwarded over the box network", serving)
-	}
-	if got := getBody(t, serving[0].URL()); got != "through the box network" {
-		t.Errorf("through the host port = %q, want the box's answer", got)
+	serveBody(t, sock, "through the socket")
+	svc := services.Service{Name: "web", Socket: sock}
+	route, ok := svc.Route()
+	if !ok || route != sock {
+		t.Fatalf("Route = %q,%v; want the socket %q", route, ok, sock)
 	}
 }
 
@@ -648,7 +574,7 @@ func TestUnreachableServiceIsNotForwarded(t *testing.T) {
 		t.Fatalf("LoadPorts: %v", err)
 	}
 	src := func() ([]services.Service, error) {
-		return []services.Service{{Name: "web", Type: forwarder.TypeWebUI, Socket: sock}}, nil
+		return []services.Service{{Name: "web", Type: door.TypeWebUI, Socket: sock}}, nil
 	}
 	srv := services.NewServer(src, ports, io.Discard)
 	if err := srv.Sync(); err != nil {
@@ -677,7 +603,7 @@ func TestAServiceThatStopsAnsweringKeepsItsPort(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadPorts: %v", err)
 	}
-	published := []services.Service{{Name: "web", Type: forwarder.TypeWebUI, Socket: sock}}
+	published := []services.Service{{Name: "web", Type: door.TypeWebUI, Socket: sock}}
 	var log strings.Builder
 	srv := services.NewServer(func() ([]services.Service, error) { return published, nil }, ports, &log)
 	if err := srv.Sync(); err != nil {

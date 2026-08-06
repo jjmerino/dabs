@@ -166,20 +166,20 @@ know what is in it:
      myproj:
        image: shell
        sockets:
-         - socket: ~/run/agent.sock     # must already exist and BE a socket
-           path: /run/dabs/agent.sock   # where the box finds it
+         - socket: /var/run/docker.sock # must already exist and BE a socket
+           path: /run/dabs/docker.sock  # where the box finds it
    ```
 
-   The door is filesystem, not network, so the box gets it under every egress
-   mode, `none` included. The box `path:` obeys the same rules a source's does —
-   absolute, no `..`, and `$NODE_ID` (the box's own id) is the only variable that
-   resolves in it. Everything else about a socket refuses by name rather than
-   booting a box that quietly has no door: a `socket:` that is missing or that is
-   not a socket, a `path:` landing on something dabs binds itself
-   (`/run/dabs/services`, `/run/dabs/egress.sock`, `/run/dabs/forward`,
+   A socket crosses as filesystem, not network, so the box gets it under every
+   egress mode, `none` included. The box `path:` obeys the same rules a source's
+   does — absolute, no `..`, and `$NODE_ID` (the box's own id) is the only
+   variable that resolves in it. Everything else about a socket refuses by name
+   rather than booting a box that quietly reaches nothing: a `socket:` that is
+   missing or that is not a socket, a `path:` landing on something dabs binds
+   itself (`/run/dabs/door.sock`, `/run/dabs/egress.sock`, `/run/dabs/forward`,
    `/run/dabs/pub`, `/run/dabs/log`) or on a path another source or socket
    already claims, a `:` in either path, a recipe with no image (a place has no
-   box to open a door into), and a `target:` naming a SERVER (the listener is on
+   box to reach out of), and a `target:` naming a SERVER (the listener is on
    THIS host; a box on another machine has no path to it — a local target such
    as `docker` is fine).
 
@@ -257,46 +257,58 @@ already started, without cutting a new branch.
 
 ## Services — reaching a box's port from the host
 
-Every box is bound one extra directory whatever its recipe says: the box node's
-`tmp/services`, at `/run/dabs/services`. A program in the box publishes a
-box-local port under a name by running the in-box forwarder:
+**Publishing is granted, not ambient.** A recipe that says `publish: true` boots
+a box with a **door**: one dabs-owned unix socket, at `/run/dabs/door.sock` in
+the box, answered on the host by a **relay** dabs starts before the box and
+reaps with its node. A box without the grant has no door, and `forward publish`
+in it refuses by name, saying what the recipe must set — a denied request reads
+as a denial, not as a broken box.
+
+In a granted box, a program publishes a box-local port under a name by running
+the in-box forwarder:
 
 ```bash
 forward publish <name> --type webui|general --port <n>   # inside the box
 ```
 
-That listens on `/run/dabs/services/<name>.sock` and writes `<name>.json` beside
-it — running it IS the registration, and the socket dying with the process is
-the deregistration. A name is `[a-z0-9._-]`, starting with a letter or digit, at
-most 64 bytes (it is a filename and a cell the host prints, and the box choosing
-it is the untrusted side); anything else is refused, and a name the host cannot
-print as written is not listed at all. On the host:
+That dials the door and holds one **crossing** open for as long as it runs:
+running it IS the registration, and the crossing closing IS the deregistration.
+The HOST side writes the registry — `<name>.sock` and `<name>.json` in the box
+node's `tmp/services` — so what `dabs services` lists is a socket this machine
+opened, and it disappears when the box stops answering. A name is `[a-z0-9._-]`,
+starting with a letter or digit, at most 64 bytes (it is a filename and a cell
+the host prints, and the box choosing it is the untrusted side); anything else
+is refused, and a name the host cannot print as written is not listed at all.
+On the host:
 
 ```bash
 dabs services              # NAME TYPE BOX INSTANCE HOST STATE (up | down | conflict)
 dabs services serve        # forward each one from a stable 127.0.0.1 port; index on 127.0.0.1:28080
 ```
 
-**Where a service is reachable.** The host dials the box's socket through that
-bound directory when it can; where it cannot, it dials the box's own network
-address on the port the publisher opened across the box's interfaces (a
-`bridge` field in the descriptor). That gives:
+**One way in, the same on every driver.** The host dials the relay's socket; the
+relay asks the box for a stream over the held crossing; the box opens it as
+another dial out of the door and couples it to the published port. Nothing is
+reached over the box's network, so a service is exactly as reachable under
+`egress: none` or a proxy egress as under `open` — the door is filesystem, not
+network — and bwrap, apple and docker all carry it.
 
-- **bwrap (Linux)** — the socket dials; reachable.
-- **apple** — the socket does not dial across the micro-VM, but the box has a
-  vmnet address of its own; reachable. A box with `egress: none` or `proxy`
-  runs with no network and so has no address — it stays **down**, honestly.
-- **docker** — neither door yet; a published service reads **down**.
+**Each call is its own connection.** The first line of every crossing says what
+it is (`DABS-DOOR/1 PUBLISH <name> <type> <port>`, `DABS-DOOR/1 STREAM <id>`);
+past that line the relay reads nothing and decides nothing. A held crossing
+carries a heartbeat, and both sides read on deadlines: an open connection proves
+nothing about the peer, so liveness is an answer that had to be produced.
 
-`dabs services` reports whichever door is live, and forwards over it. The
-outward door is opened only where it is the way in — dabs sets
-`DABS_SERVICE_BRIDGE` in those boxes and `forward publish --bridge` follows
-it — so a box sharing the host's network namespace never opens one.
-
-**That door is not access control.** Isolation is filesystem and process, NOT
-network: on apple, the bridge port answers anything that can reach the box's
-vmnet address, not just this host's `dabs services serve`. Publish nothing from
-a box that you would not put on the local network.
+**What a door refuses.** The box is the untrusted side, so a door carries at
+most 32 published services at once and holds at most 64 crossings that have not
+yet said what they are; over either, the crossing is answered `BUSY` and the
+publisher comes back — a busy moment must never cost a box its ability to
+publish. A crossing that has said what it is stops counting against the second
+limit, so a web UI holding connections open cannot crowd out the next publish.
+`ERR` is only for a decision (a name already published in that box, an unknown
+type), and the box gives up on those. One door is also one relay: a second
+`dabs services relay` aimed at a live box's door is refused by name rather than
+quietly taking its crossings.
 
 A name keeps its port (42000–42999, persisted in `~/.dabs/service-ports.json`),
 so n worktrees of one web project each get their own address and never fight
@@ -394,8 +406,9 @@ recipes:
       - mkmount: $NODE_VOLUME/cache  # a box-private dir that survives `rm --keep`
         path: /root/.cache
     sockets:                         # host unix sockets the box may talk to
-      - socket: ~/run/agent.sock     #   must exist and BE a socket; any egress
-        path: /run/dabs/agent.sock   #   absolute box path
+      - socket: /var/run/docker.sock #   must exist and BE a socket; any egress
+        path: /run/dabs/docker.sock  #   absolute box path
+    publish: true                    # the box may publish services (default: it may not)
 ```
 
 `dabs build [recipe|path]` builds a recipe's image; `dabs recipe [recipe|path]

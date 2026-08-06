@@ -174,6 +174,35 @@ func TestPublishedServiceIsListedAndReachableFromTheHost(t *testing.T) {
 	}
 }
 
+// CONTRACT: a box whose recipe does not grant publishing cannot publish, and is
+// told so BY NAME: the refusal says the box was not granted service publishing
+// and what the recipe must set, exits nonzero, and leaves nothing half-created.
+func TestAnUngrantedBoxIsRefusedThePublish(t *testing.T) {
+	clean(t)
+	installRecipes(t)
+	buildBoxBinaries(t)
+	const node = "e2e-mute"
+	defer run("dabs rm " + node + " --yes")
+	if out, code := run("dabs recipe mutebox --no-command --name " + node); code != 0 {
+		t.Fatalf("boot failed (%d): %s", code, out)
+	}
+	out, code := run("dabs exec " + node + " /opt/bin/forward publish muted --type general --port 5173")
+	if code == 0 {
+		t.Fatalf("an ungranted box published: %s", out)
+	}
+	for _, want := range []string{"not granted", "publish: true"} {
+		wantContains(t, out, want)
+	}
+	// Nothing listed, and no registry standing for a box that may not publish.
+	listing, _ := run("dabs services")
+	if strings.Contains(listing, "muted") {
+		t.Errorf("`dabs services` lists a service the box was refused:\n%s", listing)
+	}
+	if _, err := os.Stat(filepath.Join(nodesDir(), node, "tmp", "services")); err == nil {
+		t.Errorf("an ungranted box was given a registry directory")
+	}
+}
+
 // hostAddr picks the 127.0.0.1:<port> cell out of the `dabs services` row for
 // name, or "" when the name has no address yet.
 func hostAddr(listing, name string) string {

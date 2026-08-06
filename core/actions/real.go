@@ -22,18 +22,42 @@ type Real struct {
 	// forwarder is a caller-supplied egress forwarder binary; empty means dabs's
 	// embedded copy (see WithForwarder).
 	forwarder string
+	// relay starts a box's door relay; the default spawns one as a detached
+	// child of this dabs (see WithRelay).
+	relay startRelay
+	// unrelay stops a box's door relay by the pid its node records; the default
+	// kills its process group (see WithRelayReaper).
+	unrelay func(pid int)
 }
 
 // New returns actions backed by the given drivers (listed in order), the
 // image filesystem, and the host-effects layer.
 func New(drivers map[string]sandbox.Driver, order []string, images fs.FS, d data.Data) Real {
-	return Real{drivers: drivers, order: order, images: images, data: d, confirm: tui.Confirm}
+	return Real{drivers: drivers, order: order, images: images, data: d, confirm: tui.Confirm, relay: spawnRelay, unrelay: reapRelay}
 }
 
 // WithConfirm returns a copy of r whose look-before-run gate is fn, so tests can
 // answer the confirmation without a terminal.
 func (r Real) WithConfirm(fn func(string) bool) Real {
 	r.confirm = fn
+	return r
+}
+
+// WithRelay returns a copy of r that starts a granted box's door relay with fn
+// instead of spawning one, so a test can drive a boot without a process of its
+// own. fn is handed the door socket, the registry directory and the log path,
+// and answers with the pid to record on the box node.
+func (r Real) WithRelay(fn func(doorPath, dir, logPath string) (int, error)) Real {
+	r.relay = fn
+	return r
+}
+
+// WithRelayReaper returns a copy of r that stops a box's door relay with fn
+// instead of signalling its process group, so a test can watch a teardown reach
+// the relay without a process to kill. fn is handed the pid the box node
+// records.
+func (r Real) WithRelayReaper(fn func(pid int)) Real {
+	r.unrelay = fn
 	return r
 }
 

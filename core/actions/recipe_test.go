@@ -24,7 +24,6 @@ import (
 	"github.com/jjmerino/dabs/core/params"
 	"github.com/jjmerino/dabs/core/recipe"
 	"github.com/jjmerino/dabs/core/sandbox"
-	"github.com/jjmerino/dabs/egressforwarder/forwarder"
 )
 
 // Compile-time proof the fakes satisfy the real seams.
@@ -160,6 +159,27 @@ type fakeData struct {
 	foreign     map[string][]string       // GitListWorktrees: repo top -> linked worktree paths; an absent top errors (no git / not a repo)
 	symlinks    map[string]string         // EvalSymlinks: path -> canonical form; an absent path errors, like an unresolvable one
 	prompts     map[string]data.GitPrompt // GitPromptStatus: dir -> prompt state; an absent dir errors (not a git repo)
+	relays      []relayCall               // every door relay a boot asked for
+	relayErr    error                     // if non-nil, starting a relay fails with it
+	reaped      []int                     // every pid a teardown asked the relay reaper for
+}
+
+// relayCall is one door relay a boot started: the socket it answers and the
+// registry it publishes into.
+type relayCall struct{ door, dir, log string }
+
+// reapRelay stands in for signalling a relay's process group: it records the
+// pid a teardown asked for, so a test can see the reap reach the relay.
+func (f *fakeData) reapRelay(pid int) { f.reaped = append(f.reaped, pid) }
+
+// startRelay stands in for spawning a relay process: it records what was asked
+// for and answers with a pid, so a boot can be driven without a host process.
+func (f *fakeData) startRelay(doorPath, dir, logPath string) (int, error) {
+	if f.relayErr != nil {
+		return 0, f.relayErr
+	}
+	f.relays = append(f.relays, relayCall{door: doorPath, dir: dir, log: logPath})
+	return 4000 + len(f.relays), nil
 }
 
 type wtState struct {
@@ -388,7 +408,7 @@ func newReal(recipesYAML string, fd *fakeData, drv sandbox.Driver, bundledImages
 		fd.files[fd.home+"/.dabs/recipes.yaml"] = []byte(recipesYAML)
 	}
 	drivers := map[string]sandbox.Driver{"local": drv}
-	return actions.New(drivers, []string{"local"}, imgs, fd)
+	return actions.New(drivers, []string{"local"}, imgs, fd).WithRelay(fd.startRelay).WithRelayReaper(fd.reapRelay)
 }
 
 // withRecipes plants a recipes.yaml in the fake home, for a test that builds its
@@ -413,19 +433,6 @@ func onlyUp(t *testing.T, d *fakeDriver) sandbox.Spec {
 	return d.ups[0]
 }
 
-// sourceMounts is a box's mounts WITHOUT the services directory every box gets,
-// so a test can state what the recipe's own sources mounted and nothing else.
-func sourceMounts(mounts []sandbox.Mount) []sandbox.Mount {
-	out := make([]sandbox.Mount, 0, len(mounts))
-	for _, m := range mounts {
-		if m.Path == forwarder.ServicesDir {
-			continue
-		}
-		out = append(out, m)
-	}
-	return out
-}
-
 // --- tests: happy paths -------------------------------------------------------
 
 func TestRecipeMountReachesDriver(t *testing.T) {
@@ -446,7 +453,7 @@ func TestRecipeMountReachesDriver(t *testing.T) {
 	up := onlyUp(t, drv)
 	// Contract: the box is brought up with exactly the declared mount, its
 	// command is run, and it is torn down.
-	if ms := sourceMounts(up.Mounts); len(ms) != 1 || ms[0] != (sandbox.Mount{Host: "/data", Path: "/work"}) {
+	if ms := up.Mounts; len(ms) != 1 || ms[0] != (sandbox.Mount{Host: "/data", Path: "/work"}) {
 		t.Errorf("Up mounts = %+v, want one {/data -> /work}", ms)
 	}
 	if len(drv.runs) != 1 || strings.Join(drv.runs[0], " ") != "run it" {
@@ -529,7 +536,7 @@ func TestRecipeFreshWorktreeMountsItsGitStore(t *testing.T) {
 		{Host: fd.worktrees[0], Path: "/work"}, // the checkout that was cut
 		{Host: "/cwd/.git", Path: "/cwd/.git"}, // its store, at its own path
 	}
-	got := sourceMounts(onlyUp(t, drv).Mounts)
+	got := onlyUp(t, drv).Mounts
 	if len(got) != len(want) {
 		t.Fatalf("mounts = %+v, want %+v", got, want)
 	}
@@ -905,7 +912,7 @@ func TestRecipeSocketsReachDriver(t *testing.T) {
 	if !reflect.DeepEqual(up.Sockets, want) {
 		t.Errorf("Up sockets = %+v, want %+v", up.Sockets, want)
 	}
-	if ms := sourceMounts(up.Mounts); len(ms) != 1 || ms[0] != (sandbox.Mount{Host: "/data", Path: "/work"}) {
+	if ms := up.Mounts; len(ms) != 1 || ms[0] != (sandbox.Mount{Host: "/data", Path: "/work"}) {
 		t.Errorf("Up mounts = %+v, want only the declared source", ms)
 	}
 }
@@ -1077,15 +1084,15 @@ func TestRecipeSocketNodeIDExpandsInBoxPath(t *testing.T) {
 	}
 }
 
-// CONTRACT: dabs binds paths of its own into a box — the services directory
-// every box publishes into, and the egress socket, forwarder and detached-log
-// paths. A socket is bound after the recipe's mounts, so one aimed at any of
-// them (or at a directory holding them) would mask dabs's own door with nothing
+// CONTRACT: dabs binds paths of its own into a box — the door a box granted
+// publishing gets, and the egress socket, forwarder and detached-log paths. A
+// socket is bound after the recipe's mounts, so one aimed at any of them (or at
+// a directory holding them) would mask what dabs binds there, with nothing
 // failing until a program in the box reached for it. Refuse by name instead.
 func TestRecipeSocketCannotMaskDabsOwnPaths(t *testing.T) {
 	for _, boxPath := range []string{
-		"/run/dabs/services",    // exactly the services dir every box gets
-		"/run/dabs/services/x",  // inside it
+		"/run/dabs/door.sock",   // exactly the services dir every box gets
+		"/run/dabs/door.sock/x", // inside it
 		"/run/dabs",             // the directory holding all of them
 		"/run/dabs/egress.sock", // the proxy's socket
 		"/run/dabs/forward",     // the forwarder binary
@@ -1117,7 +1124,7 @@ func TestRecipeSocketCannotMaskDabsOwnPaths(t *testing.T) {
 // recipe, so a box path that is refused there is refused here — resolveSockets
 // alone would let a `..` path straight through to the driver.
 func TestRecipeNoCommandRefusesBadSocketBoxPath(t *testing.T) {
-	for _, boxPath := range []string{"/run/dabs/../../etc/passwd", "/run/dabs/services"} {
+	for _, boxPath := range []string{"/run/dabs/../../etc/passwd", "/run/dabs/door.sock"} {
 		t.Run(boxPath, func(t *testing.T) {
 			y := "recipes:\n  s:\n    image: img\n    command: [x]\n    sockets:\n      - socket: /run/one.sock\n        path: " + boxPath + "\n"
 			fd := baseData()
@@ -1284,10 +1291,10 @@ func TestRecipeSocketColonFromExpansionRefuses(t *testing.T) {
 
 // CONTRACT: the reserved paths are checked against what the box path RESOLVES
 // to, not only what the recipe wrote. `/run/dabs/$NODE_ID` names nothing
-// reserved on the page, but in a box named `services` it lands exactly on the
-// services directory — and a socket masking it makes `dabs services` go quiet
-// with nothing to point at. The refusal names both spellings, since only one of
-// them is in the recipe.
+// reserved on the page, but in a box named `log` it lands exactly on the
+// detached-log directory — and a socket masking it leaves a detached command
+// writing where nothing reads. The refusal names both spellings, since only one
+// of them is in the recipe.
 func TestRecipeSocketReservedCheckedAfterExpansion(t *testing.T) {
 	y := `recipes:
   s:
@@ -1300,17 +1307,17 @@ func TestRecipeSocketReservedCheckedAfterExpansion(t *testing.T) {
 	fd := baseData()
 	listenSocket(fd, "/run/one.sock")
 	drv := &fakeDriver{built: map[string]bool{"img": true}}
-	err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "s", NodeName: "services"})
+	err := newReal(y, fd, drv).Recipe(params.Recipe{Name: "s", NodeName: "log"})
 	if err == nil {
-		t.Fatal("a socket resolving onto the services dir booted a box")
+		t.Fatal("a socket resolving onto the detached-log dir booted a box")
 	}
-	for _, want := range []string{"/run/dabs/$NODE_ID", "/run/dabs/services", "collides"} {
+	for _, want := range []string{"/run/dabs/$NODE_ID", "/run/dabs/log", "collides"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error should name %q: %v", want, err)
 		}
 	}
 	if len(drv.ups) != 0 {
-		t.Errorf("driver was handed a socket over the services dir: %v", drv.ups)
+		t.Errorf("driver was handed a socket over the detached-log dir: %v", drv.ups)
 	}
 }
 
@@ -1349,7 +1356,7 @@ func TestRecipeSocketReservedRefusesBeforeAnySideEffect(t *testing.T) {
     command: [x]
     sockets:
       - socket: /run/one.sock
-        path: /run/dabs/services
+        path: /run/dabs/door.sock
     sources:
       - worktree: .
         path: /work
@@ -1564,8 +1571,8 @@ func TestWorktreeFlagAttachesWorktreeAndGitDir(t *testing.T) {
 	}
 	// The SET of mounts is the contract; their order is not — actions order mounts
 	// parent-before-child, which is a separate contract with its own test.
-	if len(sourceMounts(up.Mounts)) != len(want) {
-		t.Fatalf("mounts = %+v, want %+v", sourceMounts(up.Mounts), want)
+	if len(up.Mounts) != len(want) {
+		t.Fatalf("mounts = %+v, want %+v", up.Mounts, want)
 	}
 	for _, w := range want {
 		found := false
@@ -2204,7 +2211,7 @@ func TestRecipeNodeIDExpandsInBoxPath(t *testing.T) {
 		t.Fatalf("Recipe: %v", err)
 	}
 	up := onlyUp(t, drv)
-	if ms := sourceMounts(up.Mounts); len(ms) != 1 || ms[0] != (sandbox.Mount{Host: "/d", Path: "/mybox"}) {
+	if ms := up.Mounts; len(ms) != 1 || ms[0] != (sandbox.Mount{Host: "/d", Path: "/mybox"}) {
 		t.Errorf("Up mounts = %+v, want one {/d -> /mybox}", ms)
 	}
 }
@@ -2714,7 +2721,7 @@ func TestRelativeSourceOriginReachesDriverAbsolute(t *testing.T) {
 			t.Errorf("driver got relative mount host %q; want absolute", m.Host)
 		}
 	}
-	ms := sourceMounts(up.Mounts)
+	ms := up.Mounts
 	if len(ms) != 2 || ms[0].Host != cwd {
 		t.Errorf("Up mounts = %+v, want `.` mounted as the cwd %s", ms, cwd)
 	}
@@ -2756,7 +2763,7 @@ recipes:
 	if len(fd.copies) != 1 || !strings.HasPrefix(fd.copies[0], "/proj/box/assets -> ") {
 		t.Errorf("host copies = %v, want one taken from the dabs.yaml dir (/proj/box/assets)", fd.copies)
 	}
-	if ms := sourceMounts(onlyUp(t, drv).Mounts); len(ms) != 1 || ms[0].Host == "/proj/box/assets" {
+	if ms := onlyUp(t, drv).Mounts; len(ms) != 1 || ms[0].Host == "/proj/box/assets" {
 		t.Errorf("Up mounts = %+v, want the snapshot dabs owns, not the origin bound live", ms)
 	}
 }
@@ -3383,8 +3390,8 @@ func TestBoxFromWorktreeCheckoutParentsOnWorktree(t *testing.T) {
 		{Host: wt, Path: "/work"},                // the checkout, mounted live
 		{Host: "/repo/.git", Path: "/repo/.git"}, // parent store, so git works in-box
 	}
-	if len(sourceMounts(up.Mounts)) != len(want) {
-		t.Fatalf("mounts = %+v, want %+v", sourceMounts(up.Mounts), want)
+	if len(up.Mounts) != len(want) {
+		t.Fatalf("mounts = %+v, want %+v", up.Mounts, want)
 	}
 	for _, w := range want {
 		found := false

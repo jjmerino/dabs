@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/jjmerino/dabs/core/proxy"
 	"github.com/jjmerino/dabs/core/tui"
 )
 
@@ -55,7 +54,7 @@ func (r Real) downInstance(instance string) error {
 		if err := m.driver.Down(m.name); err != nil {
 			return err
 		}
-		proxy.Reap(r.boxProxy(m.name)) // reap the box's proxy engine before its node is removed
+		r.reapSidecars(m.name) // reap the box's host-side processes before its node is removed
 		r.logWorktreeDown(m.name)
 		fmt.Fprintln(os.Stdout, tui.Success("%s stopped", tui.Accent(m.name)))
 	}

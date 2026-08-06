@@ -532,7 +532,7 @@ recipes:
 		t.Fatalf("Up: %v", err)
 	}
 	up := onlyUp(t, drv)
-	if ms := sourceMounts(up.Mounts); len(ms) != 1 || ms[0] != (sandbox.Mount{Host: "/data", Path: "/work"}) {
+	if ms := up.Mounts; len(ms) != 1 || ms[0] != (sandbox.Mount{Host: "/data", Path: "/work"}) {
 		t.Errorf("Up mounts = %+v, want one {/data -> /work}", ms)
 	}
 }

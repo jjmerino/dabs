@@ -45,11 +45,15 @@ glossary records where the vocabulary is going so new work simply avoids the old
 | **server** | a registered remote machine with dabs installed, reached over ssh | `dabs servers`, `config` |
 | **driver** | one sandboxing mechanism behind the `sandbox.Driver` contract | `core/sandbox/<kind>` |
 | **fleet** (deprecated) | use **drivers** | `Real.drivers`, `dabs ls` |
-| **service** | a box-local port a box publishes under a name, reached from the host on a stable loopback port | `dabs services`, `forward publish`, `/run/dabs/services` |
+| **service** | a box-local port a box publishes under a name, reached from the host on a stable loopback port | `dabs services`, `forward publish` |
+| **door** | the one dabs-owned socket a granted box's crossings travel over | `door.BoxPath`, `publish: true` |
+| **relay** | the host-side process answering ONE box's door, living as long as its node | `door.Relay`, `dabs services relay` |
+| **crossing** | one connection over a door, opening with a header line that says what it is | `door.Header`, `door.Publisher` |
 | **worktree** | a fresh git branch off HEAD, cut into a node's held space and mounted live | the `worktree:` source, `dabs worktrees` |
 | **--no-command** | boot a box and leave it up WITHOUT running the recipe's command | `recipe --no-command`, `upDetached` |
 | **--detach** | boot a box, START the recipe's command in the background, and return without waiting for it | `recipe --detach`, `upDetached`, `sandbox.Detacher` |
 | **optional driver capability** | something a driver MAY do beyond the Driver contract; `Capable` lists them all and every wrapper answers for all of them | `EgressEnforcer`, `ImageStore`, `Detacher`, `Capable` |
+| **publish** | recipe grant: this box may publish services on its door | `recipe.Recipe.Publish` |
 
 ---
 
@@ -262,42 +266,82 @@ Open question: if `prune` only ever reclaims images, the future name is
 
 ### service
 A box-local port a box publishes under a NAME, so the host can reach a program
-that only ever bound the box's own loopback. A box publishes by running the
-in-box forwarder — `forward publish <name> --type webui|general --port <n>` —
-which listens on `/run/dabs/services/<name>.sock` and writes `<name>.json`
-beside it. A name is `[a-z0-9._-]`, starting with a letter or digit, at
-most 64 bytes: it is a filename AND a cell the host prints, and the box
-choosing it is the untrusted side. That directory is the whole registry —
-the box node's `tmp` space, bound into EVERY box, so a service dies with
-the box that published it and nothing has to be deregistered. The type
-decides only how the index renders the service (a **webui** is a link),
-never how bytes are routed. One name is one host port: a second box
+that only ever bound the box's own loopback. Publishing is GRANTED, not
+ambient: only a box whose recipe says `publish: true` gets a **door**, and in a
+box without one the forwarder refuses the publish by name rather than failing on
+a missing file. In a granted box a program publishes by running the in-box
+forwarder — `forward publish <name> --type webui|general --port <n>` — which
+dials the door and holds one crossing open for as long as it runs. A name is
+`[a-z0-9._-]`, starting with a letter or digit, at most 64 bytes: it is a
+filename AND a cell the host prints, and the box choosing it is the untrusted
+side. The type decides only how the index renders the service (a **webui** is a
+link), never how bytes are routed. One name is one host port: a second box
 claiming a live name is reported as a **conflict** and is not served.
 
-The host reaches a service by whichever door answers: the mounted socket
-first, else the box's own network address on the publisher's `bridge`
-port. The socket dials on the Linux (bwrap) driver; on **apple** it does
-not cross the micro-VM, and the box's vmnet address (from the
-`BoxAddresser` capability) is the way in — unless the box runs with
-`egress: none`/`proxy`, which leaves it with no network and no address, so
-it lists **down**. On **docker**, neither door answers yet.
-
-The outward door is opt-in — dabs sets `DABS_SERVICE_BRIDGE` only in a box
-it reaches over the network, and `forward publish --bridge` follows that —
-so a box sharing the host's network namespace opens no listener on the
-host's interfaces. Where the door IS open it is not access control:
-anything able to reach the box's address can reach the service.
-*Where:* `core/services`, `forwarder.Publish`, `forwarder.ServicesDir`.
+The registry is the HOST's: the box node's relay stands the `<name>.sock`
+listener and writes the `<name>.json` descriptor into the box node's `tmp`
+space, and takes both away when the crossing ends — so a service dies with the
+box that published it, nothing has to be deregistered, and what `dabs services`
+dials is a socket this machine opened. That is the ONE route, the same on every
+driver: nothing is reached over the box's network, so a service is as reachable
+under `egress: none` or a proxy egress as under `open`.
+*Where:* `core/services`, `core/door`, `door.Publisher`, `door.Relay`.
 
 ### services
 List what the boxes publish, one row each: NAME, TYPE, the BOX node and its
 INSTANCE, the HOST address, and STATE — `up` when the socket answers, `down`
 when it does not, `conflict` when another box owns the name (then the row
-carries no address, because nothing reaches that service). `services serve`
+carries no address, because nothing reaches that service). It reads the boxes'
+registries as plain files, so it needs nothing running. `services serve`
 forwards each service from its stable 127.0.0.1 port (42000–42999, persisted
 per name in `~/.dabs/service-ports.json`, so a URL survives a re-up) and serves
-an index of them at `127.0.0.1:28080` until interrupted.
-*Where:* `Services`, `services.Server`, `services.Ports`.
+an index of them at `127.0.0.1:28080` until interrupted. `services relay` is
+the per-box **relay** dabs starts for itself.
+*Where:* `Services`, `services.Server`, `services.Ports`, `door.Run`.
+
+### door
+The one dabs-owned unix socket a box's crossings travel over —
+`/run/dabs/door.sock` in a box whose recipe says `publish: true`. dabs opens it
+on the HOST (see **relay**) before the box boots and carries it in exactly as it
+carries a recipe's own `sockets:`, so the box dials and the host listens on
+every driver. The door is the GRANT: a box that was not given one cannot
+publish, and the forwarder in it says so by name.
+
+**What a door will not do.** The box is the untrusted side, so a door carries at
+most 32 publications at once and holds at most 64 crossings that have not yet
+said what they are. Both are LOAD limits and are answered `BUSY`, which the box
+side retries — a busy moment never un-publishes a service or costs a box its
+ability to publish. A crossing that has said what it is no longer counts against
+the second limit, so held streams (a web UI's connections) cannot crowd out the
+next publish. Only a decision is answered `ERR`, and the box side gives up on
+one: a name already published in that box, an unknown service type, a stream id
+nothing is waiting for.
+*Where:* `door.BoxPath`, `recipe.Recipe.Publish`, `buildBox`, `door.BusyError`.
+
+### relay
+The host-side process answering ONE box's door: `dabs services relay --door
+<sock> --dir <dir>`, started by the boot of a granted box and reaped with the
+box (its pid is on the box node). It is a PURE byte relay — it reads each
+crossing's opening line and nothing after it — and its life is the node's, so
+the door answers from the box's first instant and a box never dials into a gap.
+One door is one relay: binding a unix socket unlinks whatever stands there, so
+a relay takes an exclusive lock beside the socket first and a second relay aimed
+at a live door is refused by name. The relay owns the registry it publishes into
+(0700, descriptors 0600) — the sockets in it are the only route into the box's
+services.
+*Where:* `door.Relay`, `claimDoor`, `spawnRelay`, `reapSidecars`.
+
+### crossing
+One connection over a door. Each opens with a single header line carrying the
+protocol banner and version (`DABS-DOOR/1 PUBLISH <name> <type> <port>`,
+`DABS-DOOR/1 STREAM <id>`), answered `DABS-DOOR/1 OK`, `… ERR <reason>` or
+`… BUSY <reason>` — ERR is a decision, so the box gives up on it; BUSY is a
+load limit, so the box comes back. A
+PUBLISH crossing is held open and carries the heartbeat and the relay's stream
+requests; every other call is a fresh dial rather than a stream multiplexed onto
+one connection, so what identifies a caller stays attached to the connection it
+made.
+*Where:* `door.Header`, `door.ReadHeader`, `door.Publisher`.
 
 ### servers
 Manage registered remote servers: `servers [ls] | add <name> [host] | rm <name>`.
@@ -337,6 +381,15 @@ A recipe's one-line human summary, shown in `dabs recipes`.
 Recipe flag: keep the box alive after the command finishes (default: delete it).
 A kept box is yours to reap with `dabs rm`.
 *Where:* `recipe.Recipe.Keep`.
+
+### publish
+Recipe field (`publish: true`): the box may publish **services**. It grants the
+ABILITY, not a list of names — what a box publishes is chosen at run time by the
+program in it — and dabs realizes it as the box's **door**. A recipe with no
+image is refused (a place has no box to open a door into), as is a `target:`
+naming a SERVER (the door is answered by a relay on THIS host). Unset, the box
+cannot publish, and the forwarder in it says so.
+*Where:* `recipe.Recipe.Publish`, `validatePublish`, `checkPublishReachable`.
 
 ### egress
 Recipe field: what a box's OWN network namespace may reach. `open` (the default)
@@ -387,20 +440,22 @@ The cwd (`/work` default) and environment variables inside the box.
 
 ### sockets
 Recipe field, a top-level list of its own: host unix sockets the box may talk
-to, each `socket:` (the host path, expanded like a source origin: `~`, `$VAR`,
-and the `$NODE_*`/`$PARENT_*` space vars) landing at an absolute `path:` in the
-box. It is not a source kind — a socket provisions nothing, owns no node space,
-and `rm` never reads it: the listener is a host program that must already be
-running, and the box only gets a door to it. That door is filesystem, not
-network, so it is open under every egress mode, `none` included. The box `path:`
-is held to exactly what a source's box path is — absolute, no `..`, `$NODE_ID`
-the only variable that resolves in it. What a socket cannot be refuses by name
-rather than booting a box that quietly has no door: a `socket:` that is missing
-or is not a socket (checked again at boot, since a listener may unlink between
-the two), a `path:` landing on one another source or socket already claims or on
-one dabs binds itself, a `:` in either path, a recipe with no image, a `target:`
-naming a SERVER (the listener is on this host, and a box on another machine has
-no path to it; a local target is fine).
+to — a listener a HOST program owns, distinct from the box's own **door**,
+which dabs owns and the `publish:` grant opens. Each entry is a `socket:` (the
+host path, expanded like a source origin: `~`, `$VAR`, and the
+`$NODE_*`/`$PARENT_*` space vars) landing at an absolute `path:` in the box.
+It is not a source kind — a socket provisions nothing, owns no node space, and
+`rm` never reads it: the listener is a host program that must already be
+running, and the box only gets a line to it. It crosses as filesystem, not
+network, so it is open under every egress mode, `none` included. The box
+`path:` is held to exactly what a source's box path is — absolute, no `..`,
+`$NODE_ID` the only variable that resolves in it. What a socket cannot be
+refuses by name rather than booting a box that quietly reaches nothing: a
+`socket:` that is missing or is not a socket (checked again at boot, since a
+listener may unlink between the two), a `path:` landing on one another source
+or socket already claims or on one dabs binds itself, a `:` in either path, a
+recipe with no image, a `target:` naming a SERVER (the listener is on this
+host, and a box on another machine has no path to it; a local target is fine).
 *Where:* `recipe.Socket`, `validateSockets`, `checkSockets`,
 `checkSocketsReachable`, `resolveSockets`, `checkSocketLive`,
 `sandbox.Spec.Sockets`.

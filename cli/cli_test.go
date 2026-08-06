@@ -459,18 +459,26 @@ func TestRecipesNameWithoutPrintRejected(t *testing.T) {
 	}
 }
 
-// CONTRACT: `services` lists and `services serve` serves; anything else is a
-// usage error rather than a silently-ignored argument.
-func TestServicesParsesItsOneSubcommand(t *testing.T) {
+// CONTRACT: `services` lists, `services serve` serves, and `services relay`
+// answers ONE box's door — which needs BOTH paths, since a relay with no door
+// or no registry would run and serve nothing. Anything else is a usage error
+// rather than a silently-ignored argument.
+func TestServicesParsesItsSubcommands(t *testing.T) {
 	for _, tc := range []struct {
 		args      []string
 		wantServe bool
+		wantRelay bool
 		wantErr   bool
 	}{
 		{args: nil},
 		{args: []string{"serve"}, wantServe: true},
 		{args: []string{"serve", "extra"}, wantErr: true},
 		{args: []string{"list"}, wantErr: true},
+		{args: []string{"relay"}, wantErr: true},
+		{args: []string{"relay", "--door", "/n/door.sock"}, wantErr: true},
+		{args: []string{"relay", "--dir", "/n/services"}, wantErr: true},
+		{args: []string{"relay", "--door", "/n/door.sock", "--dir", "/n/services"}, wantRelay: true},
+		{args: []string{"relay", "--door", "/n/door.sock", "--dir", "/n/services", "extra"}, wantErr: true},
 	} {
 		f := &fakeActions{}
 		err := New(f).Run(append([]string{"services"}, tc.args...))
@@ -483,8 +491,13 @@ func TestServicesParsesItsOneSubcommand(t *testing.T) {
 		if err != nil {
 			t.Fatalf("services %v: %v", tc.args, err)
 		}
-		if len(f.services) != 1 || f.services[0].Serve != tc.wantServe {
-			t.Errorf("services %v → %+v, want Serve=%v", tc.args, f.services, tc.wantServe)
+		if len(f.services) != 1 || f.services[0].Serve != tc.wantServe || f.services[0].Relay != tc.wantRelay {
+			t.Errorf("services %v → %+v, want Serve=%v Relay=%v", tc.args, f.services, tc.wantServe, tc.wantRelay)
+		}
+		if tc.wantRelay {
+			if f.services[0].Door != "/n/door.sock" || f.services[0].Dir != "/n/services" {
+				t.Errorf("services %v → %+v, want the door and the registry it was given", tc.args, f.services[0])
+			}
 		}
 	}
 }

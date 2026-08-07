@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"runtime"
 	"strings"
 
 	"github.com/jjmerino/dabs/core/sandbox"
@@ -201,19 +200,11 @@ func (Driver) HasImage(name string) (bool, error) {
 
 func (Driver) Kind() string { return "docker" }
 
-// CheckEgress reports whether this driver can enforce the mode. None is a stock
-// docker flag; proxy mounts a forwarder binary and a host unix socket into the
-// container. Proxy needs a linux host — Docker
-// Desktop's VM makes the cross-boundary socket FILE mount the proxy depends on
-// unreliable. The forwarder itself is a linux binary dabs materialized from its
-// embedded copy, so the binary is never the limiting factor.
+// CheckEgress reports nil for every mode. None is a stock docker flag; proxy
+// mounts only the forwarder binary — the bytes leave over the box door, a
+// socket bound with `-v`, the one form Docker Desktop's VM relays — so a
+// darwin host enforces proxy exactly as a linux one does.
 func (Driver) CheckEgress(mode string) error {
-	if mode != sandbox.EgressProxy {
-		return nil
-	}
-	if runtime.GOOS != "linux" {
-		return fmt.Errorf("docker: proxy egress needs a linux host — Docker Desktop's VM makes the proxy's cross-boundary socket mount unreliable (got %s)", runtime.GOOS)
-	}
 	return nil
 }
 

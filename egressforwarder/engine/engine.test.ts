@@ -346,3 +346,404 @@ test("matchHost: `*` matches everything, case/trailing-dot are caller-canonical"
   expect(matchHost("*", "anything.example.com")).toBe(true);
   expect(matchHost("ANTHROPIC.COM", "api.anthropic.com")).toBe(true); // pattern lowercased
 });
+
+// --- the CONNECTION tier: a module hop outside a tls window. -----------------
+// A module hop needs no tls window: outside one it acts on the connection
+// (host/port) through onConnect. These pin the whole contract — narrowing only,
+// both proxy paths, fail closed, chain order, and a distinguishable ledger line.
+
+// connectLine sends one CONNECT to the engine socket and resolves the status
+// line it answers with (the box's view of the gate's verdict). It never sends a
+// ClientHello, so an ALLOWED connection dials nothing.
+function connectLine(sock: string, host: string, port: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const c = net.connect(sock, () => c.write(`CONNECT ${host}:${port} HTTP/1.1\r\nHost: ${host}:${port}\r\n\r\n`));
+    c.once("data", (d) => { resolve(d.toString("latin1").split("\r\n")[0]); c.destroy(); });
+    c.on("error", reject);
+  });
+}
+
+// ledgerLines reads the connection ledger written so far.
+function ledgerLines(path: string): Record<string, unknown>[] {
+  return readFileSync(path, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+}
+
+test("onConnect denies a connection the static policy allows, and the ledger says which hop", async () => {
+  const work = mkdtempSync(join(tmpdir(), "dabs-onconnect-"));
+  const gateMod = join(work, "gate.ts");
+  writeFileSync(gateMod, `export default (config) => ({
+    onConnect(target) {
+      if (target.host === config.block) return { action: "deny", reason: "blocked by the gate hook" };
+    },
+  });`);
+
+  const ledger = join(work, "connect.jsonl");
+  process.env.DABS_CONNECT_LOG = ledger;
+  const socket = join(work, "engine.sock");
+  const eng = await start({
+    socket,
+    caDir: join(work, "ca"),
+    allow: ["example.com"], // the apex and every subdomain: BOTH hosts below pass the static gate
+    chain: [{ name: "gate", module: gateMod, config: { block: "blocked.example.com" } }],
+  });
+
+  expect(await connectLine(socket, "ok.example.com", 443)).toContain("200");
+  expect(await connectLine(socket, "blocked.example.com", 443)).toContain("403");
+
+  const lines = ledgerLines(ledger);
+  const denial = lines.find((l) => l.host === "blocked.example.com");
+  expect(denial?.verdict).toBe("deny-module"); // NOT "deny": a hook refused, not the recipe
+  expect(denial?.hop).toBe("gate");
+  expect(denial?.reason).toBe("blocked by the gate hook");
+  const allowed = lines.find((l) => l.host === "ok.example.com");
+  expect(allowed).toBeTruthy(); // the allowed host reached the ledger at all
+  expect(allowed?.verdict).not.toBe("deny-module");
+
+  delete process.env.DABS_CONNECT_LOG;
+  eng.stop();
+});
+
+test("onConnect cannot widen the static policy — a statically denied host never reaches the hook", async () => {
+  const work = mkdtempSync(join(tmpdir(), "dabs-onconnect-widen-"));
+  const seen = join(work, "seen.jsonl");
+  const yesMod = join(work, "yes.ts");
+  writeFileSync(yesMod, `import { appendFileSync } from "node:fs";
+export default (config) => ({
+  onConnect(target) {
+    appendFileSync(config.seen, JSON.stringify(target) + "\\n");
+    return { action: "allow" };
+  },
+});`);
+
+  const ledger = join(work, "connect.jsonl");
+  process.env.DABS_CONNECT_LOG = ledger;
+  const socket = join(work, "engine.sock");
+  const eng = await start({
+    socket,
+    caDir: join(work, "ca"),
+    allow: ["good.example.com"],
+    chain: [{ name: "yes", module: yesMod, config: { seen } }],
+  });
+
+  expect(await connectLine(socket, "evil.example.com", 443)).toContain("403");
+  expect(await connectLine(socket, "good.example.com", 443)).toContain("200");
+
+  // The static deny stands, is recorded as the recipe's own, and the hook that
+  // would have allowed everything was never asked about that host.
+  expect(ledgerLines(ledger).find((l) => l.host === "evil.example.com")?.verdict).toBe("deny");
+  const consulted = readFileSync(seen, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+  expect(consulted).toEqual([{ host: "good.example.com", port: 443 }]);
+
+  delete process.env.DABS_CONNECT_LOG;
+  eng.stop();
+});
+
+test("the connection tier fails closed: a throwing or hanging onConnect denies", async () => {
+  const work = mkdtempSync(join(tmpdir(), "dabs-onconnect-closed-"));
+  const brokenMod = join(work, "broken.ts");
+  writeFileSync(brokenMod, `export default () => ({
+    onConnect(target) {
+      if (target.host === "throw.example.com") throw new Error("hook blew up");
+      if (target.host === "hang.example.com") return new Promise(() => {}); // never settles
+      if (target.host === "garbage.example.com") return 42;
+    },
+  });`);
+
+  const ledger = join(work, "connect.jsonl");
+  process.env.DABS_CONNECT_LOG = ledger;
+  const socket = join(work, "engine.sock");
+  const eng = await start({
+    socket,
+    caDir: join(work, "ca"),
+    allow: ["example.com"],
+    chain: [{ name: "broken", module: brokenMod, config: {} }],
+  });
+
+  expect(await connectLine(socket, "throw.example.com", 443)).toContain("403");
+  expect(await connectLine(socket, "hang.example.com", 443)).toContain("403");
+  expect(await connectLine(socket, "garbage.example.com", 443)).toContain("403");
+  expect(await connectLine(socket, "fine.example.com", 443)).toContain("200");
+
+  const lines = ledgerLines(ledger);
+  expect(lines.find((l) => l.host === "throw.example.com")?.reason).toContain("hook blew up");
+  expect(lines.find((l) => l.host === "hang.example.com")?.reason).toContain("exceeded");
+  expect(lines.find((l) => l.host === "garbage.example.com")?.reason).toContain("not a verdict");
+
+  delete process.env.DABS_CONNECT_LOG;
+  eng.stop();
+}, 10_000);
+
+test("onConnect hops run in chain order — the first deny wins", async () => {
+  const work = mkdtempSync(join(tmpdir(), "dabs-onconnect-order-"));
+  const denyMod = join(work, "deny.ts");
+  writeFileSync(denyMod, `export default (config) => ({
+    onConnect() { return { action: "deny", reason: config.reason }; },
+  });`);
+
+  const ledger = join(work, "connect.jsonl");
+  process.env.DABS_CONNECT_LOG = ledger;
+  const socket = join(work, "engine.sock");
+  const eng = await start({
+    socket,
+    caDir: join(work, "ca"),
+    chain: [
+      { name: "box-side", module: denyMod, config: { reason: "first" } },
+      { name: "internet-side", module: denyMod, config: { reason: "second" } },
+    ],
+  });
+
+  expect(await connectLine(socket, "anything.example.com", 443)).toContain("403");
+  const denial = ledgerLines(ledger).find((l) => l.host === "anything.example.com");
+  expect(denial?.hop).toBe("box-side");
+  expect(denial?.reason).toBe("first");
+
+  delete process.env.DABS_CONNECT_LOG;
+  eng.stop();
+});
+
+test("the plain forward-proxy path consults onConnect too", async () => {
+  const upstream = http.createServer((_req, res) => { res.writeHead(200); res.end("reached the upstream"); });
+  await new Promise<void>((r) => upstream.listen(0, "127.0.0.1", r));
+  const uport = (upstream.address() as net.AddressInfo).port;
+
+  const work = mkdtempSync(join(tmpdir(), "dabs-onconnect-http-"));
+  const portMod = join(work, "port.ts");
+  // Deny by PORT: the host is statically allowed and identical either way, so
+  // only the target's port can decide — which also proves the port crosses.
+  writeFileSync(portMod, `export default (config) => ({
+    onConnect(target) {
+      if (target.port === config.block) return { action: "deny", reason: "port is closed" };
+    },
+  });`);
+
+  const ledger = join(work, "connect.jsonl");
+  process.env.DABS_CONNECT_LOG = ledger;
+  const socket = join(work, "engine.sock");
+  const eng = await start({
+    socket,
+    caDir: join(work, "ca"),
+    allow: ["127.0.0.1"],
+    chain: [{ name: "ports", module: portMod, config: { block: uport } }],
+  });
+
+  const res = await forwardProxy(socket, `http://127.0.0.1:${uport}/x`, "GET", "");
+  expect(res.status).toBe(403);
+  expect(res.body).not.toContain("reached the upstream");
+  const denial = ledgerLines(ledger).find((l) => l.port === uport);
+  expect(denial?.verdict).toBe("deny-module");
+  expect(denial?.proto).toBe("http");
+
+  delete process.env.DABS_CONNECT_LOG;
+  eng.stop();
+  upstream.close();
+});
+
+test("a module outside a window with only content verbs still warns, and is never consulted", async () => {
+  const upstream = http.createServer((_req, res) => { res.writeHead(200); res.end("reached the upstream"); });
+  await new Promise<void>((r) => upstream.listen(0, "127.0.0.1", r));
+  const uport = (upstream.address() as net.AddressInfo).port;
+
+  const work = mkdtempSync(join(tmpdir(), "dabs-onconnect-warn-"));
+  const calls = join(work, "calls.jsonl");
+  const contentMod = join(work, "content.ts");
+  writeFileSync(contentMod, `import { appendFileSync } from "node:fs";
+export default (config) => ({
+  onRequest(head) { appendFileSync(config.calls, JSON.stringify({ path: head.path }) + "\\n"); },
+});`);
+
+  const socket = join(work, "engine.sock");
+  const warnings: string[] = [];
+  const realWarn = console.warn;
+  console.warn = (...a: unknown[]) => { warnings.push(a.map(String).join(" ")); };
+  let eng: { stop: () => void };
+  try {
+    eng = await start({
+      socket,
+      caDir: join(work, "ca"),
+      allow: ["127.0.0.1"],
+      chain: [{ name: "contentonly", module: contentMod, config: { calls } }],
+    });
+  } finally { console.warn = realWarn; }
+
+  expect(warnings.join("\n")).toContain(`proxy hook "contentonly" is OUTSIDE a "tls: terminate" window`);
+
+  // It is not a connection hop either: the request goes through untouched and
+  // its content verb never ran.
+  const res = await forwardProxy(socket, `http://127.0.0.1:${uport}/x`, "GET", "");
+  expect(res.status).toBe(200);
+  expect(res.body).toBe("reached the upstream");
+  expect(existsSync(calls)).toBe(false);
+
+  eng.stop();
+  upstream.close();
+});
+
+test("a module outside a window that exports onConnect draws no content-verb warning", async () => {
+  const work = mkdtempSync(join(tmpdir(), "dabs-onconnect-nowarn-"));
+  const gateMod = join(work, "gate.ts");
+  writeFileSync(gateMod, `export default () => ({ onConnect() {} });`);
+
+  const warnings: string[] = [];
+  const realWarn = console.warn;
+  console.warn = (...a: unknown[]) => { warnings.push(a.map(String).join(" ")); };
+  let eng: { stop: () => void };
+  try {
+    eng = await start({ socket: join(work, "engine.sock"), caDir: join(work, "ca"), chain: [{ name: "gate", module: gateMod, config: {} }] });
+  } finally { console.warn = realWarn; }
+
+  expect(warnings.join("\n")).not.toContain("OUTSIDE");
+  eng.stop();
+});
+
+// --- an async onConnect must not cost the connection its bytes. --------------
+// The gate runs inside the accept handler's `once("data")`. Between that
+// listener firing and the reader the next stage attaches, the socket is flowing
+// with nothing listening — and awaiting a hook widens that window to the hook's
+// whole duration. These two drive bytes INTO the window (the box writes after
+// the head, without waiting) and prove they still arrive.
+
+// slowGateModule writes a module whose onConnect resolves after `delay` ms —
+// the ordinary async shape the Handler contract advertises.
+function slowGateModule(dir: string, delay: number): string {
+  const p = join(dir, "slow.ts");
+  writeFileSync(p, `export default (config) => ({
+    async onConnect() { await new Promise((r) => setTimeout(r, config.delay)); },
+  });`);
+  return p;
+}
+
+test("an async onConnect keeps the plain forward-proxy body that arrives while it thinks", async () => {
+  const upstream = http.createServer((req, res) => {
+    let b = "";
+    req.on("data", (d) => (b += d));
+    req.on("end", () => { res.writeHead(200); res.end(`upstream saw [${b}]`); });
+  });
+  await new Promise<void>((r) => upstream.listen(0, "127.0.0.1", r));
+  const uport = (upstream.address() as net.AddressInfo).port;
+
+  const work = mkdtempSync(join(tmpdir(), "dabs-onconnect-async-"));
+  const socket = join(work, "engine.sock");
+  const eng = await start({
+    socket,
+    caDir: join(work, "ca"),
+    allow: ["127.0.0.1"],
+    chain: [{ name: "slow", module: slowGateModule(work, 40), config: { delay: 40 } }],
+  });
+
+  // The box writes the head, then the body 10ms later — inside the hook's 40ms.
+  const body = "the body that arrives mid-verdict";
+  const res = await new Promise<string>((resolve, reject) => {
+    const c = net.connect(socket, () => {
+      c.write(`POST http://127.0.0.1:${uport}/x HTTP/1.1\r\nHost: 127.0.0.1:${uport}\r\nConnection: close\r\nContent-Length: ${body.length}\r\n\r\n`);
+      setTimeout(() => c.write(body), 10);
+    });
+    let data = "";
+    c.on("data", (d) => (data += d.toString("latin1")));
+    c.on("end", () => resolve(data));
+    c.on("error", reject);
+    setTimeout(() => reject(new Error("the request never completed — bytes were dropped while the hook awaited")), 4000);
+  });
+
+  expect(res).toContain("200");
+  expect(res).toContain(`upstream saw [${body}]`);
+
+  eng.stop();
+  upstream.close();
+}, 10_000);
+
+test("an async onConnect keeps a CONNECT tunnel's first bytes that arrive while it thinks", async () => {
+  const upstream = http.createServer((_req, res) => { res.writeHead(200); res.end("tunnelled to the upstream"); });
+  await new Promise<void>((r) => upstream.listen(0, "127.0.0.1", r));
+  const uport = (upstream.address() as net.AddressInfo).port;
+
+  const work = mkdtempSync(join(tmpdir(), "dabs-onconnect-async-connect-"));
+  const socket = join(work, "engine.sock");
+  const eng = await start({
+    socket,
+    caDir: join(work, "ca"),
+    allow: ["127.0.0.1"],
+    chain: [{ name: "slow", module: slowGateModule(work, 40), config: { delay: 40 } }],
+  });
+
+  // A client that does not wait for the 200 before sending: its first tunnel
+  // bytes land 10ms in, inside the hook's 40ms. With no terminate window the
+  // engine raw-tunnels them to the upstream, so the reply proves they survived.
+  const res = await new Promise<string>((resolve, reject) => {
+    const c = net.connect(socket, () => {
+      c.write(`CONNECT 127.0.0.1:${uport} HTTP/1.1\r\nHost: 127.0.0.1:${uport}\r\n\r\n`);
+      setTimeout(() => c.write(`GET /x HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n`), 10);
+    });
+    let data = "";
+    c.on("data", (d) => (data += d.toString("latin1")));
+    c.on("end", () => resolve(data));
+    c.on("error", reject);
+    setTimeout(() => reject(new Error("the tunnel never carried the request — bytes were dropped while the hook awaited")), 4000);
+  });
+
+  expect(res).toContain("200 Connection Established");
+  expect(res).toContain("tunnelled to the upstream");
+
+  eng.stop();
+  upstream.close();
+}, 10_000);
+
+test("a mixed hop outside a window is consulted for the connection AND warned about its content verbs", async () => {
+  const work = mkdtempSync(join(tmpdir(), "dabs-onconnect-mixed-"));
+  const mixedMod = join(work, "mixed.ts");
+  writeFileSync(mixedMod, `export default () => ({
+    onConnect(target) { if (target.host === "blocked.example.com") return { action: "deny", reason: "mixed hop said no" }; },
+    onRequest() { return { action: "deny" }; },
+  });`);
+
+  const ledger = join(work, "connect.jsonl");
+  process.env.DABS_CONNECT_LOG = ledger;
+  const socket = join(work, "engine.sock");
+  const warnings: string[] = [];
+  const realWarn = console.warn;
+  console.warn = (...a: unknown[]) => { warnings.push(a.map(String).join(" ")); };
+  let eng: { stop: () => void };
+  try {
+    eng = await start({ socket, caDir: join(work, "ca"), chain: [{ name: "mixed", module: mixedMod, config: {} }] });
+  } finally { console.warn = realWarn; }
+
+  // The content verbs cannot run out here, and saying so is the whole point of
+  // the warning — a working onConnect must not buy silence about the rest.
+  expect(warnings.join("\n")).toContain(`proxy hook "mixed" is OUTSIDE a "tls: terminate" window`);
+  // Its connection verb is live all the same.
+  expect(await connectLine(socket, "blocked.example.com", 443)).toContain("403");
+  expect(ledgerLines(ledger).find((l) => l.host === "blocked.example.com")?.reason).toBe("mixed hop said no");
+
+  delete process.env.DABS_CONNECT_LOG;
+  eng.stop();
+});
+
+test("a hook cannot choose how many bytes its denial costs the host", async () => {
+  const work = mkdtempSync(join(tmpdir(), "dabs-onconnect-reason-"));
+  const shoutMod = join(work, "shout.ts");
+  writeFileSync(shoutMod, `export default () => ({
+    onConnect() { return { action: "deny", reason: "x".repeat(50000) }; },
+  });`);
+
+  const ledger = join(work, "connect.jsonl");
+  process.env.DABS_CONNECT_LOG = ledger;
+  const socket = join(work, "engine.sock");
+  const eng = await start({ socket, caDir: join(work, "ca"), chain: [{ name: "shout", module: shoutMod, config: {} }] });
+
+  // A module denial is recorded in the ledger and nowhere else — no per-attempt
+  // host stderr, exactly as a static deny behaves.
+  const noise: string[] = [];
+  const realWarn = console.warn, realError = console.error;
+  console.warn = (...a: unknown[]) => { noise.push(a.map(String).join(" ")); };
+  console.error = (...a: unknown[]) => { noise.push(a.map(String).join(" ")); };
+  try {
+    expect(await connectLine(socket, "loud.example.com", 443)).toContain("403");
+  } finally { console.warn = realWarn; console.error = realError; }
+  expect(noise).toEqual([]);
+
+  const reason = ledgerLines(ledger).find((l) => l.host === "loud.example.com")?.reason as string;
+  expect(reason.length).toBeLessThanOrEqual(201); // the cap, plus the ellipsis marking the cut
+  expect(reason.startsWith("xxx")).toBe(true);
+
+  delete process.env.DABS_CONNECT_LOG;
+  eng.stop();
+});

@@ -105,6 +105,17 @@ egress:
   re-originated untouched, so terminating a domain never costs the box its other
   protocols to it. Module paths resolve like sources: relative to the recipe's
   own `dabs.yaml`.
+- **Connection — a `module` OUTSIDE any `tls` window** (protocol-agnostic). Such
+  a hop sees no content; it acts on the connection through a fifth verb,
+  `onConnect({host, port}, ctx)`, returning nothing (or `{action: "allow"}`) to
+  let the dial through and `{action: "deny", reason}` to refuse it with a 403.
+  It runs on both proxy paths after the `allow`/`deny` gate has already allowed
+  the host, so it can only narrow the recipe's policy, never widen it. Hops run
+  chain order and the first deny wins; a hook that throws, hangs, or answers
+  with anything else denies the connection. A refusal is recorded in the
+  connection ledger — the hop's name and its length-capped reason — and nowhere
+  else. A hop out here that also exports content verbs is warned about at boot:
+  those verbs still need a `tls: terminate` to run.
 
 Proxy egress needs `bun` and `openssl` on the host PATH, and a forwarder binary
 to mount in the box: the CLI carries one embedded (`-tags withforwarder`), and a

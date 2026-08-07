@@ -1,11 +1,16 @@
 // The dabs proxy engine: one in-process Bun program per box that runs a recipe's
 // egress policy and (optional) HTTP content chain. The box's egress is pointed
-// at this engine's unix socket (HTTP-proxy protocol). Two independent layers:
+// at this engine's unix socket (HTTP-proxy protocol). Three layers:
 //
 //   - POLICY (protocol-agnostic): the engine checks the CONNECT host against the
 //     recipe's allow/deny patterns, on the plaintext host:port, BEFORE any
 //     tunnel — for every protocol. A denied host gets 403; an allowed host is
 //     tunneled. This is not a hook: it is engine-native and cannot be skipped.
+//   - CONNECTION (protocol-agnostic): a module hop OUTSIDE any tls window acts
+//     on the connection, not its content. After the static gate ALLOWS a
+//     host:port, each such hop's `onConnect` may refuse it. Narrowing only: the
+//     static gate has already run, so a hop is never asked about a host the
+//     recipe denies, and a hook can never widen the recipe's policy.
 //   - CONTENT (HTTP/1.1 only): inside a `tls: terminate` … `tls: originate`
 //     window, the engine terminates TLS with a CA the box trusts and runs each
 //     module hook's four verbs on the DECRYPTED HTTP/1.1 stream — streaming,
@@ -30,8 +35,15 @@
 //   onResponseChunk(chunk|null, ctx)  → Buffer|string|null|void
 //     each response body chunk (null = EOF/flush); transform or observe.
 //
+// The connection verb, on a hop outside any tls window, with a per-connection
+// scratch `ctx`:
+//   onConnect({host,port}, ctx)
+//     → nothing / {action:"allow"}   let the connection through
+//     → {action:"deny", reason?}     refuse it (the box gets 403)
+//
 // Request hooks run chain order (box→internet); response hooks run REVERSE
 // (internet→box), so a box-side hook is the last to touch a response.
+// onConnect runs chain order, and the first deny wins.
 
 import * as net from "node:net";
 import * as tls from "node:tls";
@@ -50,8 +62,10 @@ type Json = Record<string, unknown>;
 
 interface RequestHead { host: string; port: number; method: string; path: string; headers: Record<string, string>; }
 interface ResponseHead { host: string; status: number; headers: Record<string, string>; }
+interface ConnectTarget { host: string; port: number; }
 type ChunkResult = Buffer | string | null | undefined | void;
 interface Handler {
+  onConnect?(target: ConnectTarget, ctx: Json): Promise<Json | void> | Json | void;
   onRequest?(head: RequestHead, ctx: Json): Promise<Json | void> | Json | void;
   onRequestChunk?(chunk: Buffer | null, ctx: Json): Promise<ChunkResult> | ChunkResult;
   onResponse?(head: ResponseHead, ctx: Json): Promise<Json | void> | Json | void;
@@ -171,11 +185,14 @@ async function resolveChain(chain: HopConfig[]): Promise<Hop[]> {
 }
 
 // Classify the chain. contentHops is the subset of module hops inside a
-// terminate…originate window — only those see decrypted HTTP content. Report
-// whether the chain terminates (needs a CA) and originates (forwards upstream),
-// and the terminate window's domain scope.
+// terminate…originate window — only those see decrypted HTTP content.
+// connectHops is the subset OUTSIDE any window that exports onConnect — only
+// those are asked about a dialed host:port. Report whether the chain terminates
+// (needs a CA) and originates (forwards upstream), and the terminate window's
+// domain scope.
 function classify(hops: Hop[]) {
   const contentHops: Hop[] = [];
+  const connectHops: Hop[] = [];
   let inWindow = false, terminates = false, originates = false;
   let terminateDomains: string[] | null = null;
   let failOpen = false;
@@ -191,13 +208,16 @@ function classify(hops: Hop[]) {
       continue;
     }
     if (h.kind === "tls-originate") { inWindow = false; originates = true; continue; }
-    if (inWindow) contentHops.push(h);
-    else if (h.handler?.onRequest || h.handler?.onResponse || h.handler?.onRequestChunk || h.handler?.onResponseChunk) {
-      // A hook with content verbs but no window will never run. Say so at boot.
+    if (inWindow) { contentHops.push(h); continue; }
+    if (h.handler?.onConnect) connectHops.push(h);
+    // The warning is about the CONTENT verbs, so it is owed to any hop outside a
+    // window that exports one — including one whose onConnect does run. Half a
+    // working handler is the case most likely to be mistaken for a whole one.
+    if (h.handler?.onRequest || h.handler?.onResponse || h.handler?.onRequestChunk || h.handler?.onResponseChunk) {
       console.warn(`warning: proxy hook "${h.name}" is OUTSIDE a "tls: terminate" window — its content verbs will NOT run. Add "tls: terminate" before it to inspect content.`);
     }
   }
-  return { contentHops, terminates, originates, terminateDomains, failOpen };
+  return { contentHops, connectHops, terminates, originates, terminateDomains, failOpen };
 }
 
 // Hooks are user code, so bound every call: a hung hook must not stall the box's
@@ -213,6 +233,47 @@ function callHook<T>(p: Promise<T> | T): Promise<T> {
       (e) => { clearTimeout(timer); reject(e); },
     );
   });
+}
+
+// --- CONNECTION tier: the module verdict on one dialed destination. ----------
+
+// A refused connection names the hop that refused it and why, for the ledger.
+interface ConnectDecision { allowed: boolean; hop?: string; reason?: string; }
+
+// A reason is hook-supplied text landing in a host-side file, one line per
+// refused connection, and a box can retry as often as it likes. Cap it: a hook
+// must not be able to choose how many bytes a denial costs the host.
+const MAX_REASON_CHARS = 200;
+function clampReason(s: string): string {
+  return s.length <= MAX_REASON_CHARS ? s : s.slice(0, MAX_REASON_CHARS) + "…";
+}
+function refuse(hop: string, reason: string): ConnectDecision {
+  return { allowed: false, hop, reason: clampReason(reason) };
+}
+
+// askConnectHops walks the outside-the-window module hops in chain order
+// (box→internet) and returns the first DENY, or an allow if every hop passed.
+// The verdict is narrowing only: the caller has already applied the static
+// policy, and no verdict here can turn a static deny into a reach.
+//
+// The tier fails closed. A hook that throws, exceeds the callHook bound, or
+// answers with anything but a well-formed verdict DENIES the connection — a
+// broken hook must not become an open door, and callHook's rejection is what
+// keeps a hung hook from stalling the dial forever.
+async function askConnectHops(connectHops: Hop[], host: string, port: number): Promise<ConnectDecision> {
+  for (const hop of connectHops) {
+    const fn = hop.handler?.onConnect;
+    if (!fn) continue;
+    let verdict: Json | void;
+    try { verdict = await callHook(fn.call(hop.handler, { host, port }, {})); }
+    catch (e) { return refuse(hop.name, `onConnect failed: ${(e as Error)?.message ?? e}`); }
+    if (verdict == null) continue;
+    if (typeof verdict !== "object") return refuse(hop.name, `onConnect returned ${typeof verdict}, not a verdict`);
+    if (verdict.action === "allow") continue;
+    if (verdict.action === "deny") return refuse(hop.name, String(verdict.reason ?? "denied"));
+    return refuse(hop.name, `onConnect returned an unknown action: ${JSON.stringify(verdict.action)}`);
+  }
+  return { allowed: true };
 }
 
 // ALLOW_ECH: Encrypted Client Hello hides the real SNI, so we cannot verify the
@@ -584,7 +645,7 @@ async function writeResponse(
 // --- boot -------------------------------------------------------------------
 export async function start(cfg: EngineConfig): Promise<{ stop: () => void }> {
   const hops = await resolveChain(cfg.chain);
-  const { contentHops, terminates, originates, terminateDomains, failOpen } = classify(hops);
+  const { contentHops, connectHops, terminates, originates, terminateDomains, failOpen } = classify(hops);
   const policyAllows = compilePolicy(cfg.allow ?? [], cfg.deny ?? []);
 
   // shouldInspect decides whether THIS host's TLS is terminated and its content
@@ -610,8 +671,32 @@ export async function start(cfg: EngineConfig): Promise<{ stop: () => void }> {
     if (!connLogPath) return;
     try { appendFileSync(connLogPath, JSON.stringify(o) + "\n"); } catch {}
   };
-  const connLog = (host: string, port: number, verdict: string, proto = "connect") =>
-    logEvent({ t: "connect", proto, host, port, verdict });
+  const connLog = (host: string, port: number, verdict: string, proto = "connect", extra?: Json) =>
+    logEvent({ t: "connect", proto, host, port, verdict, ...(extra ?? {}) });
+
+  // gateConnection is the whole gate for one dialed destination, both proxy
+  // paths: the engine-native static policy, then the module verdict. A refusal
+  // is recorded in the ledger and nowhere else — the same treatment a static
+  // deny gets, and the ledger keeps the two apart ("deny" is the recipe's own
+  // allow/deny, "deny-module" a hook's onConnect, with the hop and its reason).
+  //
+  // The client socket is PAUSED across the module verdict. This runs inside the
+  // accept handler's `once("data")`, so between that listener firing and the
+  // reader the next stage attaches, the socket is flowing with nothing listening
+  // — and an onConnect hook is allowed to be async, so the gap is a real await.
+  // Bytes emitted into it would be dropped and the request would never complete.
+  // Pausing holds them in the socket's own buffer; the resume lands in the same
+  // tick as the next stage, before any I/O callback can run.
+  async function gateConnection(client: net.Socket, host: string, port: number, proto: string): Promise<boolean> {
+    if (!policyAllows(host)) { connLog(host, port, "deny", proto); return false; }
+    client.pause();
+    let decision: ConnectDecision;
+    try { decision = await askConnectHops(connectHops, host, port); }
+    finally { client.resume(); }
+    if (decision.allowed) return true;
+    connLog(host, port, "deny-module", proto, { hop: decision.hop, reason: decision.reason });
+    return false;
+  }
 
   // Always mint the CA: dabs mounts ca.crt into every proxy box (the mount origin
   // must exist), and a chain that gains a `tls: terminate` later needs it anyway.
@@ -696,9 +781,11 @@ export async function start(cfg: EngineConfig): Promise<{ stop: () => void }> {
         if (connect) {
           const host = canonicalHost(connect[1]);
           const port = Number(connect[2]);
-          // POLICY: the engine-native CONNECT gate, on the plaintext host, before
-          // any tunnel — for every protocol. A denied host never gets a tunnel.
-          if (!policyAllows(host)) { connLog(host, port, "deny"); client.end("HTTP/1.1 403 Forbidden\r\n\r\n"); return; }
+          // POLICY then CONNECTION: the engine-native CONNECT gate, on the
+          // plaintext host, before any tunnel — for every protocol — and then
+          // the module hops outside a tls window. A refused host never gets a
+          // tunnel.
+          if (!(await gateConnection(client, host, port, "connect"))) { client.end("HTTP/1.1 403 Forbidden\r\n\r\n"); return; }
           client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
 
           const hello = await firstChunk(client);
@@ -752,7 +839,7 @@ export async function start(cfg: EngineConfig): Promise<{ stop: () => void }> {
           const url = new URL(httpReq[2]);
           const host = canonicalHost(url.hostname);
           const port = Number(url.port || 80);
-          if (!policyAllows(host)) { connLog(host, port, "deny", "http"); client.end("HTTP/1.1 403 Forbidden\r\n\r\n"); return; }
+          if (!(await gateConnection(client, host, port, "http"))) { client.end("HTTP/1.1 403 Forbidden\r\n\r\n"); return; }
           connLog(host, port, shouldInspect(host) ? "inspect" : "forward", "http");
           const hooks = shouldInspect(host) ? contentHops : [];
           await serveHTTP(client, hooks, hooks.length ? originates : true, host, port, "http", buf);

@@ -753,26 +753,34 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID, tip string, rec re
 			mounts = append(mounts, sandbox.Mount{Host: rs.origin, Path: boxPath, RO: s.RO})
 		}
 	}
-	// A box may publish services only if its recipe grants it — `publish: true` —
-	// and the DOOR is the grant: the one dabs-owned socket everything crossing
-	// this box's boundary travels over. dabs opens it on the HOST (a relay whose
-	// life is the node's) before the box exists, so the box's first dial is
-	// answered, and hands the box the socket exactly as it hands it one the recipe
-	// declared. A box without the grant has no door — which is what lets the
-	// forwarder in it refuse a publish BY NAME instead of failing on a missing
-	// file. The registry the relay publishes into is the box node's own tmp space,
-	// so a service cannot outlive the box that published it.
+	// Everything crossing this box's boundary is answered by ONE host-side
+	// relay, whose life is the node's, started before the box exists so the box
+	// never dials into a gap. It answers two kinds of crossing. The box's DOOR —
+	// the one dabs-owned socket at door.BoxPath — is the publishing grant
+	// (`publish: true`): a box without the grant has no door, which is what lets
+	// the forwarder in it refuse a publish BY NAME instead of failing on a
+	// missing file, and the registry the relay publishes into is the box node's
+	// own tmp space, so a service cannot outlive the box that published it. The
+	// recipe's declared sockets are CARRIED: what the driver binds into the box
+	// is a socket the relay owns, and the relay dials the host program's own
+	// socket fresh for every connection — so a host listener that restarts is
+	// reached again on the next dial, instead of one dial in the gap finishing
+	// the mount for the box's life.
 	relayPID := 0
 	boxDoor := sandbox.Mount{}
-	if rec.Publish {
-		svcDir, derr := r.resolveServicesDir(boxID)
-		if derr != nil {
-			return "", derr
-		}
-		// The registry is the host's own — the sockets the relay stands in it are
-		// the only route into this box's services.
-		if derr := r.data.MkdirAll(svcDir, 0o700); derr != nil {
-			return "", fmt.Errorf("recipe %q: services dir %s: %w", recipeName, svcDir, derr)
+	if rec.Publish || len(sockets) > 0 {
+		svcDir := ""
+		if rec.Publish {
+			dir, derr := r.resolveServicesDir(boxID)
+			if derr != nil {
+				return "", derr
+			}
+			// The registry is the host's own — the sockets the relay stands in it
+			// are the only route into this box's services.
+			if derr := r.data.MkdirAll(dir, 0o700); derr != nil {
+				return "", fmt.Errorf("recipe %q: services dir %s: %w", recipeName, dir, derr)
+			}
+			svcDir = dir
 		}
 		doorPath, derr := r.resolveDoorPath(boxID)
 		if derr != nil {
@@ -782,11 +790,29 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID, tip string, rec re
 		if derr != nil {
 			return "", derr
 		}
-		pid, derr := r.relay(doorPath, svcDir, logPath)
+		// The last look at each declared socket before the relay stands in front
+		// of it: a listener that unlinked between the recipe's checks and this
+		// boot refuses BY NAME now, rather than booting a box whose first dial
+		// finds nothing. From here the host path is the relay's to dial, per
+		// connection, so the driver only ever binds a socket dabs owns.
+		for _, s := range sockets {
+			if err := r.checkSocketLive(recipeName, s.Host); err != nil {
+				return "", err
+			}
+		}
+		carries := make([]door.Carry, len(sockets))
+		carried := make([]sandbox.Mount, len(sockets))
+		for i, s := range sockets {
+			listen := filepath.Join(filepath.Dir(doorPath), fmt.Sprintf("carry%d.sock", i))
+			carries[i] = door.Carry{Listen: listen, Dial: s.Host}
+			carried[i] = sandbox.Mount{Host: listen, Path: s.Path}
+		}
+		pid, derr := r.relay(doorPath, svcDir, logPath, carries)
 		if derr != nil {
 			return "", fmt.Errorf("recipe %q: %w", recipeName, derr)
 		}
 		relayPID = pid
+		sockets = carried
 		// The relay is listening now, but the box node that carries its pid is not
 		// written until the box is up: until then nothing else can reap it.
 		defer func() {
@@ -794,7 +820,9 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID, tip string, rec re
 				reapRelay(relayPID)
 			}
 		}()
-		boxDoor = sandbox.Mount{Host: doorPath, Path: door.BoxPath}
+		if rec.Publish {
+			boxDoor = sandbox.Mount{Host: doorPath, Path: door.BoxPath}
+		}
 	}
 	// A non-empty proxies chain makes the engine's socket the box's only way out:
 	// start it, mount its CA, point the box's HTTP_PROXY at the in-box forwarder.
@@ -849,24 +877,9 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID, tip string, rec re
 	if _, ok := rec.Env["PATH"]; ok {
 		fmt.Fprintln(os.Stderr, tui.Warn("recipe %q sets PATH in env, which REPLACES the image PATH — commands in the box may not resolve", recipeName))
 	}
-	// The last look at each socket before the driver binds it. A driver asked to
-	// bind a path that is not there CREATES a host directory at it (docker's short
-	// bind form does; the long form refuses, but a socket only crosses in the short
-	// one), so a listener that unlinked and rebound between the recipe's checks and
-	// this boot would find a directory standing where its socket belongs — one dabs
-	// left, owned by whoever ran dabs, and its next bind() failing against it.
-	// Checking here makes the window the gap between this call and the driver's own
-	// bind, which no caller can close.
-	for _, s := range sockets {
-		if err := r.checkSocketLive(recipeName, s.Host); err != nil {
-			return "", err
-		}
-	}
-	// The door rides with the recipe's own sockets — one mechanism, so every
-	// driver carries it exactly as it carries a declared one. It joins them after
-	// the check above, which asks whether a HOST PROGRAM the recipe named is
-	// listening; the door's listener is dabs's own, and the relay was already
-	// waited for.
+	// The door rides with the carried sockets — one mechanism, so every driver
+	// binds it exactly as it binds them: every socket the driver sees is one a
+	// relay dabs started is answering.
 	if boxDoor.Path != "" {
 		sockets = append(sockets, boxDoor)
 	}

@@ -21,6 +21,7 @@ import (
 
 	"github.com/jjmerino/dabs/core/actions"
 	"github.com/jjmerino/dabs/core/data"
+	"github.com/jjmerino/dabs/core/door"
 	"github.com/jjmerino/dabs/core/params"
 	"github.com/jjmerino/dabs/core/recipe"
 	"github.com/jjmerino/dabs/core/sandbox"
@@ -164,9 +165,12 @@ type fakeData struct {
 	reaped      []int                     // every pid a teardown asked the relay reaper for
 }
 
-// relayCall is one door relay a boot started: the socket it answers and the
-// registry it publishes into.
-type relayCall struct{ door, dir, log string }
+// relayCall is one door relay a boot started: the socket it answers, the
+// registry it publishes into, and the sockets it carries.
+type relayCall struct {
+	door, dir, log string
+	carries        []door.Carry
+}
 
 // reapRelay stands in for signalling a relay's process group: it records the
 // pid a teardown asked for, so a test can see the reap reach the relay.
@@ -174,11 +178,11 @@ func (f *fakeData) reapRelay(pid int) { f.reaped = append(f.reaped, pid) }
 
 // startRelay stands in for spawning a relay process: it records what was asked
 // for and answers with a pid, so a boot can be driven without a host process.
-func (f *fakeData) startRelay(doorPath, dir, logPath string) (int, error) {
+func (f *fakeData) startRelay(doorPath, dir, logPath string, carries []door.Carry) (int, error) {
 	if f.relayErr != nil {
 		return 0, f.relayErr
 	}
-	f.relays = append(f.relays, relayCall{door: doorPath, dir: dir, log: logPath})
+	f.relays = append(f.relays, relayCall{door: doorPath, dir: dir, log: logPath, carries: carries})
 	return 4000 + len(f.relays), nil
 }
 
@@ -877,10 +881,11 @@ func listenSocket(fd *fakeData, path string) {
 	fd.modes[path] = fs.ModeSocket
 }
 
-// CONTRACT: every socket a recipe declares reaches the driver as a socket — host
-// path expanded, box path as written — and none of them turns into a mount. A
-// socket that arrived as a plain mount would be bound as a directory by the
-// drivers that distinguish the two, and the box would find a dead inode.
+// CONTRACT: every socket a recipe declares reaches the driver as a socket —
+// box path as written, host side a socket the box's relay owns — and none of
+// them turns into a mount. The host program's own path is never bound into the
+// box: it is the relay's to dial, per connection, so the box's crossing is
+// established against a listener that lives as long as the box's node.
 func TestRecipeSocketsReachDriver(t *testing.T) {
 	y := `recipes:
   s:
@@ -905,12 +910,23 @@ func TestRecipeSocketsReachDriver(t *testing.T) {
 		t.Fatalf("Recipe: %v", err)
 	}
 	up := onlyUp(t, drv)
-	want := []sandbox.Mount{
-		{Host: "/home/t/run/one.sock", Path: "/run/dabs/one.sock"},
-		{Host: "/var/run/app/two.sock", Path: "/run/dabs/two.sock"},
+	if len(fd.relays) != 1 {
+		t.Fatalf("want one relay for the box, got %d", len(fd.relays))
 	}
-	if !reflect.DeepEqual(up.Sockets, want) {
-		t.Errorf("Up sockets = %+v, want %+v", up.Sockets, want)
+	wantCarries := []door.Carry{
+		{Listen: up.Sockets[0].Host, Dial: "/home/t/run/one.sock"},
+		{Listen: up.Sockets[1].Host, Dial: "/var/run/app/two.sock"},
+	}
+	if !reflect.DeepEqual(fd.relays[0].carries, wantCarries) {
+		t.Errorf("relay carries = %+v, want %+v", fd.relays[0].carries, wantCarries)
+	}
+	if len(up.Sockets) != 2 || up.Sockets[0].Path != "/run/dabs/one.sock" || up.Sockets[1].Path != "/run/dabs/two.sock" {
+		t.Errorf("Up sockets = %+v, want the two declared box paths", up.Sockets)
+	}
+	for i, sock := range up.Sockets {
+		if sock.Host == wantCarries[i].Dial {
+			t.Errorf("socket %d binds the host program's own path %s — the box must be handed the relay's listener", i, sock.Host)
+		}
 	}
 	if ms := up.Mounts; len(ms) != 1 || ms[0] != (sandbox.Mount{Host: "/data", Path: "/work"}) {
 		t.Errorf("Up mounts = %+v, want only the declared source", ms)
@@ -1217,13 +1233,16 @@ func TestRecipeSocketOnALocalTargetBoots(t *testing.T) {
 	listenSocket(fd, "/run/one.sock")
 	dkr := &fakeDriver{built: map[string]bool{"img": true}, kind: "docker"}
 	real := actions.New(map[string]sandbox.Driver{"local": &fakeDriver{}, "docker": dkr},
-		[]string{"local", "docker"}, fstest.MapFS{}, withRecipes(fd, y))
+		[]string{"local", "docker"}, fstest.MapFS{}, withRecipes(fd, y)).WithRelay(fd.startRelay).WithRelayReaper(fd.reapRelay)
 	if err := real.Recipe(params.Recipe{Name: "s"}); err != nil {
 		t.Fatalf("Recipe: %v", err)
 	}
 	up := onlyUp(t, dkr)
-	if len(up.Sockets) != 1 || up.Sockets[0] != (sandbox.Mount{Host: "/run/one.sock", Path: "/run/dabs/one.sock"}) {
-		t.Errorf("Up sockets = %+v, want the declared socket", up.Sockets)
+	if len(up.Sockets) != 1 || up.Sockets[0].Path != "/run/dabs/one.sock" {
+		t.Errorf("Up sockets = %+v, want the declared box path", up.Sockets)
+	}
+	if len(fd.relays) != 1 || len(fd.relays[0].carries) != 1 || fd.relays[0].carries[0].Dial != "/run/one.sock" {
+		t.Errorf("relay carries = %+v, want the declared host socket dialed by the relay", fd.relays)
 	}
 }
 

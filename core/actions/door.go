@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jjmerino/dabs/core/door"
 	"github.com/jjmerino/dabs/core/proxy"
 )
 
@@ -33,8 +34,10 @@ const doorReady = 5 * time.Second
 
 // startRelay starts a box's door relay and returns its pid. It is a field on
 // Real so a test can drive the boot without spawning a process; the default
-// spawns one (spawnRelay).
-type startRelay func(doorPath, dir, logPath string) (int, error)
+// spawns one (spawnRelay). dir is the registry a box that may publish gets
+// ("" for one that may not); carries are the recipe's host sockets, one relay
+// listener each.
+type startRelay func(doorPath, dir, logPath string, carries []door.Carry) (int, error)
 
 // resolveDoorPath returns the host path of a box node's door socket.
 func (r Real) resolveDoorPath(nodeID string) (string, error) {
@@ -62,7 +65,7 @@ func (r Real) resolveDoorLog(nodeID string) (string, error) {
 // this one's: a child holding dabs's stderr keeps that pipe open and hangs
 // whoever reads dabs's output. It logs to a file and leads its own session, so
 // reaping its pid takes the whole thing.
-func spawnRelay(doorPath, dir, logPath string) (int, error) {
+func spawnRelay(doorPath, dir, logPath string, carries []door.Carry) (int, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return 0, fmt.Errorf("door relay: %w", err)
@@ -72,7 +75,14 @@ func spawnRelay(doorPath, dir, logPath string) (int, error) {
 		return 0, fmt.Errorf("door relay: %w", err)
 	}
 	defer logFile.Close()
-	cmd := exec.Command(exe, "services", "relay", "--door", doorPath, "--dir", dir)
+	args := []string{"services", "relay", "--door", doorPath}
+	if dir != "" {
+		args = append(args, "--dir", dir)
+	}
+	for _, c := range carries {
+		args = append(args, "--carry", c.Listen+"="+c.Dial)
+	}
+	cmd := exec.Command(exe, args...)
 	cmd.Stdout, cmd.Stderr = logFile, logFile
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {

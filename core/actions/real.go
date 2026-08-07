@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/jjmerino/dabs/core/data"
+	"github.com/jjmerino/dabs/core/door"
 	"github.com/jjmerino/dabs/core/sandbox"
 	"github.com/jjmerino/dabs/core/tui"
 )
@@ -43,11 +44,12 @@ func (r Real) WithConfirm(fn func(string) bool) Real {
 	return r
 }
 
-// WithRelay returns a copy of r that starts a granted box's door relay with fn
+// WithRelay returns a copy of r that starts a box's door relay with fn
 // instead of spawning one, so a test can drive a boot without a process of its
-// own. fn is handed the door socket, the registry directory and the log path,
-// and answers with the pid to record on the box node.
-func (r Real) WithRelay(fn func(doorPath, dir, logPath string) (int, error)) Real {
+// own. fn is handed the door socket, the registry directory ("" for a box that
+// may not publish), the log path and the carried sockets, and answers with the
+// pid to record on the box node.
+func (r Real) WithRelay(fn func(doorPath, dir, logPath string, carries []door.Carry) (int, error)) Real {
 	r.relay = fn
 	return r
 }

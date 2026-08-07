@@ -164,16 +164,19 @@ func parseLs(args []string) (params.Ls, error) {
 	return p, nil
 }
 
-// parseServices parses `dabs services [serve | relay --door <sock> --dir <dir>]`.
-// Listing is the bare verb; `serve` takes nothing else; `relay` needs both
-// paths, since it answers one named box's door and publishes into that box's
-// own registry.
+// parseServices parses `dabs services [serve | relay --door <sock> [--dir
+// <dir>] [--carry <listen>=<dial>]...]`. Listing is the bare verb; `serve`
+// takes nothing else; `relay` answers one named box's door: --dir names the
+// registry a box that may publish gets (without it a publish is refused by
+// name), and each --carry is one host socket the relay carries into the box.
+// A relay with neither answers a door nothing needs, so at least one is
+// required.
 func parseServices(args []string) (params.Services, error) {
 	var p params.Services
 	if wantsHelp(args) {
 		return p, HelpRequestedError{helpText("services", newFlagSet("services"))}
 	}
-	badArgs := BadArgsError{Cmd: "services", Reason: "usage: services [serve | relay --door <sock> --dir <dir>]"}
+	badArgs := BadArgsError{Cmd: "services", Reason: "usage: services [serve | relay --door <sock> [--dir <dir>] [--carry <listen>=<dial>]...]"}
 	switch {
 	case len(args) == 0:
 	case args[0] == "serve":
@@ -185,15 +188,33 @@ func parseServices(args []string) (params.Services, error) {
 		fs := newFlagSet("services")
 		doorPath := fs.String("door", "", "the box door socket to answer")
 		dir := fs.String("dir", "", "the registry directory to publish into")
+		var carries carryFlags
+		fs.Var(&carries, "carry", "a carried socket, <listen>=<dial>; repeatable")
 		if err := fs.Parse(args[1:]); err != nil {
 			return params.Services{}, BadArgsError{Cmd: "services", Reason: err.Error()}
 		}
-		if *doorPath == "" || *dir == "" || fs.NArg() != 0 {
+		if *doorPath == "" || (*dir == "" && len(carries) == 0) || fs.NArg() != 0 {
 			return params.Services{}, badArgs
 		}
-		p.Relay, p.Door, p.Dir = true, *doorPath, *dir
+		p.Relay, p.Door, p.Dir, p.Carries = true, *doorPath, *dir, carries
 	default:
 		return params.Services{}, badArgs
 	}
 	return p, nil
+}
+
+// carryFlags collects repeated --carry values. Each is <listen>=<dial>, split
+// at the FIRST `=`: the listen side is a path dabs minted, which never carries
+// one, so a `=` in the host program's own path stays intact.
+type carryFlags []params.Carry
+
+func (c *carryFlags) String() string { return fmt.Sprint(*c) }
+
+func (c *carryFlags) Set(v string) error {
+	listen, dial, ok := strings.Cut(v, "=")
+	if !ok || listen == "" || dial == "" {
+		return fmt.Errorf("carry %q is not <listen>=<dial>", v)
+	}
+	*c = append(*c, params.Carry{Listen: listen, Dial: dial})
+	return nil
 }

@@ -71,15 +71,18 @@ const (
 // each published service's crossing open, and stands a host listener in front
 // of every service so anything on the host can dial it as a plain unix socket.
 type Relay struct {
-	// PingEvery, Idle, HeaderWait and StreamWait are the timings above, and
-	// OpeningCap is the limit above. They are read by the goroutines Serve
-	// starts, so they are set before Open and Serve are called, not after.
-	PingEvery, Idle, HeaderWait, StreamWait time.Duration
+	// PingEvery, Idle, HeaderWait, StreamWait and DialWait are the timings
+	// above, and OpeningCap is the limit above. They are read by the goroutines
+	// Serve starts, so they are set before Open and Serve are called, not after.
+	PingEvery, Idle, HeaderWait, StreamWait, DialWait time.Duration
 	// OpeningCap is how many crossings may be reading their opening line at one
 	// time; MaxOpeningCrossings by default.
 	OpeningCap int
+	// Carries are the host sockets this relay carries into the box, one
+	// listener each (see carry.go). Set before Open.
+	Carries []Carry
 
-	dir string // the registry directory, on the host
+	dir string // the registry directory, on the host; "" for a box that may not publish
 	log io.Writer
 
 	// opening bounds the crossings that have not yet said what they are.
@@ -95,6 +98,7 @@ type Relay struct {
 
 	mu        sync.Mutex
 	ln        net.Listener
+	carryLns  []net.Listener
 	lock      *os.File // the exclusive claim on this door, held for the relay's life
 	closed    bool
 	published map[string]*publication
@@ -102,21 +106,25 @@ type Relay struct {
 }
 
 // NewRelay returns a relay that publishes into dir and reports what it does to
-// log.
+// log. An empty dir is a box that may not publish: the door still answers, and
+// a PUBLISH crossing is refused by name.
 func NewRelay(dir string, log io.Writer) *Relay {
 	return &Relay{
 		PingEvery: DefaultPingEvery, Idle: DefaultIdle,
 		HeaderWait: DefaultHeaderWait, StreamWait: DefaultStreamWait,
+		DialWait:   DefaultDialWait,
 		OpeningCap: MaxOpeningCrossings,
 		dir:        dir, log: log,
 		published: map[string]*publication{},
 	}
 }
 
-// Run opens the door at doorPath and serves it until the relay is closed or the
-// listener fails. It is the whole relay process.
-func Run(doorPath, dir string, log io.Writer) error {
+// Run opens the door at doorPath, stands a listener for every carried socket,
+// and serves until the relay is closed or the listener fails. It is the whole
+// relay process.
+func Run(doorPath, dir string, carries []Carry, log io.Writer) error {
 	r := NewRelay(dir, log)
+	r.Carries = carries
 	if err := r.Open(doorPath); err != nil {
 		return err
 	}
@@ -136,8 +144,11 @@ func Run(doorPath, dir string, log io.Writer) error {
 func (r *Relay) Open(doorPath string) error {
 	// The registry is the host's alone: the sockets in it are the only route
 	// into a published service, so the directory is not other users' business.
-	if err := os.MkdirAll(r.dir, 0o700); err != nil {
-		return err
+	// A relay with no registry serves a box that may not publish.
+	if r.dir != "" {
+		if err := os.MkdirAll(r.dir, 0o700); err != nil {
+			return err
+		}
 	}
 	if err := os.MkdirAll(filepath.Dir(doorPath), 0o700); err != nil {
 		return err
@@ -153,18 +164,32 @@ func (r *Relay) Open(doorPath string) error {
 	if r.OpeningCap <= 0 {
 		r.OpeningCap = MaxOpeningCrossings
 	}
+	if r.DialWait <= 0 {
+		r.DialWait = DefaultDialWait
+	}
 	r.opening = make(chan struct{}, r.OpeningCap)
+	// The carried sockets bind before the door: the door's existence is what a
+	// boot waits on before bringing the box up, so when it appears, every
+	// listener a mount is established against is already standing.
+	carryLns, err := r.openCarries()
+	if err != nil {
+		_ = lock.Close()
+		return err
+	}
 	// A socket file left by a relay whose process is gone refuses the bind. Its
 	// owner is gone — the claim above just proved it — so the file is debris.
 	_ = os.Remove(doorPath)
 	ln, err := net.Listen("unix", doorPath)
 	if err != nil {
+		for _, l := range carryLns {
+			_ = l.Close()
+		}
 		_ = lock.Close()
 		return fmt.Errorf("door: open %s: %w", doorPath, err)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.ln, r.lock = ln, lock
+	r.ln, r.carryLns, r.lock = ln, carryLns, lock
 	return nil
 }
 
@@ -188,9 +213,13 @@ func claimDoor(doorPath string) (*os.File, error) {
 func (r *Relay) Serve() error {
 	r.mu.Lock()
 	ln := r.ln
+	carryLns := r.carryLns
 	r.mu.Unlock()
 	if ln == nil {
 		return errors.New("door: the relay was never opened")
+	}
+	for i, c := range r.Carries {
+		go r.serveCarry(c, carryLns[i])
 	}
 	// wait is where the current run of accept failures has backed off to; zero
 	// means accepting is healthy, and is what makes the report below one per
@@ -261,6 +290,7 @@ func (r *Relay) Close() error {
 	}
 	r.closed = true
 	ln, lock := r.ln, r.lock
+	carryLns := r.carryLns
 	pubs := make([]*publication, 0, len(r.published))
 	for _, p := range r.published {
 		pubs = append(pubs, p)
@@ -268,6 +298,9 @@ func (r *Relay) Close() error {
 	r.mu.Unlock()
 	for _, p := range pubs {
 		p.close()
+	}
+	for _, l := range carryLns {
+		_ = l.Close()
 	}
 	if lock != nil {
 		_ = lock.Close() // releases the door claim
@@ -319,6 +352,14 @@ func (r *Relay) cross(conn net.Conn) {
 // of the service, writes its descriptor, and holds the crossing open until
 // either side stops answering.
 func (r *Relay) publish(conn net.Conn, br *bufio.Reader, h Header) {
+	// A door without a registry belongs to a box that may not publish — it
+	// exists for the box's other crossings. The refusal is a decision and is
+	// BY NAME, so a denied publish reads as a denial, not a broken door.
+	if r.dir == "" {
+		_ = WriteReply(conn, errors.New("this box was not granted service publishing — the recipe that boots the box must say `publish: true`"))
+		_ = conn.Close()
+		return
+	}
 	name, typ, port, err := h.Publication()
 	if err != nil {
 		_ = WriteReply(conn, err)

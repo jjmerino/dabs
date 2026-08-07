@@ -208,11 +208,13 @@ function classify(hops: Hop[]) {
       continue;
     }
     if (h.kind === "tls-originate") { inWindow = false; originates = true; continue; }
-    if (inWindow) contentHops.push(h);
-    else if (h.handler?.onConnect) connectHops.push(h);
-    else if (h.handler?.onRequest || h.handler?.onResponse || h.handler?.onRequestChunk || h.handler?.onResponseChunk) {
-      // A hook with only content verbs and no window will never run. Say so at boot.
-      console.warn(`warning: proxy hook "${h.name}" is OUTSIDE a "tls: terminate" window — its content verbs will NOT run. Add "tls: terminate" before it to inspect content, or export onConnect to act on the connection.`);
+    if (inWindow) { contentHops.push(h); continue; }
+    if (h.handler?.onConnect) connectHops.push(h);
+    // The warning is about the CONTENT verbs, so it is owed to any hop outside a
+    // window that exports one — including one whose onConnect does run. Half a
+    // working handler is the case most likely to be mistaken for a whole one.
+    if (h.handler?.onRequest || h.handler?.onResponse || h.handler?.onRequestChunk || h.handler?.onResponseChunk) {
+      console.warn(`warning: proxy hook "${h.name}" is OUTSIDE a "tls: terminate" window — its content verbs will NOT run. Add "tls: terminate" before it to inspect content.`);
     }
   }
   return { contentHops, connectHops, terminates, originates, terminateDomains, failOpen };
@@ -238,6 +240,17 @@ function callHook<T>(p: Promise<T> | T): Promise<T> {
 // A refused connection names the hop that refused it and why, for the ledger.
 interface ConnectDecision { allowed: boolean; hop?: string; reason?: string; }
 
+// A reason is hook-supplied text landing in a host-side file, one line per
+// refused connection, and a box can retry as often as it likes. Cap it: a hook
+// must not be able to choose how many bytes a denial costs the host.
+const MAX_REASON_CHARS = 200;
+function clampReason(s: string): string {
+  return s.length <= MAX_REASON_CHARS ? s : s.slice(0, MAX_REASON_CHARS) + "…";
+}
+function refuse(hop: string, reason: string): ConnectDecision {
+  return { allowed: false, hop, reason: clampReason(reason) };
+}
+
 // askConnectHops walks the outside-the-window module hops in chain order
 // (box→internet) and returns the first DENY, or an allow if every hop passed.
 // The verdict is narrowing only: the caller has already applied the static
@@ -253,12 +266,12 @@ async function askConnectHops(connectHops: Hop[], host: string, port: number): P
     if (!fn) continue;
     let verdict: Json | void;
     try { verdict = await callHook(fn.call(hop.handler, { host, port }, {})); }
-    catch (e) { return { allowed: false, hop: hop.name, reason: `onConnect failed: ${(e as Error)?.message ?? e}` }; }
+    catch (e) { return refuse(hop.name, `onConnect failed: ${(e as Error)?.message ?? e}`); }
     if (verdict == null) continue;
-    if (typeof verdict !== "object") return { allowed: false, hop: hop.name, reason: `onConnect returned ${typeof verdict}, not a verdict` };
+    if (typeof verdict !== "object") return refuse(hop.name, `onConnect returned ${typeof verdict}, not a verdict`);
     if (verdict.action === "allow") continue;
-    if (verdict.action === "deny") return { allowed: false, hop: hop.name, reason: String(verdict.reason ?? "denied") };
-    return { allowed: false, hop: hop.name, reason: `onConnect returned an unknown action: ${JSON.stringify(verdict.action)}` };
+    if (verdict.action === "deny") return refuse(hop.name, String(verdict.reason ?? "denied"));
+    return refuse(hop.name, `onConnect returned an unknown action: ${JSON.stringify(verdict.action)}`);
   }
   return { allowed: true };
 }
@@ -662,15 +675,26 @@ export async function start(cfg: EngineConfig): Promise<{ stop: () => void }> {
     logEvent({ t: "connect", proto, host, port, verdict, ...(extra ?? {}) });
 
   // gateConnection is the whole gate for one dialed destination, both proxy
-  // paths: the engine-native static policy, then the module verdict. It writes
-  // the ledger line for a refusal, so "deny" (the recipe's own allow/deny) and
-  // "deny-module" (a hook's onConnect) stay distinguishable in the record.
-  async function gateConnection(host: string, port: number, proto: string): Promise<boolean> {
+  // paths: the engine-native static policy, then the module verdict. A refusal
+  // is recorded in the ledger and nowhere else — the same treatment a static
+  // deny gets, and the ledger keeps the two apart ("deny" is the recipe's own
+  // allow/deny, "deny-module" a hook's onConnect, with the hop and its reason).
+  //
+  // The client socket is PAUSED across the module verdict. This runs inside the
+  // accept handler's `once("data")`, so between that listener firing and the
+  // reader the next stage attaches, the socket is flowing with nothing listening
+  // — and an onConnect hook is allowed to be async, so the gap is a real await.
+  // Bytes emitted into it would be dropped and the request would never complete.
+  // Pausing holds them in the socket's own buffer; the resume lands in the same
+  // tick as the next stage, before any I/O callback can run.
+  async function gateConnection(client: net.Socket, host: string, port: number, proto: string): Promise<boolean> {
     if (!policyAllows(host)) { connLog(host, port, "deny", proto); return false; }
-    const decision = await askConnectHops(connectHops, host, port);
+    client.pause();
+    let decision: ConnectDecision;
+    try { decision = await askConnectHops(connectHops, host, port); }
+    finally { client.resume(); }
     if (decision.allowed) return true;
     connLog(host, port, "deny-module", proto, { hop: decision.hop, reason: decision.reason });
-    console.warn(`warning: refused ${host}:${port}: proxy hook "${decision.hop}" denied the connection (${decision.reason})`);
     return false;
   }
 
@@ -761,7 +785,7 @@ export async function start(cfg: EngineConfig): Promise<{ stop: () => void }> {
           // plaintext host, before any tunnel — for every protocol — and then
           // the module hops outside a tls window. A refused host never gets a
           // tunnel.
-          if (!(await gateConnection(host, port, "connect"))) { client.end("HTTP/1.1 403 Forbidden\r\n\r\n"); return; }
+          if (!(await gateConnection(client, host, port, "connect"))) { client.end("HTTP/1.1 403 Forbidden\r\n\r\n"); return; }
           client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
 
           const hello = await firstChunk(client);
@@ -815,7 +839,7 @@ export async function start(cfg: EngineConfig): Promise<{ stop: () => void }> {
           const url = new URL(httpReq[2]);
           const host = canonicalHost(url.hostname);
           const port = Number(url.port || 80);
-          if (!(await gateConnection(host, port, "http"))) { client.end("HTTP/1.1 403 Forbidden\r\n\r\n"); return; }
+          if (!(await gateConnection(client, host, port, "http"))) { client.end("HTTP/1.1 403 Forbidden\r\n\r\n"); return; }
           connLog(host, port, shouldInspect(host) ? "inspect" : "forward", "http");
           const hooks = shouldInspect(host) ? contentHops : [];
           await serveHTTP(client, hooks, hooks.length ? originates : true, host, port, "http", buf);

@@ -165,18 +165,19 @@ func parseLs(args []string) (params.Ls, error) {
 }
 
 // parseServices parses `dabs services [serve | relay --door <sock> [--dir
-// <dir>] [--carry <listen>=<dial>]...]`. Listing is the bare verb; `serve`
-// takes nothing else; `relay` answers one named box's door: --dir names the
-// registry a box that may publish gets (without it a publish is refused by
-// name), and each --carry is one host socket the relay carries into the box.
-// A relay with neither answers a door nothing needs, so at least one is
-// required.
+// <dir>] [--egress <sock>] [--carry <listen>=<dial>]...]`. Listing is the bare
+// verb; `serve` takes nothing else; `relay` answers one named box's door:
+// --dir names the registry a box that may publish gets (without it a publish
+// is refused by name), --egress names the proxy engine's socket EGRESS
+// crossings couple to, and each --carry is one host socket the relay carries
+// into the box. A relay with none of the three answers a door nothing needs,
+// so at least one is required.
 func parseServices(args []string) (params.Services, error) {
 	var p params.Services
 	if wantsHelp(args) {
 		return p, HelpRequestedError{helpText("services", newFlagSet("services"))}
 	}
-	badArgs := BadArgsError{Cmd: "services", Reason: "usage: services [serve | relay --door <sock> [--dir <dir>] [--carry <listen>=<dial>]...]"}
+	badArgs := BadArgsError{Cmd: "services", Reason: "usage: services [serve | relay --door <sock> [--dir <dir>] [--egress <sock>] [--carry <listen>=<dial>]...]"}
 	switch {
 	case len(args) == 0:
 	case args[0] == "serve":
@@ -188,15 +189,16 @@ func parseServices(args []string) (params.Services, error) {
 		fs := newFlagSet("services")
 		doorPath := fs.String("door", "", "the box door socket to answer")
 		dir := fs.String("dir", "", "the registry directory to publish into")
+		egress := fs.String("egress", "", "the proxy engine socket EGRESS crossings couple to")
 		var carries carryFlags
 		fs.Var(&carries, "carry", "a carried socket, <listen>=<dial>; repeatable")
 		if err := fs.Parse(args[1:]); err != nil {
 			return params.Services{}, BadArgsError{Cmd: "services", Reason: err.Error()}
 		}
-		if *doorPath == "" || (*dir == "" && len(carries) == 0) || fs.NArg() != 0 {
+		if *doorPath == "" || (*dir == "" && *egress == "" && len(carries) == 0) || fs.NArg() != 0 {
 			return params.Services{}, badArgs
 		}
-		p.Relay, p.Door, p.Dir, p.Carries = true, *doorPath, *dir, carries
+		p.Relay, p.Door, p.Dir, p.Egress, p.Carries = true, *doorPath, *dir, *egress, carries
 	default:
 		return params.Services{}, badArgs
 	}

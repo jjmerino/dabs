@@ -753,22 +753,59 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID, tip string, rec re
 			mounts = append(mounts, sandbox.Mount{Host: rs.origin, Path: boxPath, RO: s.RO})
 		}
 	}
+	// A non-empty proxies chain makes the engine the box's only way out: start
+	// it, mount its CA, point the box's HTTP_PROXY at the in-box forwarder. The
+	// engine runs for the box's lifetime; its PID/dir are recorded on the box
+	// node below so the box's down path (teardown or `dabs rm`) reaps it. The
+	// engine's socket is never bound into the box — the box's egress crossings
+	// ride its door, and the relay dials the engine per crossing.
+	// Egress is chosen by the recipe's mode (default open = full outbound): open
+	// leaves the box's network alone, none cuts it entirely, proxy routes it
+	// through the recipe's proxies chain (the driver enforces none/proxy). The
+	// recipe validator already guaranteed the mode↔chain consistency.
+	env := rec.Env
+	egressMode, egressSock, forwarderBin := "", "", ""
+	proxyPID, proxyDir := 0, ""
+	switch rec.EgressMode() {
+	case recipe.EgressProxy:
+		p, perr := proxy.Provision(drv, recipeName, rec.Egress, rec.Env, r.forwarder, r.expandPath)
+		if perr != nil {
+			return "", perr
+		}
+		env = p.Env
+		mounts = append(mounts, p.Mounts...)
+		egressMode, egressSock, forwarderBin = sandbox.EgressProxy, p.Socket, p.ForwarderBin
+		proxyPID, proxyDir = p.PID, p.Dir
+		// The engine is live now but the box node that carries its PID/dir is not
+		// written until the box is up. If any step between here and writeNode fails
+		// (drv.Up, the smoke check, writeNode itself), nothing else can reap the
+		// engine — no node records it. Reap it on a failed return.
+		defer func() {
+			if err != nil {
+				proxy.Reap(proxyPID, proxyDir)
+			}
+		}()
+	case recipe.EgressNone:
+		egressMode = sandbox.EgressNone // driver cuts the box's network
+	case recipe.EgressOpen:
+		egressMode = sandbox.EgressOpen // full outbound; nothing to provision
+	}
 	// Everything crossing this box's boundary is answered by ONE host-side
 	// relay, whose life is the node's, started before the box exists so the box
-	// never dials into a gap. It answers two kinds of crossing. The box's DOOR —
-	// the one dabs-owned socket at door.BoxPath — is the publishing grant
-	// (`publish: true`): a box without the grant has no door, which is what lets
-	// the forwarder in it refuse a publish BY NAME instead of failing on a
-	// missing file, and the registry the relay publishes into is the box node's
-	// own tmp space, so a service cannot outlive the box that published it. The
-	// recipe's declared sockets are CARRIED: what the driver binds into the box
-	// is a socket the relay owns, and the relay dials the host program's own
-	// socket fresh for every connection — so a host listener that restarts is
-	// reached again on the next dial, instead of one dial in the gap finishing
-	// the mount for the box's life.
+	// never dials into a gap. The box's DOOR — the one dabs-owned socket at
+	// door.BoxPath — carries the crossings dabs's own machinery opens: the
+	// publishing a `publish: true` recipe grants (a box without the grant is
+	// refused BY NAME), and a proxy box's egress, which the relay couples to the
+	// engine's socket one crossing at a time. The registry the relay publishes
+	// into is the box node's own tmp space, so a service cannot outlive the box
+	// that published it. The recipe's declared sockets are CARRIED: what the
+	// driver binds into the box is a socket the relay owns, and the relay dials
+	// the host program's own socket fresh for every connection — so a host
+	// listener that restarts is reached again on the next dial, instead of one
+	// dial in the gap finishing the mount for the box's life.
 	relayPID := 0
 	boxDoor := sandbox.Mount{}
-	if rec.Publish || len(sockets) > 0 {
+	if rec.Publish || egressSock != "" || len(sockets) > 0 {
 		svcDir := ""
 		if rec.Publish {
 			dir, derr := r.resolveServicesDir(boxID)
@@ -807,7 +844,7 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID, tip string, rec re
 			carries[i] = door.Carry{Listen: listen, Dial: s.Host}
 			carried[i] = sandbox.Mount{Host: listen, Path: s.Path}
 		}
-		pid, derr := r.relay(doorPath, svcDir, logPath, carries)
+		pid, derr := r.relay(doorPath, svcDir, logPath, egressSock, carries)
 		if derr != nil {
 			return "", fmt.Errorf("recipe %q: %w", recipeName, derr)
 		}
@@ -820,44 +857,9 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID, tip string, rec re
 				reapRelay(relayPID)
 			}
 		}()
-		if rec.Publish {
+		if rec.Publish || egressSock != "" {
 			boxDoor = sandbox.Mount{Host: doorPath, Path: door.BoxPath}
 		}
-	}
-	// A non-empty proxies chain makes the engine's socket the box's only way out:
-	// start it, mount its CA, point the box's HTTP_PROXY at the in-box forwarder.
-	// The engine runs for the box's lifetime; its PID/dir are recorded on the box
-	// node below so the box's down path (teardown or `dabs rm`) reaps it.
-	// Egress is chosen by the recipe's mode (default open = full outbound): open
-	// leaves the box's network alone, none cuts it entirely, proxy routes it
-	// through the recipe's proxies chain (the driver enforces none/proxy). The
-	// recipe validator already guaranteed the mode↔chain consistency.
-	env := rec.Env
-	egressMode, proxySock, forwarderBin := "", "", ""
-	proxyPID, proxyDir := 0, ""
-	switch rec.EgressMode() {
-	case recipe.EgressProxy:
-		p, perr := proxy.Provision(drv, recipeName, rec.Egress, rec.Env, r.forwarder, r.expandPath)
-		if perr != nil {
-			return "", perr
-		}
-		env = p.Env
-		mounts = append(mounts, p.Mounts...)
-		egressMode, proxySock, forwarderBin = sandbox.EgressProxy, p.Socket, p.ForwarderBin
-		proxyPID, proxyDir = p.PID, p.Dir
-		// The engine is live now but the box node that carries its PID/dir is not
-		// written until the box is up. If any step between here and writeNode fails
-		// (drv.Up, the smoke check, writeNode itself), nothing else can reap the
-		// engine — no node records it. Reap it on a failed return.
-		defer func() {
-			if err != nil {
-				proxy.Reap(proxyPID, proxyDir)
-			}
-		}()
-	case recipe.EgressNone:
-		egressMode = sandbox.EgressNone // driver cuts the box's network
-	case recipe.EgressOpen:
-		egressMode = sandbox.EgressOpen // full outbound; nothing to provision
 	}
 	sortMountsByDepth(mounts)
 
@@ -883,7 +885,7 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID, tip string, rec re
 	if boxDoor.Path != "" {
 		sockets = append(sockets, boxDoor)
 	}
-	instance, err = drv.Up(sandbox.Spec{Name: image, Workdir: workdir, Env: env, Mounts: mounts, Sockets: sockets, Egress: egressMode, ProxySock: proxySock, ForwarderBin: forwarderBin})
+	instance, err = drv.Up(sandbox.Spec{Name: image, Workdir: workdir, Env: env, Mounts: mounts, Sockets: sockets, Egress: egressMode, ForwarderBin: forwarderBin})
 	if err != nil {
 		return "", err
 	}
@@ -1973,14 +1975,13 @@ func checkBoxPath(recipeName, kind, origin, boxPath string) error {
 }
 
 // reservedBoxPaths are the paths dabs binds into a box ITSELF, whatever the
-// recipe says: the door a box that may publish gets, and the egress socket,
-// forwarder binary, CA directory and detached-log directory a proxied or
-// detached box gets. A recipe source is bound before them and is simply
-// overridden; a socket is bound after, and would mask dabs's own door with
-// nothing failing until a program inside the box reached for it.
+// recipe says: the door of a box with any crossing, and the forwarder binary,
+// CA directory and detached-log directory a proxied or detached box gets. A
+// recipe source is bound before them and is simply overridden; a socket is
+// bound after, and would mask dabs's own door with nothing failing until a
+// program inside the box reached for it.
 var reservedBoxPaths = []string{
 	door.BoxPath,
-	forwarder.SockPath,
 	forwarder.ForwardPath,
 	proxy.CABoxDir,
 	sandbox.DetachedLogDir,

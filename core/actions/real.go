@@ -47,9 +47,10 @@ func (r Real) WithConfirm(fn func(string) bool) Real {
 // WithRelay returns a copy of r that starts a box's door relay with fn
 // instead of spawning one, so a test can drive a boot without a process of its
 // own. fn is handed the door socket, the registry directory ("" for a box that
-// may not publish), the log path and the carried sockets, and answers with the
-// pid to record on the box node.
-func (r Real) WithRelay(fn func(doorPath, dir, logPath string, carries []door.Carry) (int, error)) Real {
+// may not publish), the log path, the egress engine's socket ("" for a box
+// with no proxy egress) and the carried sockets, and answers with the pid to
+// record on the box node.
+func (r Real) WithRelay(fn func(doorPath, dir, logPath, egress string, carries []door.Carry) (int, error)) Real {
 	r.relay = fn
 	return r
 }

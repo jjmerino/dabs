@@ -9,8 +9,6 @@ import (
 	"os"
 	"strings"
 	"time"
-
-	"github.com/jjmerino/dabs/egressforwarder/forwarder"
 )
 
 // The box side of a published service. It dials the door and holds ONE crossing
@@ -202,7 +200,7 @@ func (p Publisher) carry(id string, port int) {
 		return
 	}
 	defer up.Close()
-	forwarder.Couple(bufferConn(conn, br), up)
+	Couple(bufferConn(conn, br), up)
 }
 
 // say reports one line about what the publisher is doing.

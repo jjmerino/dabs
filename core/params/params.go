@@ -175,13 +175,16 @@ type Info struct {
 // interrupted. Relay flips it to answering ONE box's door, at Door — the host
 // side of the door, which dabs starts for itself when it boots a box with any
 // crossing to answer. Dir is the registry directory a box that may publish
-// gets; empty, the relay refuses a publish by name. Carries are the host
-// sockets the relay carries into the box, one listener each.
+// gets; empty, the relay refuses a publish by name. Egress is the proxy
+// engine's socket the relay couples EGRESS crossings to; empty, the door
+// carries no egress. Carries are the host sockets the relay carries into the
+// box, one listener each.
 type Services struct {
 	Serve   bool
 	Relay   bool
 	Door    string
 	Dir     string
+	Egress  string
 	Carries []Carry
 }
 

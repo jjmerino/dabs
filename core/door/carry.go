@@ -5,8 +5,6 @@ import (
 	"net"
 	"os"
 	"time"
-
-	"github.com/jjmerino/dabs/egressforwarder/forwarder"
 )
 
 // A carried socket is a recipe `socket:` as the box receives it. The box side
@@ -105,7 +103,7 @@ func (r *Relay) carry(c Carry, conn net.Conn) {
 		return
 	}
 	defer host.Close()
-	forwarder.Couple(conn, host)
+	Couple(conn, host)
 }
 
 // dialHeld dials a host socket until it answers or DialWait runs out.

@@ -490,6 +490,7 @@ func TestServicesParsesItsSubcommands(t *testing.T) {
 			wantRelay: true, wantDir: "/n/services",
 			wantCarries: []params.Carry{{Listen: "/n/carry0.sock", Dial: "/run/a.sock"}, {Listen: "/n/carry1.sock", Dial: "/run/dir=name/b.sock"}}},
 		{args: []string{"relay", "--door", "/n/door.sock", "--carry", "no-separator"}, wantErr: true},
+		{args: []string{"relay", "--door", "/n/door.sock", "--egress", "/n/engine.sock"}, wantRelay: true},
 	} {
 		f := &fakeActions{}
 		err := New(f).Run(append([]string{"services"}, tc.args...))
@@ -512,8 +513,21 @@ func TestServicesParsesItsSubcommands(t *testing.T) {
 			if !reflect.DeepEqual(f.services[0].Carries, tc.wantCarries) {
 				t.Errorf("services %v carries = %+v, want %+v", tc.args, f.services[0].Carries, tc.wantCarries)
 			}
+			if wantEgress := flagValue(tc.args, "--egress"); f.services[0].Egress != wantEgress {
+				t.Errorf("services %v egress = %q, want %q", tc.args, f.services[0].Egress, wantEgress)
+			}
 		}
 	}
+}
+
+// flagValue returns the value following a flag in args, or "".
+func flagValue(args []string, flag string) string {
+	for i, a := range args {
+		if a == flag && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	return ""
 }
 
 // `dabs version` must answer from the binary alone: main serves it with a nil

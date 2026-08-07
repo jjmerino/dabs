@@ -166,10 +166,11 @@ type fakeData struct {
 }
 
 // relayCall is one door relay a boot started: the socket it answers, the
-// registry it publishes into, and the sockets it carries.
+// registry it publishes into, the egress engine socket it couples EGRESS
+// crossings to, and the sockets it carries.
 type relayCall struct {
-	door, dir, log string
-	carries        []door.Carry
+	door, dir, log, egress string
+	carries                []door.Carry
 }
 
 // reapRelay stands in for signalling a relay's process group: it records the
@@ -178,11 +179,11 @@ func (f *fakeData) reapRelay(pid int) { f.reaped = append(f.reaped, pid) }
 
 // startRelay stands in for spawning a relay process: it records what was asked
 // for and answers with a pid, so a boot can be driven without a host process.
-func (f *fakeData) startRelay(doorPath, dir, logPath string, carries []door.Carry) (int, error) {
+func (f *fakeData) startRelay(doorPath, dir, logPath, egress string, carries []door.Carry) (int, error) {
 	if f.relayErr != nil {
 		return 0, f.relayErr
 	}
-	f.relays = append(f.relays, relayCall{door: doorPath, dir: dir, log: logPath, carries: carries})
+	f.relays = append(f.relays, relayCall{door: doorPath, dir: dir, log: logPath, egress: egress, carries: carries})
 	return 4000 + len(f.relays), nil
 }
 
@@ -1107,10 +1108,9 @@ func TestRecipeSocketNodeIDExpandsInBoxPath(t *testing.T) {
 // failing until a program in the box reached for it. Refuse by name instead.
 func TestRecipeSocketCannotMaskDabsOwnPaths(t *testing.T) {
 	for _, boxPath := range []string{
-		"/run/dabs/door.sock",   // exactly the services dir every box gets
+		"/run/dabs/door.sock",   // the box door itself
 		"/run/dabs/door.sock/x", // inside it
 		"/run/dabs",             // the directory holding all of them
-		"/run/dabs/egress.sock", // the proxy's socket
 		"/run/dabs/forward",     // the forwarder binary
 		"/run/dabs/log",         // the detached-log dir
 		"/run/dabs/pub",         // the proxy CA directory

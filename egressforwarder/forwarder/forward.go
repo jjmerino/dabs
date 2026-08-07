@@ -1,13 +1,13 @@
 // Package forwarder is the in-box half of proxy egress: a single-purpose static
 // binary (built from cmd/forward, carried by dabs as embedded bytes) plus the
-// contract the drivers use to mount and invoke it. A proxy box's only way out is
-// a host proxy socket mounted into its filesystem, but proxy-speaking programs
-// want a TCP address in HTTP_PROXY — so the mounted forwarder listens on
-// loopback, pipes each connection into the socket, and (given a command after
-// `--`) execs the box's real command as its child AFTER the listener is bound,
-// so the command can never race a proxy that is not yet there. It is plain
-// plumbing: no policy, no parsing of what flows through, and — unlike a mounted
-// dabs — nothing but the forwarder.
+// contract the drivers use to mount and invoke it. A proxy box's only way out
+// is its door, but proxy-speaking programs want a TCP address in HTTP_PROXY —
+// so the mounted forwarder listens on loopback and opens one egress crossing on
+// the door per connection, and (given a command after `--`) execs the box's
+// real command as its child AFTER the listener is bound, so the command can
+// never race a proxy that is not yet there. It is plain plumbing: no policy, no
+// parsing of what flows through, and — unlike a mounted dabs — nothing but the
+// forwarder.
 package forwarder
 
 import (
@@ -20,27 +20,28 @@ import (
 	"path/filepath"
 	"strconv"
 	"syscall"
+
+	"github.com/jjmerino/dabs/core/door"
 )
 
 // The in-box contract, identical in every proxy box whatever the host looks
-// like: the host proxy's unix socket lands at SockPath, the forwarder binary at
-// ForwardPath, and proxy-speaking programs are pointed at 127.0.0.1:Port. One
-// fixed port keeps the env vars predictable; an image that serves that port
+// like: the box door carries the egress crossings, the forwarder binary lands
+// at ForwardPath, and proxy-speaking programs are pointed at 127.0.0.1:Port.
+// One fixed port keeps the env vars predictable; an image that serves that port
 // itself on loopback cannot use proxy egress. The forwarder is a SEPARATE,
 // single-purpose static binary (cmd/forward) — dabs carries it as embedded
 // bytes and drops a copy into the box, so the box never gets the dabs CLI.
 const (
 	Port        = 18080
-	SockPath    = "/run/dabs/egress.sock"
 	ForwardPath = "/run/dabs/forward"
 )
 
 // WrapCommand rewrites a box's command so the forwarder brackets it: the
 // mounted forwarder binary binds the loopback listener, THEN runs the original
-// argv as its child, serving the proxy bridge for exactly as long as the
-// command lives.
+// argv as its child, serving the proxy bridge over the box door for exactly as
+// long as the command lives.
 func WrapCommand(argv []string) []string {
-	return append([]string{ForwardPath, SockPath, strconv.Itoa(Port), "--"}, argv...)
+	return append([]string{ForwardPath, door.BoxPath, strconv.Itoa(Port), "--"}, argv...)
 }
 
 // Materialize writes a forwarder binary into dir as an executable and returns
@@ -50,8 +51,9 @@ func WrapCommand(argv []string) []string {
 // fails here rather than booting an open box.
 //
 // What a supplied binary must satisfy is the forwarder PROTOCOL — invoked as
-// `<bin> <sockPath> <port> -- <argv...>`, binding loopback before exec'ing the
-// argv, as cmd/forward implements it — not any particular bytes. It may be a
+// `<bin> <doorPath> <port> -- <argv...>`, binding loopback before exec'ing the
+// argv and opening one DABS-DOOR/1 EGRESS crossing on the door per proxied
+// connection, as cmd/forward implements it — not any particular bytes. It may be a
 // superset with extra behavior; nothing compares it to the embedded copy or
 // pins its version, and matching the box's architecture is the supplier's
 // business, exactly as it is for the embed.
@@ -89,16 +91,17 @@ func forwarderBytes(supplied string) ([]byte, error) {
 	return b, nil
 }
 
-// Run binds 127.0.0.1:port, serves the bridge to the unix socket at sockPath,
-// and — when argv is non-empty — runs argv as a child with inherited stdio,
-// returning its exit code once it finishes. With no argv it serves forever.
-func Run(sockPath string, port int, argv []string) (int, error) {
+// Run binds 127.0.0.1:port, serves the bridge to the box door at doorPath —
+// one egress crossing per connection — and, when argv is non-empty, runs argv
+// as a child with inherited stdio, returning its exit code once it finishes.
+// With no argv it serves forever.
+func Run(doorPath string, port int, argv []string) (int, error) {
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
 		return 1, err
 	}
 	defer ln.Close()
-	go serve(ln, sockPath)
+	go serve(ln, doorPath)
 	if len(argv) == 0 {
 		select {} // serve until killed
 	}
@@ -137,23 +140,25 @@ func Run(sockPath string, port int, argv []string) (int, error) {
 }
 
 // serve runs the accept loop until the listener fails.
-func serve(ln net.Listener, sockPath string) {
+func serve(ln net.Listener, doorPath string) {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
 			return
 		}
-		go pipe(conn, sockPath)
+		go pipe(conn, doorPath)
 	}
 }
 
-// pipe couples one TCP connection to one fresh unix connection.
-func pipe(conn net.Conn, sockPath string) {
+// pipe couples one TCP connection to one fresh egress crossing — its own dial
+// on the door, never a stream on a shared connection, so what identifies this
+// caller stays attached to the connection that carries it.
+func pipe(conn net.Conn, doorPath string) {
 	defer conn.Close()
-	sock, err := net.Dial("unix", sockPath)
+	sock, err := door.DialEgress(doorPath)
 	if err != nil {
 		return
 	}
 	defer sock.Close()
-	Couple(conn, sock)
+	door.Couple(conn, sock)
 }

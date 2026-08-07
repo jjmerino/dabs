@@ -53,7 +53,7 @@ func (r Real) Services(p params.Services) error {
 		for i, c := range p.Carries {
 			carries[i] = door.Carry{Listen: c.Listen, Dial: c.Dial}
 		}
-		return door.Run(p.Door, p.Dir, carries, os.Stderr)
+		return door.Run(p.Door, p.Dir, p.Egress, carries, os.Stderr)
 	case p.Serve:
 		return r.serveServices()
 	}

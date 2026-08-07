@@ -11,8 +11,6 @@ import (
 	"sync"
 	"syscall"
 	"time"
-
-	"github.com/jjmerino/dabs/egressforwarder/forwarder"
 )
 
 // The relay is the HOST side of one box's door: it owns the listening socket
@@ -81,6 +79,9 @@ type Relay struct {
 	// Carries are the host sockets this relay carries into the box, one
 	// listener each (see carry.go). Set before Open.
 	Carries []Carry
+	// Egress is the host proxy's socket an EGRESS crossing is coupled to, ""
+	// for a box with no proxy egress (see egress.go). Set before Open.
+	Egress string
 
 	dir string // the registry directory, on the host; "" for a box that may not publish
 	log io.Writer
@@ -122,9 +123,10 @@ func NewRelay(dir string, log io.Writer) *Relay {
 // Run opens the door at doorPath, stands a listener for every carried socket,
 // and serves until the relay is closed or the listener fails. It is the whole
 // relay process.
-func Run(doorPath, dir string, carries []Carry, log io.Writer) error {
+func Run(doorPath, dir, egress string, carries []Carry, log io.Writer) error {
 	r := NewRelay(dir, log)
 	r.Carries = carries
+	r.Egress = egress
 	if err := r.Open(doorPath); err != nil {
 		return err
 	}
@@ -342,6 +344,8 @@ func (r *Relay) cross(conn net.Conn) {
 		r.publish(conn, br, h)
 	case VerbStream:
 		r.stream(conn, br, h)
+	case VerbEgress:
+		r.egress(conn, br, h)
 	default:
 		_ = WriteReply(conn, fmt.Errorf("door: %q is not a verb this door knows", h.Verb))
 		_ = conn.Close()
@@ -458,7 +462,7 @@ func (r *Relay) stream(conn net.Conn, br *bufio.Reader, h Header) {
 	_ = conn.SetDeadline(time.Time{})
 	defer conn.Close()
 	defer client.Close()
-	forwarder.Couple(client, bufferConn(conn, br))
+	Couple(client, bufferConn(conn, br))
 }
 
 // mintStreamID returns an id no live crossing is using. Ids are minted here, so

@@ -92,15 +92,12 @@ func (d Driver) Up(spec sandbox.Spec) (string, error) {
 	// env and image WORKDIR, so Run/Exec need not re-pass them.
 	keepAlive := []string{"sleep", "infinity"}
 	if spec.Egress == sandbox.EgressProxy {
-		// The host proxy's socket and the single-purpose forwarder binary land
-		// read-only at the forwarder's fixed paths, and the forwarder brackets
-		// the keep-alive so it serves 127.0.0.1 for the container's whole life.
-		// The forwarder is a static linux binary dabs materialized from its
-		// embedded copy. The socket is a FILE mount, capturing its inode at run
-		// time: a proxy that recreates its socket orphans this container's mount,
-		// and the box needs a re-up.
+		// The single-purpose forwarder binary lands read-only at its fixed path,
+		// and brackets the keep-alive so it serves 127.0.0.1 for the container's
+		// whole life. The forwarder is a static linux binary dabs materialized
+		// from its embedded copy; the bytes leave over the box door, which rides
+		// Sockets above like any other.
 		args = append(args,
-			"--mount", clidriver.MountArg(sandbox.Mount{Host: spec.ProxySock, Path: forwarder.SockPath, RO: true}),
 			"--mount", clidriver.MountArg(sandbox.Mount{Host: spec.ForwarderBin, Path: forwarder.ForwardPath, RO: true}))
 		keepAlive = forwarder.WrapCommand(keepAlive)
 	}

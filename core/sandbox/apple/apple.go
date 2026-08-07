@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"unsafe"
 
+	"github.com/jjmerino/dabs/core/door"
 	"github.com/jjmerino/dabs/core/sandbox"
 	"github.com/jjmerino/dabs/core/sandbox/clidriver"
 	"github.com/jjmerino/dabs/core/sandbox/execx"
@@ -90,14 +91,12 @@ func (d Driver) Up(spec sandbox.Spec) (string, error) {
 		// A host binary cannot run in the linux micro-VM, so unlike the linux
 		// drivers dabs does not mount the forwarder in — the IMAGE must carry a
 		// linux forwarder at forwarder.ForwardPath, and the recipe's Dockerfile
-		// is where it comes from. Probed before the real boot so a missing
-		// forwarder is an instruction, not a dead box. The socket rides its own
-		// --volume: `container` relays a socket FILE volume across the VM (the
-		// --ssh mechanism); a socket inside a directory bind is dead virtiofs.
+		// is where it comes from. Probed before the real boot so a missing or
+		// door-ignorant forwarder is an instruction, not a dead box. The bytes
+		// leave over the box door, which rides Sockets above like any other.
 		if err := checkImageCarriesForwarder(spec.Name); err != nil {
 			return "", err
 		}
-		args = append(args, "--volume", spec.ProxySock+":"+forwarder.SockPath)
 		keepAlive = forwarder.WrapCommand(keepAlive)
 	}
 	args = append(args, imageName(spec.Name))
@@ -109,27 +108,29 @@ func (d Driver) Up(spec sandbox.Spec) (string, error) {
 }
 
 // checkImageCarriesForwarder boots a throwaway container to run the image's
-// own forwarder binary with no arguments: present, it prints its usage;
-// absent, the run fails — and the error hands the user the Dockerfile lines
-// that fix it.
+// own forwarder binary with no arguments: one that can serve this box prints a
+// usage naming the door protocol it speaks. A missing binary fails the run,
+// and one that predates the door prints a usage without the banner — both are
+// refused with the Dockerfile lines that fix it, because either way the box
+// would boot with an egress that reaches nothing.
 func checkImageCarriesForwarder(name string) error {
 	out, err := exec.Command("container", "run", "--rm", imageName(name), forwarder.ForwardPath).CombinedOutput()
-	if strings.Contains(string(out), "usage: forward ") {
+	if strings.Contains(string(out), "usage: forward ") && strings.Contains(string(out), door.Banner) {
 		return nil
 	}
 	// The probe output is mostly the CLI's progress bars; the tail line names
-	// the actual failure (a missing executable).
+	// the actual failure (a missing executable, or an old usage line).
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 	detail := lines[len(lines)-1]
 	if err == nil {
-		err = errors.New("unexpected probe output")
+		err = errors.New("the image's forwarder does not speak " + door.Banner)
 	}
-	return fmt.Errorf("apple: proxy egress needs the image to carry a linux forwarder at %s (it bridges HTTP_PROXY to the proxy socket; a host binary cannot run in the micro-VM) — add to the image's Dockerfile:\n\n"+
+	return fmt.Errorf("apple: proxy egress needs the image to carry a linux forwarder at %s that speaks %s (it bridges HTTP_PROXY to the box door; a host binary cannot run in the micro-VM) — add to the image's Dockerfile:\n\n"+
 		"  FROM golang:alpine AS fwd\n"+
 		"  RUN CGO_ENABLED=0 go install github.com/jjmerino/dabs/egressforwarder/cmd/forward@latest\n\n"+
 		"and in the final stage:\n\n"+
 		"  COPY --from=fwd /go/bin/forward %s\n\n(probe: %v: %s)",
-		forwarder.ForwardPath, forwarder.ForwardPath, err, detail)
+		forwarder.ForwardPath, door.Banner, forwarder.ForwardPath, err, detail)
 }
 
 // HasImage reports whether name's image is already built.

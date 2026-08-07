@@ -32,9 +32,10 @@ const (
 
 // Provisioned is what a provisioned proxy hands back to the box lifecycle. It
 // exposes only scalars the caller needs, so the lifecycle never depends on the
-// engine type: Env and Mounts feed the driver Spec; Socket is Spec.ProxySock;
-// ForwarderBin is Spec.ForwarderBin; PID/Dir are recorded on the box node so a
-// later Reap (from any dabs process) can stop the engine.
+// engine type: Env and Mounts feed the driver Spec; Socket is what the box's
+// relay dials, one EGRESS crossing at a time; ForwarderBin is
+// Spec.ForwarderBin; PID/Dir are recorded on the box node so a later Reap
+// (from any dabs process) can stop the engine.
 type Provisioned struct {
 	Env          map[string]string
 	Mounts       []sandbox.Mount

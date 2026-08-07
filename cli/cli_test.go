@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"flag"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -460,15 +461,18 @@ func TestRecipesNameWithoutPrintRejected(t *testing.T) {
 }
 
 // CONTRACT: `services` lists, `services serve` serves, and `services relay`
-// answers ONE box's door — which needs BOTH paths, since a relay with no door
-// or no registry would run and serve nothing. Anything else is a usage error
-// rather than a silently-ignored argument.
+// answers ONE box's door — which needs the door path plus something to answer
+// FOR: a registry (the box may publish), a carried socket, or both. A relay
+// with a door alone would run and serve nothing. Anything else is a usage
+// error rather than a silently-ignored argument.
 func TestServicesParsesItsSubcommands(t *testing.T) {
 	for _, tc := range []struct {
-		args      []string
-		wantServe bool
-		wantRelay bool
-		wantErr   bool
+		args        []string
+		wantServe   bool
+		wantRelay   bool
+		wantDir     string
+		wantCarries []params.Carry
+		wantErr     bool
 	}{
 		{args: nil},
 		{args: []string{"serve"}, wantServe: true},
@@ -477,8 +481,16 @@ func TestServicesParsesItsSubcommands(t *testing.T) {
 		{args: []string{"relay"}, wantErr: true},
 		{args: []string{"relay", "--door", "/n/door.sock"}, wantErr: true},
 		{args: []string{"relay", "--dir", "/n/services"}, wantErr: true},
-		{args: []string{"relay", "--door", "/n/door.sock", "--dir", "/n/services"}, wantRelay: true},
+		{args: []string{"relay", "--door", "/n/door.sock", "--dir", "/n/services"}, wantRelay: true, wantDir: "/n/services"},
 		{args: []string{"relay", "--door", "/n/door.sock", "--dir", "/n/services", "extra"}, wantErr: true},
+		{args: []string{"relay", "--door", "/n/door.sock", "--carry", "/n/carry0.sock=/run/app.sock"},
+			wantRelay: true, wantCarries: []params.Carry{{Listen: "/n/carry0.sock", Dial: "/run/app.sock"}}},
+		{args: []string{"relay", "--door", "/n/door.sock", "--dir", "/n/services",
+			"--carry", "/n/carry0.sock=/run/a.sock", "--carry", "/n/carry1.sock=/run/dir=name/b.sock"},
+			wantRelay: true, wantDir: "/n/services",
+			wantCarries: []params.Carry{{Listen: "/n/carry0.sock", Dial: "/run/a.sock"}, {Listen: "/n/carry1.sock", Dial: "/run/dir=name/b.sock"}}},
+		{args: []string{"relay", "--door", "/n/door.sock", "--carry", "no-separator"}, wantErr: true},
+		{args: []string{"relay", "--door", "/n/door.sock", "--egress", "/n/engine.sock"}, wantRelay: true},
 	} {
 		f := &fakeActions{}
 		err := New(f).Run(append([]string{"services"}, tc.args...))
@@ -495,11 +507,27 @@ func TestServicesParsesItsSubcommands(t *testing.T) {
 			t.Errorf("services %v → %+v, want Serve=%v Relay=%v", tc.args, f.services, tc.wantServe, tc.wantRelay)
 		}
 		if tc.wantRelay {
-			if f.services[0].Door != "/n/door.sock" || f.services[0].Dir != "/n/services" {
+			if f.services[0].Door != "/n/door.sock" || f.services[0].Dir != tc.wantDir {
 				t.Errorf("services %v → %+v, want the door and the registry it was given", tc.args, f.services[0])
+			}
+			if !reflect.DeepEqual(f.services[0].Carries, tc.wantCarries) {
+				t.Errorf("services %v carries = %+v, want %+v", tc.args, f.services[0].Carries, tc.wantCarries)
+			}
+			if wantEgress := flagValue(tc.args, "--egress"); f.services[0].Egress != wantEgress {
+				t.Errorf("services %v egress = %q, want %q", tc.args, f.services[0].Egress, wantEgress)
 			}
 		}
 	}
+}
+
+// flagValue returns the value following a flag in args, or "".
+func flagValue(args []string, flag string) string {
+	for i, a := range args {
+		if a == flag && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	return ""
 }
 
 // `dabs version` must answer from the binary alone: main serves it with a nil

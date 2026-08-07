@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 )
@@ -60,6 +61,39 @@ func serveOnUnixSocket(t *testing.T, path, body string) *int32 {
 		os.Remove(path)
 	})
 	return &hits
+}
+
+// serveStoppable is serveOnUnixSocket with the teardown in the test's hands:
+// stop closes the listener and removes its file NOW, the way a host program
+// dying does, so a test can stand a gap and then a second life on one path.
+func serveStoppable(t *testing.T, path, body string) (*int32, func()) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.Remove(path)
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatalf("listen on %s: %v", path, err)
+	}
+	if err := os.Chmod(path, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	var hits int32
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		fmt.Fprint(w, body)
+	})}
+	go srv.Serve(ln)
+	var once sync.Once
+	stop := func() {
+		once.Do(func() {
+			srv.Close()
+			os.Remove(path)
+		})
+	}
+	t.Cleanup(stop)
+	return &hits, stop
 }
 
 // CONTRACT: a socket a recipe declares is a live door. The box gets it at the
@@ -126,5 +160,57 @@ func TestSocketRefusalsLeaveNoBox(t *testing.T) {
 				t.Errorf("a refused boot left a box behind:\n%s", listing)
 			}
 		})
+	}
+}
+
+// CONTRACT: a host program restarting does not finish the box's socket. Three
+// acts, all against one running box: the box reaches the listener; the
+// listener goes away and a dial lands IN the gap (the dial that used to finish
+// the crossing for the box's life); the listener comes back and the box
+// reaches it again. Only the middle dial may fail — the mount recovers because
+// the box's crossing is established against a listener dabs owns, and the host
+// program is dialed fresh per connection.
+func TestSocketSurvivesHostListenerRestart(t *testing.T) {
+	clean(t)
+	dir := filepath.Join(home, "e2e-sockets-restart")
+	sock := filepath.Join(dir, "run", "restart.sock")
+	hits, stop := serveStoppable(t, sock, "first-life")
+	socketRecipe(t, dir, "sockrestart", sock, "/run/dabs/restart.sock")
+
+	const node = "e2e-sock-restart"
+	defer run("dabs rm " + node + " --yes")
+	out, code := runIn(dir, "dabs recipe sockrestart --no-command --name "+node)
+	if code != 0 {
+		t.Fatalf("boot failed (%d): %s", code, out)
+	}
+	curl := "dabs exec " + node + " 'curl -s -m 5 --unix-socket /run/dabs/restart.sock http://localhost/'"
+
+	got, code := run(curl)
+	if code != 0 {
+		t.Fatalf("first life unreachable (%d): %s", code, got)
+	}
+	wantContains(t, got, "first-life")
+	if atomic.LoadInt32(hits) < 1 {
+		t.Fatal("the first listener never saw the box's bytes")
+	}
+
+	// The listener dies (its socket file unlinks with it), and a dial lands in
+	// the gap. curl retries a refused unix connect within -m, so the gap dial is
+	// bounded by its own timeout; what it returns does not matter — what matters
+	// is what happens AFTER.
+	stop()
+	if _, err := os.Stat(sock); err == nil {
+		t.Fatal("the fixture left the socket file standing — this test needs the real gap")
+	}
+	_, _ = run("dabs exec " + node + " 'curl -s -m 2 --unix-socket /run/dabs/restart.sock http://localhost/'")
+
+	hits2, _ := serveStoppable(t, sock, "second-life")
+	got, code = run(curl)
+	if code != 0 {
+		t.Fatalf("the crossing did not recover after the restart (%d): %s — a dial in the gap finished the mount", code, got)
+	}
+	wantContains(t, got, "second-life")
+	if atomic.LoadInt32(hits2) < 1 {
+		t.Error("the restarted listener never saw the box's bytes")
 	}
 }

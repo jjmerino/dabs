@@ -1,16 +1,16 @@
 // Command forward is the in-box forwarder: a single-purpose static binary that
-// bridges between a box's loopback ports and the unix sockets dabs mounts into
-// it. dabs carries it as embedded bytes and drops a copy into a box at
-// forwarder.ForwardPath — the box never receives the dabs CLI. It is NOT a dabs
-// subcommand: it has its own main, and depends only on the plumbing packages.
+// bridges between a box's loopback ports and the box door, the one socket dabs
+// mounts for everything that crosses the boundary. dabs carries it as embedded
+// bytes and drops a copy into a box at forwarder.ForwardPath — the box never
+// receives the dabs CLI. It is NOT a dabs subcommand: it has its own main, and
+// depends only on the plumbing packages.
 //
-// Egress: it bridges a loopback TCP port to the mounted host proxy socket and
-// brackets the box's real command.
+// Egress: it bridges a loopback TCP port to the door — one EGRESS crossing per
+// connection — and brackets the box's real command.
 //
-// Ingress: `forward publish` puts a box-local port behind a name on the box
-// door, the one socket dabs mounts for everything that crosses the boundary.
+// Ingress: `forward publish` puts a box-local port behind a name on the door.
 //
-// Usage: forward <socket> <port> [-- cmd…]
+// Usage: forward <door> <port> [-- cmd…]
 //
 //	forward publish <name> --type webui|general --port <n>
 package main
@@ -29,8 +29,13 @@ import (
 
 func main() {
 	args := os.Args[1:]
+	// The usage names the door protocol this forwarder speaks: a driver that
+	// cannot mount the forwarder itself (the apple micro-VM runs only what its
+	// image carries) probes the image's copy with no arguments and reads this
+	// line, so a forwarder that predates the door is refused at boot instead of
+	// booting a box whose egress reaches nothing.
 	usage := func(msg string) {
-		fmt.Fprintf(os.Stderr, "forward: %s\nusage: forward <socket> <port> [-- cmd…]\n       forward publish <name> --type webui|general --port <n>\n", msg)
+		fmt.Fprintf(os.Stderr, "forward: %s\nusage: forward <door> <port> [-- cmd…] — egress over %s\n       forward publish <name> --type webui|general --port <n>\n", msg, door.Banner)
 		os.Exit(2)
 	}
 	if len(args) > 0 && args[0] == "publish" {

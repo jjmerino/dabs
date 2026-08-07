@@ -49,7 +49,11 @@ func (r Real) resolvePortsFile() (string, error) {
 func (r Real) Services(p params.Services) error {
 	switch {
 	case p.Relay:
-		return door.Run(p.Door, p.Dir, os.Stderr)
+		carries := make([]door.Carry, len(p.Carries))
+		for i, c := range p.Carries {
+			carries[i] = door.Carry{Listen: c.Listen, Dial: c.Dial}
+		}
+		return door.Run(p.Door, p.Dir, p.Egress, carries, os.Stderr)
 	case p.Serve:
 		return r.serveServices()
 	}

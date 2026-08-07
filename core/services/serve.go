@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jjmerino/dabs/egressforwarder/forwarder"
+	"github.com/jjmerino/dabs/core/door"
 )
 
 // Source reports the services published right now. Serve calls it repeatedly,
@@ -299,7 +299,7 @@ func acceptInto(f *forward) {
 				return
 			}
 			defer up.Close()
-			forwarder.Couple(conn, up)
+			door.Couple(conn, up)
 		}(conn)
 	}
 }

@@ -10,6 +10,7 @@
 //
 //	DABS-DOOR/1 PUBLISH <name> <type> <port>
 //	DABS-DOOR/1 STREAM <id>
+//	DABS-DOOR/1 EGRESS
 //
 // which the relay answers with one reply line
 //
@@ -63,6 +64,8 @@ const (
 	// for on a held PUBLISH crossing. Args: id.
 	VerbStream = "STREAM"
 )
+
+// VerbEgress is declared in egress.go beside what serves it.
 
 // The control messages a held PUBLISH crossing carries, one per line. PING is
 // the relay's liveness question and PONG the box's answer: a connection that is

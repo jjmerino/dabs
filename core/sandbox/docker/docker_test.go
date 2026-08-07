@@ -137,15 +137,15 @@ func TestUpEgressNone(t *testing.T) {
 	})
 }
 
-// CONTRACT: egress proxy = no network + the socket and dabs binary mounted
-// read-only at the forwarder's fixed in-box paths + the keep-alive bracketed
-// by the forwarder. Proxy env is the actions layer's job, so the driver just
-// passes Spec.Env through.
+// CONTRACT: egress proxy = no network + the forwarder binary mounted read-only
+// at its fixed in-box path + the keep-alive bracketed by the forwarder, aimed
+// at the box door. Proxy env is the actions layer's job, so the driver just
+// passes Spec.Env through; the door itself arrives in Sockets like any other.
 func TestUpEgressProxy(t *testing.T) {
 	calls := captureDocker(t)
 	_, err := (Driver{}).Up(sandbox.Spec{
 		Name: "img", Workdir: "/work",
-		Egress: sandbox.EgressProxy, ProxySock: "/host/.dabs/egress.sock",
+		Egress:       sandbox.EgressProxy,
 		ForwarderBin: "/host/.dabs/forward",
 	})
 	if err != nil {
@@ -154,9 +154,8 @@ func TestUpEgressProxy(t *testing.T) {
 	run := strings.Join((*calls)[0], " ")
 	for _, want := range []string{
 		"--network none",
-		"source=/host/.dabs/egress.sock,target=/run/dabs/egress.sock,readonly",
 		"source=/host/.dabs/forward,target=/run/dabs/forward,readonly",
-		"/run/dabs/forward /run/dabs/egress.sock 18080 -- sleep infinity",
+		"/run/dabs/forward /run/dabs/door.sock 18080 -- sleep infinity",
 	} {
 		if !strings.Contains(run, want) {
 			t.Errorf("proxy argv missing %q: %s", want, run)
@@ -164,9 +163,9 @@ func TestUpEgressProxy(t *testing.T) {
 	}
 }
 
-// CONTRACT: every socket in the spec is bound into the box at its own path, and
-// the proxy's own socket is untouched by that — a proxied box with declared
-// sockets carries both doors.
+// CONTRACT: every socket in the spec is bound into the box at its own path,
+// whatever the egress mode — a proxied box's sockets (its door among them)
+// bind exactly as an open box's do.
 func TestUpSockets(t *testing.T) {
 	t.Run("each socket is bound", func(t *testing.T) {
 		calls := captureDocker(t)
@@ -200,13 +199,12 @@ func TestUpSockets(t *testing.T) {
 		}
 	})
 
-	t.Run("proxy egress keeps its own socket", func(t *testing.T) {
+	t.Run("proxy egress binds its sockets like any other box", func(t *testing.T) {
 		calls := captureDocker(t)
 		_, err := (Driver{}).Up(sandbox.Spec{
 			Name: "img", Workdir: "/work",
 			Sockets:      []sandbox.Mount{{Host: "/host/one.sock", Path: "/run/dabs/one.sock"}},
 			Egress:       sandbox.EgressProxy,
-			ProxySock:    "/host/.dabs/egress.sock",
 			ForwarderBin: "/host/.dabs/forward",
 		})
 		if err != nil {
@@ -215,8 +213,8 @@ func TestUpSockets(t *testing.T) {
 		run := strings.Join((*calls)[0], " ")
 		for _, want := range []string{
 			"-v /host/one.sock:/run/dabs/one.sock",
-			"source=/host/.dabs/egress.sock,target=/run/dabs/egress.sock,readonly",
-			"/run/dabs/forward /run/dabs/egress.sock 18080 -- sleep infinity",
+			"source=/host/.dabs/forward,target=/run/dabs/forward,readonly",
+			"/run/dabs/forward /run/dabs/door.sock 18080 -- sleep infinity",
 		} {
 			if !strings.Contains(run, want) {
 				t.Errorf("argv missing %q: %s", want, run)

@@ -75,11 +75,10 @@ type instanceMeta struct {
 	// for the same reason the egress fields do: the box has no long-lived process,
 	// so every Run/Exec rebuilds the whole sandbox and must bind them again.
 	Sockets []sandbox.Mount `json:"sockets,omitempty"`
-	// Egress and ProxySock replay the Spec's egress on every enter — the box
+	// Egress replays the Spec's egress on every enter — the box
 	// has no long-lived process, so the network decision is re-applied per
 	// Run/Exec. A meta.json without these fields decodes to open.
 	Egress       string `json:"egress,omitempty"`
-	ProxySock    string `json:"proxySock,omitempty"`
 	ForwarderBin string `json:"forwarderBin,omitempty"` // host path of the forwarder binary to mount
 }
 
@@ -185,7 +184,7 @@ func (d Driver) Up(spec sandbox.Spec) (string, error) {
 	// DABS_NAME marks the box: anything running inside can detect it is
 	// sandboxed.
 	env = append(env, "DABS_NAME="+instance)
-	meta := instanceMeta{Workdir: spec.Workdir, Env: env, Mounts: spec.Mounts, Sockets: spec.Sockets, Egress: spec.Egress, ProxySock: spec.ProxySock, ForwarderBin: spec.ForwarderBin}
+	meta := instanceMeta{Workdir: spec.Workdir, Env: env, Mounts: spec.Mounts, Sockets: spec.Sockets, Egress: spec.Egress, ForwarderBin: spec.ForwarderBin}
 	if err := writeJSON(filepath.Join(dir, "meta.json"), meta); err != nil {
 		return "", err
 	}
@@ -250,14 +249,13 @@ func (d Driver) enter(instance string, cmd []string) (*exec.Cmd, error) {
 		args = append(args, "--bind", s.Host, s.Path)
 	}
 	if meta.Egress == sandbox.EgressProxy {
-		// The host proxy's socket and the single-purpose forwarder binary land
-		// read-only at the forwarder's fixed paths — bound AFTER the recipe
-		// mounts, since bwrap binds in argv order and a recipe source at /run
-		// listed later would silently mask them. The forwarder is a static linux
-		// binary dabs materialized on the host — the caller's supplied one, else
-		// its embedded copy.
+		// The single-purpose forwarder binary lands read-only at its fixed path —
+		// bound AFTER the recipe mounts, since bwrap binds in argv order and a
+		// recipe source at /run listed later would silently mask it. The
+		// forwarder is a static linux binary dabs materialized on the host — the
+		// caller's supplied one, else its embedded copy. The bytes leave over the
+		// box door, bound with the sockets above.
 		args = append(args,
-			"--ro-bind", meta.ProxySock, forwarder.SockPath,
 			"--ro-bind", meta.ForwarderBin, forwarder.ForwardPath)
 	}
 	haveHome := false

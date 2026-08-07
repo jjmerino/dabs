@@ -52,11 +52,9 @@ type Spec struct {
 	// Egress is the box's outbound network: "" or EgressOpen (unrestricted),
 	// EgressNone, or EgressProxy. The caller has already confirmed the driver
 	// enforces it (EgressEnforcer); a driver never degrades a mode it was given.
+	// A proxy box's way out rides its door, which the caller hands the driver in
+	// Sockets like any other; there is nothing egress-specific to mount.
 	Egress string
-	// ProxySock is the host proxy's unix socket for EgressProxy, an absolute
-	// path with all resolution done — a driver mounts it exactly. Empty
-	// otherwise.
-	ProxySock string
 	// ForwarderBin is the host path of the single-purpose forwarder binary to
 	// mount into the box at forwarder.ForwardPath for EgressProxy. The caller
 	// materializes it (from dabs's embedded copy); a driver mounts it exactly.

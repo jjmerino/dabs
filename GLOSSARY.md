@@ -46,8 +46,8 @@ glossary records where the vocabulary is going so new work simply avoids the old
 | **driver** | one sandboxing mechanism behind the `sandbox.Driver` contract | `core/sandbox/<kind>` |
 | **fleet** (deprecated) | use **drivers** | `Real.drivers`, `dabs ls` |
 | **service** | a box-local port a box publishes under a name, reached from the host on a stable loopback port | `dabs services`, `forward publish` |
-| **door** | the one dabs-owned socket a granted box's crossings travel over | `door.BoxPath`, `publish: true` |
-| **relay** | the host-side process answering ONE box's door, living as long as its node | `door.Relay`, `dabs services relay` |
+| **door** | the one dabs-owned socket a box's crossings travel over | `door.BoxPath`, `publish: true` |
+| **relay** | the host-side process answering ONE box's crossings, living as long as its node | `door.Relay`, `dabs services relay` |
 | **crossing** | one connection over a door, opening with a header line that says what it is | `door.Header`, `door.Publisher` |
 | **worktree** | a fresh git branch off HEAD, cut into a node's held space and mounted live | the `worktree:` source, `dabs worktrees` |
 | **--no-command** | boot a box and leave it up WITHOUT running the recipe's command | `recipe --no-command`, `upDetached` |
@@ -267,9 +267,9 @@ Open question: if `prune` only ever reclaims images, the future name is
 ### service
 A box-local port a box publishes under a NAME, so the host can reach a program
 that only ever bound the box's own loopback. Publishing is GRANTED, not
-ambient: only a box whose recipe says `publish: true` gets a **door**, and in a
-box without one the forwarder refuses the publish by name rather than failing on
-a missing file. In a granted box a program publishes by running the in-box
+ambient: only a box whose recipe says `publish: true` may publish on its
+**door**, and a box without the grant is refused the publish by name rather
+than failing on a missing file. In a granted box a program publishes by running the in-box
 forwarder — `forward publish <name> --type webui|general --port <n>` — which
 dials the door and holds one crossing open for as long as it runs. A name is
 `[a-z0-9._-]`, starting with a letter or digit, at most 64 bytes: it is a
@@ -301,11 +301,14 @@ the per-box **relay** dabs starts for itself.
 
 ### door
 The one dabs-owned unix socket a box's crossings travel over —
-`/run/dabs/door.sock` in a box whose recipe says `publish: true`. dabs opens it
-on the HOST (see **relay**) before the box boots and carries it in exactly as it
-carries a recipe's own `sockets:`, so the box dials and the host listens on
-every driver. The door is the GRANT: a box that was not given one cannot
-publish, and the forwarder in it says so by name.
+`/run/dabs/door.sock` in a box whose recipe says `publish: true` or declares a
+proxy egress. dabs opens it on the HOST (see **relay**) before the box boots
+and carries it in exactly as it carries a recipe's own `sockets:`, so the box
+dials and the host listens on every driver. It carries the publishing
+crossings and the proxy box's egress (one `EGRESS` crossing per proxied
+connection). Publishing stays a GRANT: a box that was not given `publish:
+true` is refused the publish by name — over the door when it has one (a proxy
+box), by the missing socket when it does not.
 
 **What a door will not do.** The box is the untrusted side, so a door carries at
 most 32 publications at once and holds at most 64 crossings that have not yet
@@ -319,11 +322,18 @@ nothing is waiting for.
 *Where:* `door.BoxPath`, `recipe.Recipe.Publish`, `buildBox`, `door.BusyError`.
 
 ### relay
-The host-side process answering ONE box's door: `dabs services relay --door
-<sock> --dir <dir>`, started by the boot of a granted box and reaped with the
-box (its pid is on the box node). It is a PURE byte relay — it reads each
-crossing's opening line and nothing after it — and its life is the node's, so
-the door answers from the box's first instant and a box never dials into a gap.
+The host-side process answering ONE box's crossings: `dabs services relay
+--door <sock> [--dir <dir>] [--egress <sock>] [--carry <listen>=<dial>]...`,
+started by the boot of any box with a crossing to answer and reaped with the
+box (its pid is on the box node). It answers the door (`--dir` is the registry
+a publishing grant gets; without it a publish is refused by name; `--egress`
+is the proxy engine an `EGRESS` crossing couples to) and it CARRIES the
+recipe's `sockets:` (each `--carry` stands a listener the box's mount is
+established against, and the host program's own socket is dialed fresh per
+connection — a host listener restart never finishes a mount). It is a PURE
+byte relay — it reads each crossing's opening line, nothing after it, and on a
+carried socket nothing at all — and its life is the node's, so every socket a
+box dials answers from the box's first instant: a box never dials into a gap.
 One door is one relay: binding a unix socket unlinks whatever stands there, so
 a relay takes an exclusive lock beside the socket first and a second relay aimed
 at a live door is refused by name. The relay owns the registry it publishes into
@@ -334,9 +344,9 @@ services.
 ### crossing
 One connection over a door. Each opens with a single header line carrying the
 protocol banner and version (`DABS-DOOR/1 PUBLISH <name> <type> <port>`,
-`DABS-DOOR/1 STREAM <id>`), answered `DABS-DOOR/1 OK`, `… ERR <reason>` or
-`… BUSY <reason>` — ERR is a decision, so the box gives up on it; BUSY is a
-load limit, so the box comes back. A
+`DABS-DOOR/1 STREAM <id>`, `DABS-DOOR/1 EGRESS`), answered `DABS-DOOR/1 OK`,
+`… ERR <reason>` or `… BUSY <reason>` — ERR is a decision, so the box gives up
+on it; BUSY is a load limit, so the box comes back. A
 PUBLISH crossing is held open and carries the heartbeat and the relay's stream
 requests; every other call is a fresh dial rather than a stream multiplexed onto
 one connection, so what identifies a caller stays attached to the connection it
@@ -398,9 +408,10 @@ loopback services are out of reach, and a port the box binds belongs to that box
 so boxes do not collide with each other or with the host over `:3000`. `none`
 leaves the namespace bare — loopback and nothing else. A MAP (`allow`/`deny`/
 `http_proxy`) is proxy egress: the namespace is bare too, and the box's one way
-out is the host proxy's unix socket, which crosses the namespace because it is
-filesystem, not network. A driver that cannot enforce a mode says so and the boot
-refuses — a mode is never quietly downgraded.
+out is its door — the host proxy answers one `EGRESS` crossing per connection —
+which crosses the namespace because it is filesystem, not network. A driver
+that cannot enforce a mode says so and the boot refuses — a mode is never
+quietly downgraded.
 *Where:* `recipe.Egress`, `sandbox.EgressEnforcer`, `core/proxy.Provision`.
 
 ### pasta
@@ -446,7 +457,10 @@ host path, expanded like a source origin: `~`, `$VAR`, and the
 `$NODE_*`/`$PARENT_*` space vars) landing at an absolute `path:` in the box.
 It is not a source kind — a socket provisions nothing, owns no node space, and
 `rm` never reads it: the listener is a host program that must already be
-running, and the box only gets a line to it. It crosses as filesystem, not
+running, and the box only gets a line to it. The line is CARRIED by the box's
+**relay** — the box's mount is established against a socket the relay owns,
+and the host program is dialed fresh per connection — so the program
+restarting never finishes the mount; a dial landing in the gap fails alone. It crosses as filesystem, not
 network, so it is open under every egress mode, `none` included. The box
 `path:` is held to exactly what a source's box path is — absolute, no `..`,
 `$NODE_ID` the only variable that resolves in it. What a socket cannot be

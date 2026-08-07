@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/jjmerino/dabs/core/data"
+	"github.com/jjmerino/dabs/core/door"
 	"github.com/jjmerino/dabs/core/sandbox"
 	"github.com/jjmerino/dabs/core/tui"
 )
@@ -43,12 +44,26 @@ func (r Real) WithConfirm(fn func(string) bool) Real {
 	return r
 }
 
-// WithRelay returns a copy of r that starts a granted box's door relay with fn
+// WithRelay returns a copy of r that starts a box's door relay with fn
 // instead of spawning one, so a test can drive a boot without a process of its
-// own. fn is handed the door socket, the registry directory and the log path,
-// and answers with the pid to record on the box node.
-func (r Real) WithRelay(fn func(doorPath, dir, logPath string) (int, error)) Real {
+// own. fn is handed the door socket, the registry directory ("" for a box that
+// may not publish), the log path, the egress engine's socket ("" for a box
+// with no proxy egress) and the carried sockets, and answers with the pid to
+// record on the box node.
+func (r Real) WithRelay(fn func(doorPath, dir, logPath, egress string, carries []door.Carry) (int, error)) Real {
 	r.relay = fn
+	return r
+}
+
+// WithRelayExecutable returns a copy of r whose box relays are spawned from
+// the named dabs binary instead of this process's own executable. It is the
+// LIBRARY consumer's knob: a box with any crossing (a publish grant, a proxy
+// egress, a declared socket) is answered by a `services relay` process, and a
+// program embedding dabs as a module is not a binary that serves that verb.
+func (r Real) WithRelayExecutable(path string) Real {
+	r.relay = func(doorPath, dir, logPath, egress string, carries []door.Carry) (int, error) {
+		return spawnRelayFrom(path, doorPath, dir, logPath, egress, carries)
+	}
 	return r
 }
 

@@ -172,14 +172,28 @@ type Info struct {
 //
 // Serve flips the action from listing to serving: it forwards every published
 // service from a stable loopback port and serves an index of them, until
-// interrupted. Relay flips it to answering ONE box's door, at Door, publishing
-// into the registry directory Dir — the host side of the door, which dabs
-// starts for itself when it boots a box that may publish.
+// interrupted. Relay flips it to answering ONE box's door, at Door — the host
+// side of the door, which dabs starts for itself when it boots a box with any
+// crossing to answer. Dir is the registry directory a box that may publish
+// gets; empty, the relay refuses a publish by name. Egress is the proxy
+// engine's socket the relay couples EGRESS crossings to; empty, the door
+// carries no egress. Carries are the host sockets the relay carries into the
+// box, one listener each.
 type Services struct {
-	Serve bool
-	Relay bool
-	Door  string
-	Dir   string
+	Serve   bool
+	Relay   bool
+	Door    string
+	Dir     string
+	Egress  string
+	Carries []Carry
+}
+
+// Carry is one host socket a box's relay carries in: the relay listens at
+// Listen (the dabs-owned socket the box's mount is established against) and
+// dials Dial (the host program's own socket) fresh for every connection.
+type Carry struct {
+	Listen string
+	Dial   string
 }
 
 // Actions is the contract every action provider satisfies: the real

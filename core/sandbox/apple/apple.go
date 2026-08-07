@@ -8,7 +8,6 @@ package apple
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -109,28 +108,15 @@ func (d Driver) Up(spec sandbox.Spec) (string, error) {
 
 // checkImageCarriesForwarder boots a throwaway container to run the image's
 // own forwarder binary with no arguments: one that can serve this box prints a
-// usage naming the door protocol it speaks. A missing binary fails the run,
-// and one that predates the door prints a usage without the banner — both are
-// refused with the Dockerfile lines that fix it, because either way the box
-// would boot with an egress that reaches nothing.
+// usage naming the door protocol it speaks. A missing binary, or one built for
+// dabs 0.6.0 (before the box door), does not, and the box would boot with an
+// egress that reaches nothing — so it is refused.
 func checkImageCarriesForwarder(name string) error {
-	out, err := exec.Command("container", "run", "--rm", imageName(name), forwarder.ForwardPath).CombinedOutput()
+	out, _ := exec.Command("container", "run", "--rm", imageName(name), forwarder.ForwardPath).CombinedOutput()
 	if strings.Contains(string(out), "usage: forward ") && strings.Contains(string(out), door.Banner) {
 		return nil
 	}
-	// The probe output is mostly the CLI's progress bars; the tail line names
-	// the actual failure (a missing executable, or an old usage line).
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	detail := lines[len(lines)-1]
-	if err == nil {
-		err = errors.New("the image's forwarder does not speak " + door.Banner)
-	}
-	return fmt.Errorf("apple: proxy egress needs the image to carry a linux forwarder at %s that speaks %s (it bridges HTTP_PROXY to the box door; a host binary cannot run in the micro-VM) — add to the image's Dockerfile:\n\n"+
-		"  FROM golang:alpine AS fwd\n"+
-		"  RUN CGO_ENABLED=0 go install github.com/jjmerino/dabs/egressforwarder/cmd/forward@latest\n\n"+
-		"and in the final stage:\n\n"+
-		"  COPY --from=fwd /go/bin/forward %s\n\n(probe: %v: %s)",
-		forwarder.ForwardPath, door.Banner, forwarder.ForwardPath, err, detail)
+	return fmt.Errorf("apple: proxy egress needs the image's forwarder to speak %s; images built for dabs 0.6.0 are no longer supported", door.Banner)
 }
 
 // HasImage reports whether name's image is already built.

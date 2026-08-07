@@ -827,6 +827,11 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID, tip string, rec re
 		if derr != nil {
 			return "", derr
 		}
+		// The door, its log and the carried listeners all live in the box node's
+		// tmp space, which exists only once something is put in it.
+		if derr := r.data.MkdirAll(filepath.Dir(doorPath), 0o700); derr != nil {
+			return "", fmt.Errorf("recipe %q: %w", recipeName, derr)
+		}
 		// The last look at each declared socket before the relay stands in front
 		// of it: a listener that unlinked between the recipe's checks and this
 		// boot refuses BY NAME now, rather than booting a box whose first dial

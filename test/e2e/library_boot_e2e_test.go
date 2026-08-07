@@ -10,6 +10,7 @@ package e2e
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -29,7 +30,14 @@ func embedded(t *testing.T) actions.Real {
 	t.Helper()
 	drv := sandbox.Lazy("bwrap", func() (sandbox.Driver, error) { return bwrap.New() })
 	images := os.DirFS(filepath.Join(baseDir, "..", "..", "images"))
-	return actions.New(map[string]sandbox.Driver{"local": drv}, []string{"local"}, images, data.OS{})
+	// A library consumer's executable is this test binary, which serves no
+	// `services relay` — the box relays come from a real dabs, exactly as an
+	// embedding program must arrange.
+	dabsBin, err := exec.LookPath("dabs")
+	if err != nil {
+		t.Fatalf("no dabs on PATH for the box relays: %v", err)
+	}
+	return actions.New(map[string]sandbox.Driver{"local": drv}, []string{"local"}, images, data.OS{}).WithRelayExecutable(dabsBin)
 }
 
 // TestLibraryBootFromInMemoryRecipe boots a box from a recipe value that exists

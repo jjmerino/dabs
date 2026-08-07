@@ -55,6 +55,18 @@ func (r Real) WithRelay(fn func(doorPath, dir, logPath, egress string, carries [
 	return r
 }
 
+// WithRelayExecutable returns a copy of r whose box relays are spawned from
+// the named dabs binary instead of this process's own executable. It is the
+// LIBRARY consumer's knob: a box with any crossing (a publish grant, a proxy
+// egress, a declared socket) is answered by a `services relay` process, and a
+// program embedding dabs as a module is not a binary that serves that verb.
+func (r Real) WithRelayExecutable(path string) Real {
+	r.relay = func(doorPath, dir, logPath, egress string, carries []door.Carry) (int, error) {
+		return spawnRelayFrom(path, doorPath, dir, logPath, egress, carries)
+	}
+	return r
+}
+
 // WithRelayReaper returns a copy of r that stops a box's door relay with fn
 // instead of signalling its process group, so a test can watch a teardown reach
 // the relay without a process to kill. fn is handed the pid the box node

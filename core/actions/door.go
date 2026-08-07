@@ -58,19 +58,28 @@ func (r Real) resolveDoorLog(nodeID string) (string, error) {
 	return filepath.Join(tmp, doorLogFileName), nil
 }
 
-// spawnRelay starts a relay for one box as a detached child of this dabs, and
-// returns once it is listening — the box is booted next, and a driver carries a
-// socket into a box by binding a path that must already be there.
-//
-// The relay outlives the dabs process that started it, so its stdio must not be
-// this one's: a child holding dabs's stderr keeps that pipe open and hangs
-// whoever reads dabs's output. It logs to a file and leads its own session, so
-// reaping its pid takes the whole thing.
+// spawnRelay starts a relay for one box as a detached child of this process,
+// serving `services relay` from its own executable — dabs, when the CLI is
+// what booted the box. A LIBRARY consumer's executable is not dabs and cannot
+// serve the verb; it names a dabs binary with WithRelayExecutable instead.
+// spawnRelay returns once the relay is listening — the box is booted next, and
+// a driver carries a socket into a box by binding a path that must already be
+// there.
 func spawnRelay(doorPath, dir, logPath, egress string, carries []door.Carry) (int, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return 0, fmt.Errorf("door relay: %w", err)
 	}
+	return spawnRelayFrom(exe, doorPath, dir, logPath, egress, carries)
+}
+
+// spawnRelayFrom starts exe as one box's relay and returns its pid.
+//
+// The relay outlives the process that started it, so its stdio must not be
+// this one's: a child holding this process's stderr keeps that pipe open and
+// hangs whoever reads its output. It logs to a file and leads its own session,
+// so reaping its pid takes the whole thing.
+func spawnRelayFrom(exe, doorPath, dir, logPath, egress string, carries []door.Carry) (int, error) {
 	logFile, err := os.Create(logPath)
 	if err != nil {
 		return 0, fmt.Errorf("door relay: %w", err)

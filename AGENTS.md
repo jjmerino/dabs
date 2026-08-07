@@ -176,12 +176,18 @@ know what is in it:
    variable that resolves in it. Everything else about a socket refuses by name
    rather than booting a box that quietly reaches nothing: a `socket:` that is
    missing or that is not a socket, a `path:` landing on something dabs binds
-   itself (`/run/dabs/door.sock`, `/run/dabs/egress.sock`, `/run/dabs/forward`,
-   `/run/dabs/pub`, `/run/dabs/log`) or on a path another source or socket
-   already claims, a `:` in either path, a recipe with no image (a place has no
-   box to reach out of), and a `target:` naming a SERVER (the listener is on
-   THIS host; a box on another machine has no path to it — a local target such
-   as `docker` is fine).
+   itself (`/run/dabs/door.sock`, `/run/dabs/forward`, `/run/dabs/pub`,
+   `/run/dabs/log`) or on a path another source or socket already claims, a
+   `:` in either path, a recipe with no image (a place has no box to reach out
+   of), and a `target:` naming a SERVER (the listener is on THIS host; a box
+   on another machine has no path to it — a local target such as `docker` is
+   fine).
+
+   What the box's mount is established against is a socket the box's **relay**
+   owns — alive as long as the box's node — and the relay dials the host
+   program's own socket fresh for every connection. So the host program
+   restarting does not finish the mount: a dial that lands while it is down is
+   held briefly and fails alone, and the next dial reaches the new listener.
 
    **Nodes and their three spaces.** A node is a marker for a place dabs
    provisioned — kind `project | workdir | worktree | box`, chained
@@ -260,9 +266,12 @@ already started, without cutting a new branch.
 **Publishing is granted, not ambient.** A recipe that says `publish: true` boots
 a box with a **door**: one dabs-owned unix socket, at `/run/dabs/door.sock` in
 the box, answered on the host by a **relay** dabs starts before the box and
-reaps with its node. A box without the grant has no door, and `forward publish`
-in it refuses by name, saying what the recipe must set — a denied request reads
-as a denial, not as a broken box.
+reaps with its node. The door also carries a proxy box's egress (one `EGRESS`
+crossing per proxied connection, coupled to the engine by the relay), so a
+proxy box has a door without the grant — and its `forward publish` is refused
+by name over the door itself. A box with no door at all gets the same refusal
+from the missing socket. Either way a denied request reads as a denial, not as
+a broken box, and says what the recipe must set.
 
 In a granted box, a program publishes a box-local port under a name by running
 the in-box forwarder:

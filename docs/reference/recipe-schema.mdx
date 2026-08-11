@@ -20,6 +20,7 @@ recipes:
     target: my-server              # route to a registered server; omit for local
     egress: open                   # outbound network: open (default) | none | {allow/deny/http_proxy}
     publish: true                  # the box may publish services (default: it may not)
+    user: "1000:1000"              # who the box's processes are (default: the image's user)
     sources:
       - mount: .                   # live bind; origin must exist
         path: /work
@@ -64,6 +65,17 @@ recipes:
   no path to a relay on this host). Without the grant there is no door, and
   `forward publish` in the box refuses by name instead of failing on a missing
   file.
+- **user** — who the box's processes run as, written `uid` or `uid:gid`, and
+  **numeric**: a name is resolved in the image's own `/etc/passwd`, so it would
+  say nothing about which host user ends up owning what the box writes. Unset
+  leaves the image's user, which for an image naming no `USER` is root. Set it
+  when the HOST reads what the box writes: a `mount:`/`mkmount:` carries uids,
+  not names, so under the docker driver — whose daemon is root — a root box
+  leaves root-owned files that the ordinary user who booted it cannot open. The
+  bwrap and apple drivers need nothing here and ignore it: a bwrap box is
+  already a process of your own inside a namespace that maps only your uid, and
+  the apple driver's micro-VM translates ownership across its own boundary (and
+  its boxes must be root to open a relayed socket at all).
 - **target** — `""` (local) or a server from `dabs servers`. The reserved
   `INTERNAL-docker-privileged-for-nested-sandboxing` target exists for boxes
   that must boot nested sandboxes.

@@ -3501,3 +3501,25 @@ func TestWorktreeCreationFromCheckoutRefused(t *testing.T) {
 		t.Errorf("cut a worktree from inside a checkout: %v", fd.worktrees)
 	}
 }
+
+// CONTRACT: the recipe's `user:` reaches the driver on the spec it boots.
+//
+// It is the whole of the field: the recipe states who the box's processes are,
+// and only the driver can act on it. A boot that dropped it between the two
+// would boot a root box that looks exactly like a working one until the host
+// tries to read what it wrote.
+func TestRecipeUserReachesDriver(t *testing.T) {
+	y := `recipes:
+  m:
+    image: img
+    command: [x]
+    user: "1000:1000"
+`
+	drv := &fakeDriver{built: map[string]bool{"img": true}}
+	if err := newReal(y, baseData(), drv).Recipe(params.Recipe{Name: "m"}); err != nil {
+		t.Fatalf("Recipe: %v", err)
+	}
+	if got := onlyUp(t, drv).User; got != "1000:1000" {
+		t.Errorf("Up user = %q, want 1000:1000", got)
+	}
+}

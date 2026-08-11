@@ -67,6 +67,18 @@ func (d Driver) Up(spec sandbox.Spec) (string, error) {
 	if d.nested {
 		args = append(args, "--privileged", "-v", "/tmp")
 	}
+	// Who the box's processes are. Without it they are the image's user — root,
+	// for every image that names no USER — and this daemon is root too, so every
+	// bind below passes that uid straight through to the host: the box's writes
+	// land root-owned and the ordinary user who booted it can read none of them.
+	// Matching the uid IS the mechanism available here. Docker Engine exposes no
+	// per-mount id remapping (podman's `idmap` has no counterpart), and the one
+	// daemon-wide knob that would do it, userns-remap, reconfigures the machine
+	// for every container on it — not something a library may ask an installer
+	// for. The value was validated numeric by the caller.
+	if spec.User != "" {
+		args = append(args, "--user", spec.User)
+	}
 	// None and proxy both start from a container with no network: proxy's only
 	// way out is the host socket mounted below, which is filesystem, not network.
 	if spec.Egress == sandbox.EgressNone || spec.Egress == sandbox.EgressProxy {

@@ -61,6 +61,29 @@ type Spec struct {
 	// Empty otherwise, and unused by drivers whose image carries the forwarder
 	// (apple's micro-VM).
 	ForwarderBin string
+	// User is who the box's processes run as: a numeric `uid` or `uid:gid`.
+	// Empty leaves the image's own user, which for an image naming no USER is
+	// root.
+	//
+	// It exists for ONE thing, and it is about MOUNTS rather than about
+	// privilege: a bind mount carries uids, not names. A box writing onto a
+	// mount as root leaves root-owned files on the host, and the ordinary user
+	// who booted it — the usual case, since a program embedding dabs runs as
+	// whoever started it — can then read nothing of what it asked the box to
+	// produce. Measured on linux/docker: the run mount came back
+	// `-rw------- root root` and every host-side read was EACCES, three minutes
+	// of polling a file that was never going to open.
+	//
+	// It is NUMERIC, and a name is refused before any driver sees it
+	// (recipe.Validate). A name resolves in the IMAGE's /etc/passwd and says
+	// nothing about the host uid that ends up owning the mount, which is the
+	// only question this field asks.
+	//
+	// A driver honors it where it CHANGES that ownership and ignores it where
+	// the guarantee already holds: docker passes it (a root daemon binds host
+	// directories straight through), bwrap and apple do not (both already give
+	// the host the caller's own ownership — see their Up).
+	User string
 }
 
 // Info is one existing sandbox instance as reported by a driver.

@@ -63,6 +63,20 @@ func (d Driver) Up(spec sandbox.Spec) (string, error) {
 		return "", fmt.Errorf("apple: %w", err)
 	}
 	args := []string{"run", "-d", "--name", containerName(instance), "-w", spec.Workdir}
+	// No --user: this driver's boxes are root, and spec.User is carried by two
+	// facts of the micro-VM rather than by a flag.
+	//
+	// What the field asks for — that what the box writes through a mount be
+	// owned on the HOST by the user who booted it — the VM's file sharing
+	// already does: it translates ownership across the boundary, so a box
+	// writing as root inside still leaves files owned by the calling user
+	// outside. That is why the root-owned-writes failure the field exists for
+	// belongs to the linux drivers and not to this one.
+	//
+	// And root is what a box HERE must be: a socket relayed in with --volume
+	// appears in the box root-owned mode 000 whatever mode the host file
+	// carries, so a box at any other uid boots normally and can never open its
+	// door — silently, since it simply reaches the host never.
 	// None and proxy both start from a micro-VM with no network — no routes,
 	// no non-loopback interface. Proxy's only way out is the socket volume
 	// below, which `container` relays across the VM boundary itself.

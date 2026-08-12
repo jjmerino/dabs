@@ -6,16 +6,21 @@ package actions_test
 //   - an INACTIVE holder (an empty marker) is reaped on the fly and the name reused;
 //   - an unverifiable holder (a driver did not answer) refuses — silence is not
 //     proof its box is gone;
+//   - a holder whose box is GONE and whose only bytes are tmp scratch is reaped:
+//     the space `rm` clears without asking cannot hold a name shut;
+//   - every held-name refusal carries actions.ErrNameHeld;
 //   - a malformed name is rejected up front;
 //   - cd prints the node's directory, bare, resolving names/ids/instances and
 //     refusing ambiguity.
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jjmerino/dabs/core/actions"
 	"github.com/jjmerino/dabs/core/params"
 	"github.com/jjmerino/dabs/core/sandbox"
 )
@@ -124,6 +129,105 @@ func TestNamedBootReapsInactiveHolder(t *testing.T) {
 	rec, ok := fd.files[nodeBase+"/feature-x/dabs-node.json"]
 	if !ok || !strings.Contains(string(rec), `"box"`) {
 		t.Fatalf("name not reused by the new boot's box: %s", rec)
+	}
+}
+
+// CONTRACT: a holder whose box is GONE from a complete drivers' answer and
+// whose only bytes are in tmp is reaped, and the name is reused. tmp is the
+// space `rm` clears with nobody asked, so what sits there is by definition not
+// worth refusing over — and a box gets some for free (its relay's socket lock
+// and log), which would otherwise make every such name single-use.
+func TestNamedBootReapsHolderHoldingOnlyTmp(t *testing.T) {
+	fd := namedBootData(t)
+	seedBoxNode(fd, "feature-x", "inst-gone")
+	spaceHeld(fd, "feature-x", "tmp")
+	drv := &fakeDriver{} // the box is not among the driver's instances
+	out, err := bootNamed(t, fd, drv, "feature-x")
+	if err != nil {
+		t.Fatalf("named boot over a holder whose box is gone: %v", err)
+	}
+	if !rmAllHas(fd, nodeBase+"/feature-x") {
+		t.Fatalf("holder not reaped: %v", fd.rmAll)
+	}
+	if !strings.Contains(out, "inactive") {
+		t.Fatalf("the on-the-fly reap must say so; got:\n%s", out)
+	}
+}
+
+// CONTRACT: the narrowing is the CLAIM's alone. A node holding nothing but tmp
+// is still ACTIVE to `ls`, so it keeps its row in the default listing and stays
+// out of what `rm --inactive` sweeps.
+func TestTmpOnlyNodeStaysActiveToLs(t *testing.T) {
+	fd := baseData()
+	seedBoxNode(fd, "feature-x", "inst-gone")
+	spaceHeld(fd, "feature-x", "tmp")
+	drv := &fakeDriver{}
+	out := captureStdout(t, func() {
+		if err := newReal("", fd, drv).Ls(params.Ls{}); err != nil {
+			t.Fatalf("ls: %v", err)
+		}
+	})
+	if !strings.Contains(out, "feature-x") {
+		t.Fatalf("a node holding tmp must still be listed by default; got:\n%s", out)
+	}
+}
+
+// CONTRACT: bytes in a space `rm` will not take without consent DO hold the
+// name, box or no box. A held space is work someone would miss, and a claim
+// that reaped it would destroy it to spell a name.
+func TestNamedBootRefusesHolderHoldingHeldSpace(t *testing.T) {
+	fd := namedBootData(t)
+	seedBoxNode(fd, "feature-x", "inst-gone")
+	spaceHeld(fd, "feature-x", "held")
+	drv := &fakeDriver{}
+	_, err := bootNamed(t, fd, drv, "feature-x")
+	if err == nil || !strings.Contains(err.Error(), "active") {
+		t.Fatalf("want an active-holder refusal, got %v", err)
+	}
+	if len(fd.rmAll) != 0 {
+		t.Fatalf("nothing may be reaped over a held space: %v", fd.rmAll)
+	}
+}
+
+// CONTRACT: every refusal that means THE NAME IS TAKEN carries ErrNameHeld, so
+// a caller whose box names are its own (a session, a ticket) can answer this
+// one condition with its own instruction. A refusal that is not about the name
+// — a malformed one — does not carry it.
+func TestHeldNameRefusalsCarryTheSentinel(t *testing.T) {
+	held := []struct {
+		name  string
+		stage func(fd *fakeData, drv *fakeDriver)
+	}{
+		{"a live box", func(fd *fakeData, drv *fakeDriver) {
+			seedBoxNode(fd, "feature-x", "inst-live")
+			drv.infos = []sandbox.Info{{Name: "inst-live", Status: "running"}}
+		}},
+		{"a held space", func(fd *fakeData, _ *fakeDriver) {
+			seedBoxNode(fd, "feature-x", "inst-gone")
+			spaceHeld(fd, "feature-x", "held")
+		}},
+		{"a silent driver", func(fd *fakeData, drv *fakeDriver) {
+			seedBoxNode(fd, "feature-x", "inst-a")
+			drv.lsErrOnce = fmt.Errorf("driver down")
+		}},
+		{"the name is some box's instance", func(fd *fakeData, _ *fakeDriver) {
+			seedBoxNode(fd, "other", "feature-x")
+		}},
+	}
+	for _, row := range held {
+		t.Run(row.name, func(t *testing.T) {
+			fd := namedBootData(t)
+			drv := &fakeDriver{}
+			row.stage(fd, drv)
+			_, err := bootNamed(t, fd, drv, "feature-x")
+			if !errors.Is(err, actions.ErrNameHeld) {
+				t.Fatalf("want ErrNameHeld, got %v", err)
+			}
+		})
+	}
+	fd := namedBootData(t)
+	if _, err := bootNamed(t, fd, &fakeDriver{}, "bad name"); errors.Is(err, actions.ErrNameHeld) {
+		t.Fatalf("a malformed name is not a held one: %v", err)
 	}
 }
 

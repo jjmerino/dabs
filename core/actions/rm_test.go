@@ -1,7 +1,8 @@
 package actions_test
 
 // Tests for `dabs rm`, the single reaper (it absorbed `down`):
-//   - a no-match reap is an ERROR naming the miss, like cd/exec;
+//   - a no-match reap is an ERROR naming the miss, like cd/exec, and carries
+//     actions.ErrNoNode so a caller reaping what it made can read "already gone";
 //   - --multiple reaps every prefix match, and is REQUIRED when a name matches
 //     more than one node;
 //   - a reap that would stop a LIVE box or lose held data needs consent (-y),
@@ -10,10 +11,12 @@ package actions_test
 //   - --inactive sweeps the inactive subtrees (empty markers) and nothing else.
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/jjmerino/dabs/core/actions"
 	"github.com/jjmerino/dabs/core/params"
 	"github.com/jjmerino/dabs/core/sandbox"
 )
@@ -43,6 +46,9 @@ func TestRmMissingIsError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), `"ghost"`) || !strings.Contains(err.Error(), "dabs ls") {
 		t.Fatalf("error should name the node and point at dabs ls, got %v", err)
+	}
+	if !errors.Is(err, actions.ErrNoNode) {
+		t.Fatalf("the miss must carry ErrNoNode, so a caller reaping its own box can tell it from a failed reap: %v", err)
 	}
 	if len(drv.downs) != 0 {
 		t.Fatalf("rm of a missing node downed something: %v", drv.downs)

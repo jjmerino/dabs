@@ -69,7 +69,7 @@ func (r Real) claimNodeName(name string) error {
 			continue
 		}
 		if n.Kind == KindBox && n.Instance == name {
-			return fmt.Errorf("--name %q: box %s runs under that instance name — one handle must not mean two boxes", name, n.ID)
+			return refuseHeldName("--name %q: box %s runs under that instance name — one handle must not mean two boxes", name, n.ID)
 		}
 	}
 	if holder != nil {
@@ -78,6 +78,27 @@ func (r Real) claimNodeName(name string) error {
 		}
 	}
 	return r.reserveNodeDir(name)
+}
+
+// ErrNameHeld marks every refusal that means THE NAME IS TAKEN: a live holder,
+// a holder that cannot be verified, an instance already running under it, or
+// another boot mid-claim. A caller that names its boxes after something of its
+// own — a session, a ticket — collides on one name and no other, so it can turn
+// this one condition into its own instruction (whose box it is, how to clear
+// it) instead of forwarding a message about dabs's node store. Every other boot
+// failure stays what it is.
+var ErrNameHeld = errors.New("the requested node name is held")
+
+// nameHeld carries a refusal's own words AND the sentinel, so matching on the
+// condition never costs the message that says which name and why.
+type nameHeld struct{ reason error }
+
+func (e nameHeld) Error() string   { return e.reason.Error() }
+func (e nameHeld) Unwrap() []error { return []error{e.reason, ErrNameHeld} }
+
+// refuseHeldName writes one such refusal.
+func refuseHeldName(format string, a ...any) error {
+	return nameHeld{reason: fmt.Errorf(format, a...)}
 }
 
 // reapInactiveHolder clears the node holding a claimed name, when that is
@@ -102,12 +123,11 @@ func (r Real) reapInactiveHolder(name string, nodes []Node) error {
 	if hasBox {
 		ans = r.boxStates()
 		if !ans.complete {
-			return fmt.Errorf("--name %q: a node holds that name and a driver did not answer — cannot verify it is inactive", name)
+			return refuseHeldName("--name %q: a node holds that name and a driver did not answer — cannot verify it is inactive", name)
 		}
 	}
-	active, _ := r.activeSubtrees(nodes, ans.state, ans.complete, r.foreignWorktrees(nodes))
-	if active[name] {
-		return fmt.Errorf("--name %q: an active node holds that name (see dabs ls) — pick another, or reap it first", name)
+	if r.claimHolderActive(subtree, ans, r.foreignWorktrees(nodes)) {
+		return refuseHeldName("--name %q: an active node holds that name (see dabs ls) — pick another, or reap it first", name)
 	}
 	fmt.Fprintln(os.Stdout, tui.Muted("name %s: held by an inactive node — reaping it", name))
 	states := func() driversAnswer { return ans }
@@ -115,6 +135,46 @@ func (r Real) reapInactiveHolder(name string, nodes []Node) error {
 		return fmt.Errorf("--name %q: reap the inactive holder: %w", name, err)
 	}
 	return nil
+}
+
+// claimHolderActive answers the one question the claim asks of a holder: is
+// there anything under this name a boot must not take? It is activeSubtrees'
+// judgment narrowed to one subtree — a node is life for the name it stands
+// under, and life propagates UP, so any live node in the holder's subtree
+// holds the name and nothing outside it can — and it judges each node by
+// claimSelfActive rather than nodeSelfActive. A project whose repo carries an
+// unmerged externally-managed worktree is live here as it is everywhere: the
+// checkout is work, whoever cut it.
+func (r Real) claimHolderActive(subtree []Node, ans driversAnswer, foreign map[string][]*NodeView) bool {
+	for _, n := range subtree {
+		if len(foreign[n.ID]) > 0 {
+			return true
+		}
+		if r.claimSelfActive(n, ans.state, ans.complete) {
+			return true
+		}
+	}
+	return false
+}
+
+// claimSelfActive is one node's claim to life AS A CLAIM READS IT: everything
+// nodeSelfActive counts, minus tmp/.
+//
+// tmp is the space `rm` reaps quietly, with no consent asked, because the node
+// declared it scratch. Bytes nobody has to be asked about before they are
+// deleted cannot be the thing that makes a name unavailable forever — and a box
+// gets tmp bytes for free: the relay dabs itself starts writes its socket lock
+// and its log there. A box whose instance is gone from a COMPLETE drivers'
+// answer would otherwise read as alive on nothing but that litter, and the name
+// it holds — for a caller that names boxes after a thing of its own, the only
+// name that will do — could never be claimed again.
+//
+// The narrowing is the CLAIM's alone. `ls` and `rm --inactive` keep asking
+// nodeSelfActive, so what they show and sweep does not move: a record holding
+// only scratch is still a live row there, and only a boot asking for its exact
+// name reaps it.
+func (r Real) claimSelfActive(n Node, state map[string]boxState, complete bool) bool {
+	return r.nodeHoldsLife(n, state, complete, r.nodeKeptSpaceDirs(n))
 }
 
 // claimMarker is the receipt a reservation leaves in the node dir until the
@@ -159,30 +219,30 @@ func (r Real) reserveNodeDir(name string) error {
 			return err
 		}
 		if _, rerr := r.readNode(name); rerr == nil {
-			return fmt.Errorf("--name %q: another boot just claimed it", name)
+			return refuseHeldName("--name %q: another boot just claimed it", name)
 		}
 		if fresh, err := r.claimIsFresh(dir); err != nil {
 			return err
 		} else if fresh {
-			return fmt.Errorf("--name %q: another boot is claiming it right now (or died within %s) — retry shortly, or `dabs rm %s -y`", name, claimStale, name)
+			return refuseHeldName("--name %q: another boot is claiming it right now (or died within %s) — retry shortly, or `dabs rm %s -y`", name, claimStale, name)
 		}
 		// No record and no fresh marker: litter — but a concurrent boot sits in
 		// the gap between ITS Mkdir and its marker write for a moment, so look
 		// again after a beat before deleting anything from under anyone.
 		time.Sleep(150 * time.Millisecond)
 		if _, rerr := r.readNode(name); rerr == nil {
-			return fmt.Errorf("--name %q: another boot just claimed it", name)
+			return refuseHeldName("--name %q: another boot just claimed it", name)
 		}
 		if fresh, err := r.claimIsFresh(dir); err != nil {
 			return err
 		} else if fresh {
-			return fmt.Errorf("--name %q: another boot is claiming it right now (or died within %s) — retry shortly, or `dabs rm %s -y`", name, claimStale, name)
+			return refuseHeldName("--name %q: another boot is claiming it right now (or died within %s) — retry shortly, or `dabs rm %s -y`", name, claimStale, name)
 		}
 		if err := r.data.RemoveAll(dir); err != nil {
 			return err
 		}
 	}
-	return fmt.Errorf("--name %q: could not reserve the node dir", name)
+	return refuseHeldName("--name %q: could not reserve the node dir", name)
 }
 
 // claimIsFresh reads a reservation's marker: present and younger than

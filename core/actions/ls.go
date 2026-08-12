@@ -387,6 +387,14 @@ func (r Real) activeSubtrees(nodes []Node, state map[string]boxState, complete b
 // same thing here as everywhere, and a tree of only empty directories holds
 // nothing.
 func (r Real) nodeSelfActive(n Node, state map[string]boxState, complete bool) bool {
+	return r.nodeHoldsLife(n, state, complete, r.nodeSpaceDirs(n))
+}
+
+// nodeHoldsLife is that judgment over a CHOSEN set of the node's spaces. The
+// spaces are a parameter for exactly one caller: the claim path, which judges a
+// holder without its tmp/ (see claimSelfActive). Every other reading passes all
+// three, so `ls` and `rm --inactive` keep asking the question they always did.
+func (r Real) nodeHoldsLife(n Node, state map[string]boxState, complete bool, spaces []string) bool {
 	if n.Kind == KindBox {
 		if _, live := state[n.Instance]; live || !complete {
 			// An incomplete drivers' answer cannot prove any box dead, so an
@@ -394,7 +402,7 @@ func (r Real) nodeSelfActive(n Node, state map[string]boxState, complete bool) b
 			return true
 		}
 	}
-	for _, dir := range r.nodeSpaceDirs(n) {
+	for _, dir := range spaces {
 		if holds, err := r.spaceHolds(dir); err == nil && holds {
 			return true
 		}
@@ -417,14 +425,23 @@ func (r Real) nodeSelfActive(n Node, state map[string]boxState, complete bool) b
 // through its legacy ephemeral/ fallback so an older node's files still count),
 // and tmp.
 func (r Real) nodeSpaceDirs(n Node) []string {
+	dirs := r.nodeKeptSpaceDirs(n)
+	if d, err := r.resolveNodeSpace(n.ID, SpaceTmp); err == nil {
+		dirs = append(dirs, d)
+	}
+	return dirs
+}
+
+// nodeKeptSpaceDirs is the two spaces whose bytes `rm` will not take without
+// being asked — volume (kept unless --volume) and held (`rm` asks first). They
+// are what a node holds that someone chose to keep, as opposed to tmp, which
+// `rm` reaps quietly because the node itself declared it scratch.
+func (r Real) nodeKeptSpaceDirs(n Node) []string {
 	var dirs []string
 	if d, err := r.resolveNodeSpace(n.ID, SpaceVolume); err == nil {
 		dirs = append(dirs, d)
 	}
 	if d, err := r.resolveHeldSpace(n.ID); err == nil {
-		dirs = append(dirs, d)
-	}
-	if d, err := r.resolveNodeSpace(n.ID, SpaceTmp); err == nil {
 		dirs = append(dirs, d)
 	}
 	return dirs

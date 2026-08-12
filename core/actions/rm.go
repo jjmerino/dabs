@@ -1,6 +1,7 @@
 package actions
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,13 @@ import (
 	"github.com/jjmerino/dabs/core/params"
 	"github.com/jjmerino/dabs/core/tui"
 )
+
+// ErrNoNode marks the refusal `rm` gives when the name it was handed is not a
+// node here. To a person it is a typo. To a caller reaping what it believes it
+// made, it is the news that the thing is already gone — which is the outcome it
+// wanted, so it can tell that apart from a reap that FAILED and finish the
+// cleanup it owns around the box.
+var ErrNoNode = errors.New("no node")
 
 // Rm removes a node and what it holds. A node is a place dabs made, or a box, so
 // one verb reaps either — and reaping a place reaps what stands on it.
@@ -52,7 +60,7 @@ func (r Real) rmResolved(p params.Rm, nodes []Node, states func() driversAnswer)
 		}
 		// Naming a node that isn't there is an error, the same one cd and exec
 		// report for the same situation — a typo must not read as a clean reap.
-		return fmt.Errorf("rm: no node %q (see dabs ls)", p.Node)
+		return fmt.Errorf("rm: %w %q (see dabs ls)", ErrNoNode, p.Node)
 	}
 
 	// A node stood on is a node in use — everything above it goes with it. Gather

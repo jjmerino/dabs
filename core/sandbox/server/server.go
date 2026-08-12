@@ -184,6 +184,11 @@ func (d *Driver) writeRecipe(name string, env map[string]string, workdir string)
 // Up rewrites the staged recipe with the spec's runtime fields and runs
 // `dabs recipe … --no-command` remotely, returning the instance name the remote
 // printed on its `instance:` line.
+//
+// The env and the workdir are what crosses: this driver stages a build context
+// and mounts nothing of THIS host, so spec.Mounts and spec.User have nothing to
+// be about here — a uid names one person on this machine and somebody else on
+// the far one, and the far side has no bind of ours for it to own.
 func (d *Driver) Up(spec sandbox.Spec) (string, error) {
 	if err := d.writeRecipe(spec.Name, spec.Env, spec.Workdir); err != nil {
 		return "", err

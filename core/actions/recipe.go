@@ -890,7 +890,7 @@ func (r Real) buildBox(drv sandbox.Driver, recipeName, boxID, tip string, rec re
 	if boxDoor.Path != "" {
 		sockets = append(sockets, boxDoor)
 	}
-	instance, err = drv.Up(sandbox.Spec{Name: image, Workdir: workdir, Env: env, Mounts: mounts, Sockets: sockets, Egress: egressMode, ForwarderBin: forwarderBin})
+	instance, err = drv.Up(sandbox.Spec{Name: image, Workdir: workdir, Env: env, Mounts: mounts, Sockets: sockets, Egress: egressMode, ForwarderBin: forwarderBin, User: rec.User})
 	if err != nil {
 		return "", err
 	}

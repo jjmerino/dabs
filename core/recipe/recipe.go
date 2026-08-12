@@ -42,6 +42,7 @@ type Recipe struct {
 	Keep        bool              `json:"keep,omitempty" yaml:"keep,omitempty"`               // keep the box alive after the command (default: delete it)
 	Publish     bool              `json:"publish,omitempty" yaml:"publish,omitempty"`         // may the box publish services on its door (default: it may not)
 	Egress      Egress            `json:"egress,omitempty" yaml:"egress,omitempty"`           // the box's outbound network: open | none | {allow/deny/http_proxy}
+	User        string            `json:"user,omitempty" yaml:"user,omitempty"`               // who the box's processes are, as `uid` or `uid:gid`; default the image's own user
 }
 
 // Egress is the box's outbound network — a union. As a scalar it is `open`
@@ -799,6 +800,9 @@ func Validate(name string, rec Recipe) error {
 	if err := validatePublish(name, rec); err != nil {
 		return err
 	}
+	if err := validateUser(name, rec.User); err != nil {
+		return err
+	}
 	for k, v := range rec.Env {
 		if err := rejectControl(fmt.Sprintf("env key in recipe %q", name), k); err != nil {
 			return err
@@ -860,6 +864,48 @@ func validatePublish(name string, rec Recipe) error {
 		return fmt.Errorf("recipe %q: says `publish: true` but has no image — publishing is a door into a box, and this recipe only makes places", name)
 	}
 	return nil
+}
+
+// validateUser checks who a recipe asks its box's processes to be. Unset is the
+// default and means the image's own user, so it is checked at all only when
+// something was written.
+//
+// It must be NUMERIC — `uid` or `uid:gid` — and a name is refused here rather
+// than passed to a driver. The point of naming a user is that the box's writes
+// through a mount land owned by somebody the HOST can read as, and a name is
+// resolved in the image's own /etc/passwd: `user: node` means uid 1000 in one
+// image, uid 1001 in the next and nothing at all in a third, so the one thing
+// the field is for would be a property of whatever image the recipe last built.
+// A uid says the same thing on both sides of a bind, which is the whole idea.
+//
+// Whether the uid EXISTS in the image is deliberately not checked: it need not.
+// A box's processes run under a uid with no passwd entry perfectly well (git,
+// go, tmux and node all measured working at an unnamed uid), and an image that
+// does care states its own HOME rather than having one derived for it.
+func validateUser(name, user string) error {
+	if user == "" {
+		return nil
+	}
+	uid, gid, hasGID := strings.Cut(user, ":")
+	if !numeric(uid) || (hasGID && !numeric(gid)) {
+		return fmt.Errorf("recipe %q: user %q must be numeric — `uid` or `uid:gid`. A name is resolved inside the IMAGE, so it says nothing about which host user ends up owning what the box writes through a mount, which is what `user:` is for", name, user)
+	}
+	return nil
+}
+
+// numeric reports whether s is a non-empty run of ASCII digits — what an id is,
+// and nothing else. strconv.Atoi would accept "+1000" and "-1" as well, which a
+// driver would then pass to a container runtime as if they were ids.
+func numeric(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // rejectControl fails if s holds an ASCII control byte. %q in the message

@@ -585,3 +585,55 @@ func TestSourceCollisionIsCanonical(t *testing.T) {
 		})
 	}
 }
+
+// CONTRACT: `user:` is numeric, and a name is refused with a reason.
+//
+// The field exists so what a box writes through a bind mount is owned by
+// somebody the HOST can read as, and only a uid means the same thing on both
+// sides of that bind: `user: node` is uid 1000 in one image, 1001 in the next
+// and absent in a third, so a name would make the guarantee depend on whatever
+// image the recipe was last built from. It is rejected at parse rather than
+// passed to a driver that would happily start such a box.
+func TestUserMustBeNumeric(t *testing.T) {
+	t.Run("uid and uid:gid parse", func(t *testing.T) {
+		for _, user := range []string{"1000", "1000:1000", "0:0", "65534:65534"} {
+			reg, err := recipe.Parse([]byte("recipes:\n  r:\n    image: alpine\n    user: \"" + user + "\"\n"))
+			if err != nil {
+				t.Fatalf("user %q rejected: %v", user, err)
+			}
+			rec, err := reg.Get("r")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if rec.User != user {
+				t.Errorf("recipe user = %q, want %q", rec.User, user)
+			}
+		}
+	})
+
+	t.Run("a name is refused, and says why", func(t *testing.T) {
+		for _, user := range []string{"node", "1000:staff", "nobody:1000", "+1000", "-1", "1000:", ":1000"} {
+			_, err := recipe.Parse([]byte("recipes:\n  r:\n    image: alpine\n    user: \"" + user + "\"\n"))
+			if err == nil {
+				t.Fatalf("user %q was accepted; a driver would boot a box whose writes nobody can predict the owner of", user)
+			}
+			if !strings.Contains(err.Error(), "numeric") {
+				t.Errorf("error for user %q does not say the field is numeric: %v", user, err)
+			}
+		}
+	})
+
+	t.Run("unset is the image's own user", func(t *testing.T) {
+		reg, err := recipe.Parse([]byte("recipes:\n  r:\n    image: alpine\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec, err := reg.Get("r")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rec.User != "" {
+			t.Errorf("recipe with no user: got %q, want empty", rec.User)
+		}
+	})
+}

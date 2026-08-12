@@ -233,3 +233,50 @@ func TestUpSockets(t *testing.T) {
 		}
 	})
 }
+
+// CONTRACT: a spec that names a user runs the container as it, and a spec that
+// names none leaves the image's own user alone.
+//
+// This is the one flag that decides who owns what the box writes: this daemon
+// is root, its binds pass the uid straight through, and without --user every
+// file the box leaves on a run mount is root-owned and unreadable to the
+// unprivileged program that booted it.
+func TestUpRunsAsTheSpecsUser(t *testing.T) {
+	t.Run("a named user reaches docker run", func(t *testing.T) {
+		calls := captureDocker(t)
+		if _, err := (Driver{}).Up(sandbox.Spec{Name: "img", Workdir: "/work", User: "1000:1000"}); err != nil {
+			t.Fatal(err)
+		}
+		run := strings.Join((*calls)[0], " ")
+		if !strings.Contains(run, "--user 1000:1000") {
+			t.Fatalf("argv missing --user 1000:1000: %s", run)
+		}
+		// Before the image name, or docker reads it as an argument to the
+		// container's own command instead of a flag of its own.
+		if i, j := indexOf((*calls)[0], "--user"), indexOf((*calls)[0], imageName("img")); i > j {
+			t.Fatalf("--user comes after the image (%d > %d): %s", i, j, run)
+		}
+	})
+
+	t.Run("no user leaves the image's own", func(t *testing.T) {
+		calls := captureDocker(t)
+		if _, err := (Driver{}).Up(sandbox.Spec{Name: "img", Workdir: "/work"}); err != nil {
+			t.Fatal(err)
+		}
+		for _, a := range (*calls)[0] {
+			if a == "--user" {
+				t.Fatalf("a spec naming no user set --user anyway: %v", (*calls)[0])
+			}
+		}
+	})
+}
+
+// indexOf is where arg sits in argv, or -1.
+func indexOf(argv []string, arg string) int {
+	for i, a := range argv {
+		if a == arg {
+			return i
+		}
+	}
+	return -1
+}

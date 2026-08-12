@@ -184,6 +184,10 @@ func (d Driver) Up(spec sandbox.Spec) (string, error) {
 	// DABS_NAME marks the box: anything running inside can detect it is
 	// sandboxed.
 	env = append(env, "DABS_NAME="+instance)
+	// spec.User is not carried into the instance's meta, because there is no
+	// second user here to run as and none is needed: a bwrap box is a process of
+	// the calling user's own, and what the field asks for holds unconditionally
+	// (see enter, at --unshare-user).
 	meta := instanceMeta{Workdir: spec.Workdir, Env: env, Mounts: spec.Mounts, Sockets: spec.Sockets, Egress: spec.Egress, ForwarderBin: spec.ForwarderBin}
 	if err := writeJSON(filepath.Join(dir, "meta.json"), meta); err != nil {
 		return "", err
@@ -209,7 +213,14 @@ func (d Driver) enter(instance string, cmd []string) (*exec.Cmd, error) {
 		"--overlay", filepath.Join(d.instanceDir(instance), "upper"), filepath.Join(d.instanceDir(instance), "work"), "/",
 		"--dev", "/dev",
 		"--proc", "/proc",
-		"--unshare-user", "--uid", "0", "--gid", "0", // look like root, as in the container the image was built for
+		// Look like root, as in the container the image was built for — and only
+		// look. The namespace's ONLY mapping is the calling user's own uid, so
+		// this is a relabelling inside the box: every write through a bind below
+		// lands on the host owned by whoever ran dabs, never by root. That is
+		// already what sandbox.Spec.User asks a driver for, which is why this
+		// driver takes no uid from a spec and refuses none either — there is no
+		// other uid an unprivileged namespace could map to.
+		"--unshare-user", "--uid", "0", "--gid", "0",
 		"--unshare-pid", // /proc shows only the box's processes, not the host's
 		"--unshare-uts", "--hostname", instance,
 		"--die-with-parent",

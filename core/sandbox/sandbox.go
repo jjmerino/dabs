@@ -61,6 +61,37 @@ type Spec struct {
 	// Empty otherwise, and unused by drivers whose image carries the forwarder
 	// (apple's micro-VM).
 	ForwarderBin string
+	// User is a request that what the box writes through a MOUNT be owned by a
+	// stated uid — a numeric `uid` or `uid:gid`. Empty asks nothing, and the box
+	// runs as the image's own user, which for an image naming no USER is root.
+	//
+	// Read it as ownership and not as privilege. It is NOT a guarantee about
+	// what the box's processes are inside: a driver satisfies it however its
+	// platform already does, and only the docker driver does so by changing the
+	// box's user — bwrap and apple already hold the guarantee and pass no user
+	// at all, and the ssh driver has no bind of this host for it to be about
+	// (see each one's Up). So a caller setting this to keep a box from being
+	// root inside has set the wrong thing, and will get root.
+	//
+	// The one thing it does guarantee is the reason it exists: a bind mount
+	// carries uids, not names. A box writing onto a mount as root leaves
+	// root-owned files on the host, and the ordinary user who booted it — the
+	// usual case, since a program embedding dabs runs as whoever started it —
+	// can then read nothing of what it asked the box to produce. Measured on
+	// linux/docker: the run mount came back `-rw------- root root` and every
+	// host-side read was EACCES, three minutes of polling a file that was never
+	// going to open.
+	//
+	// It is NUMERIC, and a name is refused before any driver sees it
+	// (recipe.Validate). A name resolves in the IMAGE's /etc/passwd and says
+	// nothing about the host uid that ends up owning the mount, which is the
+	// only question this field asks.
+	//
+	// A driver honors it where it CHANGES that ownership and ignores it where
+	// the guarantee already holds: docker passes it (a root daemon binds host
+	// directories straight through), bwrap and apple do not (both already give
+	// the host the caller's own ownership — see their Up).
+	User string
 }
 
 // Info is one existing sandbox instance as reported by a driver.

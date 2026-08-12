@@ -67,9 +67,11 @@ type Spec struct {
 	//
 	// Read it as ownership and not as privilege. It is NOT a guarantee about
 	// what the box's processes are inside: a driver satisfies it however its
-	// platform already does, and two of the three satisfy it without changing
-	// the box's user at all (see below) — so a caller setting it to keep a box
-	// from being root inside has set the wrong thing, and will get root.
+	// platform already does, and only the docker driver does so by changing the
+	// box's user — bwrap and apple already hold the guarantee and pass no user
+	// at all, and the ssh driver has no bind of this host for it to be about
+	// (see each one's Up). So a caller setting this to keep a box from being
+	// root inside has set the wrong thing, and will get root.
 	//
 	// The one thing it does guarantee is the reason it exists: a bind mount
 	// carries uids, not names. A box writing onto a mount as root leaves

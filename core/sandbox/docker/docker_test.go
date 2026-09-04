@@ -376,7 +376,6 @@ func TestLiveNonRootBoxConnectsToABoundSocket(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
 	// 0777 on the host, so a failure to connect is the relay's doing and not
 	// this socket's mode. Docker Desktop presents it as root:root 0660 anyway.
 	if err := os.Chmod(sock, 0o777); err != nil {
@@ -391,8 +390,8 @@ func TestLiveNonRootBoxConnectsToABoundSocket(t *testing.T) {
 	// The image is built through the driver's own Build, from the same base and
 	// the same curl the bundled shell recipe uses (images/shell/Dockerfile), so
 	// the box has a client that speaks unix sockets.
-	ctx := t.TempDir()
-	dockerfile := filepath.Join(ctx, "Dockerfile")
+	buildDir := t.TempDir()
+	dockerfile := filepath.Join(buildDir, "Dockerfile")
 	if err := os.WriteFile(dockerfile, []byte("FROM alpine:3.20\nRUN apk add --no-cache curl\nWORKDIR /work\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -400,8 +399,10 @@ func TestLiveNonRootBoxConnectsToABoundSocket(t *testing.T) {
 	if err != nil {
 		t.Skipf("docker driver unavailable: %v", err)
 	}
-	const image = "gid0probe"
-	if err := d.Build(sandbox.BuildSpec{Name: image, Dockerfile: dockerfile, Context: ctx}); err != nil {
+	// Suffixed per run, so two suites running at once do not remove each
+	// other's image in cleanup.
+	image := fmt.Sprintf("gid0probe%d", os.Getpid())
+	if err := d.Build(sandbox.BuildSpec{Name: image, Dockerfile: dockerfile, Context: buildDir}); err != nil {
 		t.Fatalf("build probe image: %v", err)
 	}
 	t.Cleanup(func() { _ = d.RemoveImage(image) })

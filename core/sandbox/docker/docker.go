@@ -103,8 +103,10 @@ func (d Driver) Up(spec sandbox.Spec) (string, error) {
 	// Desktop relays a -v socket bind through its VM, and the socket appears
 	// inside the container owned root:root with mode 0660 whatever the host
 	// owner and mode are, so a box given --user needs group 0 to connect to
-	// it. Binding the socket's parent directory instead is no way around it:
-	// the socket is visible there but connect returns ENOTSUP.
+	// it. Added on every host: the flag is unneeded under Docker Engine, where
+	// a -v socket keeps its host uid, and this driver does not tell the two
+	// apart. It widens the box to every root-group file in the image too, not
+	// only the socket.
 	if spec.User != "" && len(spec.Sockets) > 0 {
 		args = append(args, "--group-add", "0")
 	}

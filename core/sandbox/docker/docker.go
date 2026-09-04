@@ -99,6 +99,17 @@ func (d Driver) Up(spec sandbox.Spec) (string, error) {
 	for _, s := range spec.Sockets {
 		args = append(args, "-v", s.Host+":"+s.Path)
 	}
+	// Group 0 for a box that is both non-root and bound a socket. Docker
+	// Desktop relays a -v socket bind through its VM, and the socket appears
+	// inside the container owned root:root with mode 0660 whatever the host
+	// owner and mode are, so a box given --user needs group 0 to connect to
+	// it. Added on every host: the flag is unneeded under Docker Engine, where
+	// a -v socket keeps its host uid, and this driver does not tell the two
+	// apart. It widens the box to every root-group file in the image too, not
+	// only the socket.
+	if spec.User != "" && len(spec.Sockets) > 0 {
+		args = append(args, "--group-add", "0")
+	}
 	// sleep infinity keeps the box alive; docker exec inherits the container's
 	// env and image WORKDIR, so Run/Exec need not re-pass them.
 	keepAlive := []string{"sleep", "infinity"}

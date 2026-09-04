@@ -2,7 +2,12 @@ package docker
 
 import (
 	"errors"
+	"fmt"
+	"net"
+	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -234,6 +239,59 @@ func TestUpSockets(t *testing.T) {
 	})
 }
 
+// CONTRACT: a box that is both non-root and bound a socket is given group 0,
+// and a box missing either half is not.
+//
+// Docker Desktop relays a -v socket bind through its VM and the socket appears
+// inside the container owned root:root with mode 0660, so without group 0 a
+// --user box gets EACCES on connect and every socket the recipe declared — the
+// box door among them — is unreachable.
+func TestUpSocketsForANonRootBox(t *testing.T) {
+	t.Run("a user and a socket get group 0", func(t *testing.T) {
+		calls := captureDocker(t)
+		_, err := (Driver{}).Up(sandbox.Spec{
+			Name: "img", Workdir: "/work", User: "1000:1000",
+			Sockets: []sandbox.Mount{{Host: "/host/one.sock", Path: "/run/dabs/one.sock"}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		run := strings.Join((*calls)[0], " ")
+		if !strings.Contains(run, "--group-add 0") {
+			t.Fatalf("argv missing --group-add 0: %s", run)
+		}
+		// Before the image name, or docker reads it as an argument to the
+		// container's own command instead of a flag of its own.
+		if i, j := indexOf((*calls)[0], "--group-add"), indexOf((*calls)[0], imageName("img")); i > j {
+			t.Fatalf("--group-add comes after the image (%d > %d): %s", i, j, run)
+		}
+	})
+
+	t.Run("a user with no socket gets none", func(t *testing.T) {
+		calls := captureDocker(t)
+		if _, err := (Driver{}).Up(sandbox.Spec{Name: "img", Workdir: "/work", User: "1000:1000"}); err != nil {
+			t.Fatal(err)
+		}
+		if i := indexOf((*calls)[0], "--group-add"); i >= 0 {
+			t.Fatalf("a box with no socket was given a group anyway: %v", (*calls)[0])
+		}
+	})
+
+	t.Run("a socket with no user gets none", func(t *testing.T) {
+		calls := captureDocker(t)
+		_, err := (Driver{}).Up(sandbox.Spec{
+			Name: "img", Workdir: "/work",
+			Sockets: []sandbox.Mount{{Host: "/host/one.sock", Path: "/run/dabs/one.sock"}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i := indexOf((*calls)[0], "--group-add"); i >= 0 {
+			t.Fatalf("a box running as the image's own user was given a group anyway: %v", (*calls)[0])
+		}
+	})
+}
+
 // CONTRACT: a spec that names a user runs the container as it, and a spec that
 // names none leaves the image's own user alone.
 //
@@ -279,4 +337,99 @@ func indexOf(argv []string, arg string) int {
 		}
 	}
 	return -1
+}
+
+// TestLiveNonRootBoxConnectsToABoundSocket boots a REAL container through the
+// driver and connects from inside it, as the spec's user, to a socket a program
+// on the host is listening on. It is the only proof of the group-0 rule: the
+// permissions the box sees are invented by Docker Desktop's relay, so no argv
+// assertion can show whether the connect succeeds.
+//
+// Gated on docker being on PATH and its daemon answering, and skipped when the
+// test runs as root, whose connect would succeed either way.
+func TestLiveNonRootBoxConnectsToABoundSocket(t *testing.T) {
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker not available")
+	}
+	if err := exec.Command("docker", "info").Run(); err != nil {
+		t.Skipf("docker daemon not reachable: %v", err)
+	}
+	if os.Getuid() == 0 {
+		t.Skip("running as root; a root box connects whatever its groups")
+	}
+
+	// A SHORT host path: a unix socket's address is capped at 104 bytes
+	// (sun_path), and Docker Desktop answers a longer one by binding an empty
+	// directory in its place. t.TempDir() spells the test's name into the path,
+	// so the socket gets a directory of its own instead.
+	dir, err := os.MkdirTemp("", "dbs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	sock := filepath.Join(dir, "p.sock")
+	if len(sock) > 100 {
+		t.Skipf("temp dir leaves no room under the 104-byte sun_path cap: %s", sock)
+	}
+
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	// 0777 on the host, so a failure to connect is the relay's doing and not
+	// this socket's mode. Docker Desktop presents it as root:root 0660 anyway.
+	if err := os.Chmod(sock, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, "pong")
+	})}
+	go srv.Serve(ln)
+	defer srv.Close()
+
+	// The image is built through the driver's own Build, from the same base and
+	// the same curl the bundled shell recipe uses (images/shell/Dockerfile), so
+	// the box has a client that speaks unix sockets.
+	ctx := t.TempDir()
+	dockerfile := filepath.Join(ctx, "Dockerfile")
+	if err := os.WriteFile(dockerfile, []byte("FROM alpine:3.20\nRUN apk add --no-cache curl\nWORKDIR /work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	d, err := New()
+	if err != nil {
+		t.Skipf("docker driver unavailable: %v", err)
+	}
+	const image = "gid0probe"
+	if err := d.Build(sandbox.BuildSpec{Name: image, Dockerfile: dockerfile, Context: ctx}); err != nil {
+		t.Fatalf("build probe image: %v", err)
+	}
+	t.Cleanup(func() { _ = d.RemoveImage(image) })
+
+	instance, err := d.Up(sandbox.Spec{
+		Name:    image,
+		Workdir: "/work",
+		User:    fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
+		Sockets: []sandbox.Mount{{Host: sock, Path: "/run/dabs/probe.sock"}},
+	})
+	if err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Down(instance) })
+
+	// docker exec runs as the container's own user, so this connect is the
+	// unprivileged one the box's programs make.
+	who, err := d.Exec(instance, []string{"id"})
+	if err != nil {
+		t.Fatalf("id in box: %v", err)
+	}
+	t.Logf("box identity: %s", strings.TrimSpace(who))
+
+	out, err := d.Exec(instance, []string{"curl", "-sS", "--unix-socket", "/run/dabs/probe.sock", "http://localhost/ping"})
+	if err != nil {
+		t.Fatalf("connect to the bound socket from inside the box failed: %v\n%s\nbox identity: %s", err, out, who)
+	}
+	if !strings.Contains(out, "pong") {
+		t.Fatalf("connected but read %q, want pong", out)
+	}
 }

@@ -279,15 +279,106 @@ test("the static policy still runs first: a host outside allow never reaches the
   expect(up.seen).toEqual(["CONNECT origin.test:443 HTTP/1.1"]);
 });
 
-test("an upstream that refuses the CONNECT closes the box's tunnel, and the ledger says so", async () => {
-  const up = await fakeUpstream({});
+// rawExchange sends one request to the engine and resolves with everything
+// that comes back until the engine closes.
+function rawExchange(socket: string, request: string): Promise<string> {
+  return new Promise((resolve) => {
+    const c = net.connect(socket, () => c.write(request));
+    let buf = "";
+    c.on("error", () => {});
+    c.on("data", (d) => { buf += d.toString("latin1"); });
+    c.on("close", () => resolve(buf));
+  });
+}
+const connectRequest = (authority: string) => `CONNECT ${authority} HTTP/1.1\r\nHost: ${authority}\r\n\r\n`;
+const getRequest = (url: string) => `GET ${url} HTTP/1.1\r\nHost: ${new URL(url).host}\r\n\r\n`;
+const headOf = (response: string) => response.split("\r\n\r\n")[0];
+const bodyOf = (response: string) => response.slice(response.indexOf("\r\n\r\n") + 4);
+const header = (response: string, name: string) => headOf(response).split("\r\n").filter((l) => l.toLowerCase().startsWith(name.toLowerCase() + ": ")).map((l) => l.slice(name.length + 2));
+
+test("an upstream's error answer reaches the box with its status and body, on both proxy paths", async () => {
+  const body = "no tunnel for you\n";
+  const up = await fakeUpstream({}, `HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nX-Other: dropped\r\nContent-Length: ${body.length}\r\n\r\n${body}`);
   const { socket, ledger } = await engineWith({ upstream: `http://127.0.0.1:${up.port}` });
-  const r = await connectThrough(socket, "refused.test:443");
-  expect(r.reply).toBe("");
-  expect(up.seen).toEqual(["CONNECT refused.test:443 HTTP/1.1"]);
-  await Bun.sleep(50);
-  const refused = ledger().find((e) => e.verdict === "upstream-refused");
-  expect(refused?.reason).toContain("HTTP/1.1 403 Forbidden");
+
+  const tunnel = await rawExchange(socket, connectRequest("refused.test:443"));
+  const plain = await rawExchange(socket, getRequest("http://refused.test/x"));
+  for (const [what, r, authority] of [["CONNECT", tunnel, "refused.test:443"], ["GET", plain, "refused.test:80"]]) {
+    expect([what, r.split("\r\n")[0]]).toEqual([what, "HTTP/1.1 403 Forbidden"]);
+    expect([what, bodyOf(r)]).toEqual([what, body]);
+    expect([what, header(r, "Content-Type")]).toEqual([what, ["text/plain"]]);
+    expect([what, header(r, "X-Other")]).toEqual([what, []]);
+    // The upstream gave no reason header of its own, so the engine adds one,
+    // and it is a failure, not this engine's refusal.
+    expect([what, header(r, "X-Dabs-Egress-Refused")]).toEqual([what, []]);
+    expect([what, header(r, "X-Dabs-Egress-Failed")]).toEqual([what, [`upstream proxy refused CONNECT ${authority}: HTTP/1.1 403 Forbidden`]]);
+  }
+  expect(up.seen).toEqual(["CONNECT refused.test:443 HTTP/1.1", "CONNECT refused.test:80 HTTP/1.1"]);
+  expect(ledger().filter((e) => e.verdict === "upstream-refused").map((e) => [e.verdict, e.proto, e.reason])).toEqual([
+    ["upstream-refused", "connect", "upstream proxy refused CONNECT refused.test:443: HTTP/1.1 403 Forbidden"],
+    ["upstream-refused", "http", "upstream proxy refused CONNECT refused.test:80: HTTP/1.1 403 Forbidden"],
+  ]);
+});
+
+// The parent here is a real engine in direct mode, reached over TCP: the
+// child's upstream setting takes a host and port, and an engine listens on a
+// unix socket, so a small bridge joins the two.
+test("a parent engine's refusal and failure reach the box with the parent's reason", async () => {
+  const target = await echoTarget();
+  const work = mkdtempSync(join(tmpdir(), "dabs-upstream-parent-"));
+  const parentNames: Record<string, string[]> = { "ok.test": ["127.0.0.1"], "inner.test": ["10.0.0.5"] };
+  const parent = await start({
+    socket: join(work, "parent.sock"), caDir: join(work, "parent-ca"), allow: ["*"], chain: [], upstream: "", allowLocal: ["127.0.0.1"],
+    resolve: async (h) => { if (!parentNames[h]) throw new Error(`no test name ${h}`); return parentNames[h]; },
+    connect: (address, port) => net.connect({ host: address, port: address === "127.0.0.1" ? target.port : port }),
+  });
+  cleanups.push(() => parent.stop());
+  const bridge = net.createServer((c) => { c.on("error", () => {}); const p = net.connect(join(work, "parent.sock")); p.on("error", () => c.destroy()); c.pipe(p); p.pipe(c); });
+  const bridgePort = await listen(bridge);
+  cleanups.push(() => bridge.close());
+  const { socket } = await engineWith({ upstream: `http://127.0.0.1:${bridgePort}` });
+
+  // The anchor: a destination the parent allows goes through both engines.
+  expect((await connectThrough(socket, "ok.test:443")).reply).toBe("echo:ping");
+
+  const refusal = "inner.test is 10.0.0.5, a private address (10.0.0.0/8); egress never reaches this host, its networks or a private range";
+  for (const [what, r] of [["CONNECT", await rawExchange(socket, connectRequest("inner.test:443"))], ["GET", await rawExchange(socket, getRequest("http://inner.test/"))]]) {
+    expect([what, r.split("\r\n")[0]]).toEqual([what, "HTTP/1.1 403 Forbidden"]);
+    expect([what, header(r, "X-Dabs-Egress-Refused")]).toEqual([what, [refusal]]);
+    expect([what, header(r, "X-Dabs-Egress-Failed")]).toEqual([what, []]);
+    expect([what, bodyOf(r)]).toEqual([what, refusal + "\n"]);
+  }
+  const failure = "looking up nowhere.test: no test name nowhere.test";
+  for (const [what, r] of [["CONNECT", await rawExchange(socket, connectRequest("nowhere.test:443"))], ["GET", await rawExchange(socket, getRequest("http://nowhere.test/"))]]) {
+    expect([what, r.split("\r\n")[0]]).toEqual([what, "HTTP/1.1 502 Bad Gateway"]);
+    expect([what, header(r, "X-Dabs-Egress-Failed")]).toEqual([what, [failure]]);
+    expect([what, header(r, "X-Dabs-Egress-Refused")]).toEqual([what, []]);
+    expect([what, bodyOf(r)]).toEqual([what, failure + "\n"]);
+  }
+  expect(target.got).toEqual(["ping"]);
+});
+
+test("an upstream's 407 reaches the box as a 502", async () => {
+  const up = await fakeUpstream({}, "HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic\r\nContent-Length: 0\r\n\r\n");
+  const { socket } = await engineWith({ upstream: `http://127.0.0.1:${up.port}` });
+  const r = await rawExchange(socket, connectRequest("auth.test:443"));
+  expect(r.split("\r\n")[0]).toBe("HTTP/1.1 502 Bad Gateway");
+  expect(header(r, "Proxy-Authenticate")).toEqual([]);
+  expect(header(r, "X-Dabs-Egress-Failed")).toEqual(["upstream proxy refused CONNECT auth.test:443: HTTP/1.1 407 Proxy Authentication Required"]);
+});
+
+test("an upstream that answers an error and keeps the connection open does not hold the box", async () => {
+  const body = "refused\n";
+  const server = net.createServer((c) => { c.on("error", () => {}); c.once("data", () => c.write(`HTTP/1.1 403 Forbidden\r\nContent-Length: ${body.length}\r\n\r\n${body}`)); });
+  const port = await listen(server);
+  cleanups.push(() => server.close());
+  const { socket } = await engineWith({ upstream: `http://127.0.0.1:${port}` });
+  // A liveness bound, not a benchmark: an engine that waited for the close
+  // would answer after UPSTREAM_ANSWER_MS (30 s), and the race ends on the
+  // guard instead.
+  const r = await Promise.race([rawExchange(socket, connectRequest("open.test:443")), Bun.sleep(3000).then(() => "still waiting after 3 s")]);
+  expect(r.split("\r\n")[0]).toBe("HTTP/1.1 403 Forbidden");
+  expect(bodyOf(r)).toBe(body);
 });
 
 test("an upstream that cannot be reached is a 502 that says so and is not a refusal", async () => {

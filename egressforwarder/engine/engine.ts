@@ -193,8 +193,8 @@ function compilePolicy(allow: string[], deny: string[]): (host: string) => boole
 //
 // The check runs when a connection is opened, after the gate: a request a
 // hook answers itself opens none, so it is never refused for its address. A
-// CONNECT that will be tunneled is checked before its 200, so the box can be
-// told why with a 403.
+// CONNECT that will be tunneled is checked and connected before its 200, so
+// the box can be told why with a 403, or a 502 when the connection fails.
 //
 // An operator can open given addresses with `allowLocal` in the config or
 // DABS_EGRESS_ALLOW_LOCAL (comma-separated addresses or CIDR prefixes) in the
@@ -394,15 +394,26 @@ export class EgressFailed extends Error {}
 export const REFUSED_HEADER = "X-Dabs-Egress-Refused";
 export const FAILED_HEADER = "X-Dabs-Egress-Failed";
 
+const headerLine = (s: string) => s.trim().replace(/[\x00-\x1f\x7f]/g, " ");
+
 // egressResponse is a complete HTTP response for a connection the engine did
-// not open: a 403 for an EgressRefused, a 502 for anything else.
-export function egressResponse(e: unknown): string {
-  const refused = e instanceof EgressRefused;
+// not open: a 403 for an EgressRefused, the upstream's own answer for an
+// UpstreamAnswered, and a 502 for anything else.
+export function egressResponse(e: unknown): Buffer {
+  if (e instanceof UpstreamAnswered) {
+    // A 407 asks for credentials for the upstream, which the box does not
+    // hold and this engine does not ask for, so the box gets a 502.
+    const [status, text] = e.status === 407 ? [502, "Bad Gateway"] : [e.status, e.statusText || "Error"];
+    let head = `HTTP/1.1 ${status} ${text}\r\n`;
+    for (const [k, v] of e.headers) head += `${k}: ${headerLine(v)}\r\n`;
+    if (!e.headers.some(([k]) => k === REFUSED_HEADER || k === FAILED_HEADER)) head += `${FAILED_HEADER}: ${headerLine(e.message)}\r\n`;
+    head += `Content-Length: ${e.body.length}\r\nConnection: close\r\n\r\n`;
+    return Buffer.concat([Buffer.from(head, "latin1"), e.body]);
+  }
   const reason = ((e as Error)?.message ?? String(e)).trim();
-  const line = reason.replace(/[\x00-\x1f\x7f]/g, " ");
   const body = reason + "\n";
-  const head = refused ? `403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\n${REFUSED_HEADER}: ${line}` : `502 Bad Gateway\r\nContent-Type: text/plain; charset=utf-8\r\n${FAILED_HEADER}: ${line}`;
-  return `HTTP/1.1 ${head}\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`;
+  const head = e instanceof EgressRefused ? `403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\n${REFUSED_HEADER}: ${headerLine(reason)}` : `502 Bad Gateway\r\nContent-Type: text/plain; charset=utf-8\r\n${FAILED_HEADER}: ${headerLine(reason)}`;
+  return Buffer.from(`HTTP/1.1 ${head}\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`);
 }
 
 // Resolve looks a name up and returns every address it has.
@@ -561,33 +572,74 @@ function authorityOf(host: string, port: number): string {
   return host.includes(":") ? `[${host}]:${port}` : `${host}:${port}`;
 }
 
+// UpstreamAnswered is a CONNECT the upstream answered with an error status.
+// The box gets that status, the headers in RELAYED_HEADERS and the body, so
+// a refusal by an upstream dabs engine reaches the box with its reason.
+export class UpstreamAnswered extends Error {
+  constructor(reason: string, readonly status: number, readonly statusText: string, readonly headers: [string, string][], readonly body: Buffer) { super(reason); }
+}
+
+// RELAYED_HEADERS are the headers of an upstream's error answer that the box
+// gets. Spelled here as they are written to the box.
+const RELAYED_HEADERS = ["Content-Type", REFUSED_HEADER, FAILED_HEADER];
+
+// MAX_RELAYED_BODY caps the body of an upstream's error answer that the box
+// gets; the rest is dropped.
+const MAX_RELAYED_BODY = 16384;
+
 // dialUpstream opens a CONNECT tunnel to host:port through the upstream and
-// resolves with the socket once the upstream answers 200. Any other answer,
-// a close before the answer, an oversized head, or no answer within
-// timeoutMs rejects. host is bare (no brackets). The socket is handed over
-// paused.
+// resolves with the socket once the upstream answers 200. A 4xx or 5xx answer
+// rejects with an UpstreamAnswered, once its Content-Length body (up to
+// MAX_RELAYED_BODY) has arrived or the upstream closed. Any other answer, a
+// close before the answer, an oversized head, or no answer within timeoutMs
+// rejects with an Error. host is bare (no brackets). The socket is handed
+// over paused.
 export function dialUpstream(up: Upstream, host: string, port: number, timeoutMs = UPSTREAM_ANSWER_MS): Promise<net.Socket> {
   const authority = authorityOf(host, port);
   return new Promise((resolve, reject) => {
     const sock = net.connect(up.port, up.host);
     let head = Buffer.alloc(0);
     let settled = false;
-    const timer = setTimeout(() => fail(new Error(`upstream proxy ${authorityOf(up.host, up.port)} did not answer CONNECT ${authority} within ${timeoutMs} ms`)), timeoutMs);
+    // Set once the upstream has answered with an error status; later reads
+    // only collect its body.
+    let refusal: { line: string; status: number; statusText: string; headers: Record<string, string>; bodyStart: number; want: number } | null = null;
     const fail = (e: Error) => { if (settled) return; settled = true; clearTimeout(timer); sock.destroy(); reject(e); };
-    const onError = (e: Error) => fail(new Error(`upstream proxy ${authorityOf(up.host, up.port)}: ${e.message}`));
-    const onClose = () => fail(new Error(`upstream proxy closed before answering CONNECT ${authority}`));
+    const relay = () => {
+      const r = refusal!;
+      const headers: [string, string][] = [];
+      for (const k of RELAYED_HEADERS) { const v = r.headers[k.toLowerCase()]; if (v !== undefined) headers.push([k, v]); }
+      fail(new UpstreamAnswered(`upstream proxy refused CONNECT ${authority}: ${r.line}`, r.status, r.statusText, headers, Buffer.from(head.subarray(r.bodyStart, r.bodyStart + r.want))));
+    };
+    const timer = setTimeout(() => refusal ? relay() : fail(new Error(`upstream proxy ${authorityOf(up.host, up.port)} did not answer CONNECT ${authority} within ${timeoutMs} ms`)), timeoutMs);
+    const onError = (e: Error) => refusal ? relay() : fail(new Error(`upstream proxy ${authorityOf(up.host, up.port)}: ${e.message}`));
+    const onClose = () => refusal ? relay() : fail(new Error(`upstream proxy closed before answering CONNECT ${authority}`));
     const onData = (d: Buffer) => {
       head = Buffer.concat([head, d]);
+      if (refusal) {
+        if (head.length - refusal.bodyStart >= refusal.want) relay();
+        return;
+      }
       const end = head.indexOf("\r\n\r\n");
       if (end < 0) {
         if (head.length > 16384) fail(new Error(`upstream proxy sent more than 16 KiB without ending its answer to CONNECT ${authority}`));
         return;
       }
+      const { start: line, headers } = parseHeadLines(head.subarray(0, end));
+      const m = line.match(/^HTTP\/1\.[01] (\d{3})(?: (.*))?$/);
+      const status = m ? Number(m[1]) : 0;
+      if (status >= 400 && status <= 599) {
+        // Only a Content-Length body is read: a chunked one or one that ends
+        // at close could keep the box waiting on an upstream that holds the
+        // connection open.
+        const clen = headers["transfer-encoding"] === undefined && /^\d+$/.test(headers["content-length"] ?? "") ? Number(headers["content-length"]) : 0;
+        refusal = { line, status, statusText: (m![2] ?? "").replace(/[^\x20-\x7e]/g, ""), headers, bodyStart: end + 4, want: Math.min(clen, MAX_RELAYED_BODY) };
+        if (head.length - refusal.bodyStart >= refusal.want) relay();
+        return;
+      }
       sock.removeListener("data", onData);
       sock.removeListener("error", onError);
       sock.removeListener("close", onClose);
-      const status = head.toString("latin1", 0, head.indexOf("\r\n"));
-      if (!/^HTTP\/1\.[01] 200\b/.test(status)) { fail(new Error(`upstream proxy refused CONNECT ${authority}: ${status}`)); return; }
+      if (status !== 200) { fail(new Error(`upstream proxy refused CONNECT ${authority}: ${line}`)); return; }
       settled = true;
       clearTimeout(timer);
       sock.pause();
@@ -1156,7 +1208,7 @@ export async function start(cfg: EngineConfig): Promise<{ stop: () => void }> {
   if (allowLocal.length) console.warn(`warning: egress may reach these local or private addresses: ${allowLocal.map((p) => `${formatIP(p.ip)}/${p.bits}`).join(", ")}`);
   const resolve = cfg.resolve ?? systemResolve;
   const networks = cfg.networks ?? hostNetworks;
-  const connect = cfg.connect ?? systemConnect;
+  const connectAddress = cfg.connect ?? systemConnect;
   const connectTimeoutMs = cfg.connectTimeoutMs ?? CONNECT_ATTEMPT_MS;
 
   // checkTarget checks host and returns what to connect to: in direct mode
@@ -1164,10 +1216,10 @@ export async function start(cfg: EngineConfig): Promise<{ stop: () => void }> {
   // upstreamTarget returns. connectTarget connects to what checkTarget
   // returned; dial is the two in a row, and opens every connection the
   // engine makes for a box. A refusal or a failure is recorded in the ledger
-  // and thrown as an EgressRefused or an EgressFailed for the caller to
-  // answer the box with.
+  // and thrown as an EgressRefused, an EgressFailed or an UpstreamAnswered
+  // for the caller to answer the box with (egressResponse).
   const failed = (e: unknown, host: string, port: number, proto: string): Error => {
-    const r = e instanceof EgressRefused || e instanceof EgressFailed ? e : new EgressFailed((e as Error)?.message ?? String(e));
+    const r = e instanceof EgressRefused || e instanceof EgressFailed || e instanceof UpstreamAnswered ? e : new EgressFailed((e as Error)?.message ?? String(e));
     const verdict = r instanceof EgressRefused ? "deny-address" : upstream ? "upstream-refused" : "unreachable";
     connLog(host, port, verdict, proto, { ...(r instanceof EgressRefused && r.address ? { address: r.address } : {}), reason: clampReason(r.message) });
     return r;
@@ -1177,7 +1229,7 @@ export async function start(cfg: EngineConfig): Promise<{ stop: () => void }> {
     catch (e) { throw failed(e, host, port, proto); }
   };
   const connectTarget = async (addrs: string[], host: string, port: number, proto: string): Promise<net.Socket> => {
-    try { return upstream ? await dialUpstream(upstream, addrs[0], port) : await connectTo(addrs, port, host, connect, connectTimeoutMs); }
+    try { return upstream ? await dialUpstream(upstream, addrs[0], port) : await connectTo(addrs, port, host, connectAddress, connectTimeoutMs); }
     catch (e) { throw failed(e, host, port, proto); }
   };
   const dial: Dial = async (host, port, proto) => connectTarget(await checkTarget(host, port, proto), host, port, proto);
@@ -1273,7 +1325,7 @@ export async function start(cfg: EngineConfig): Promise<{ stop: () => void }> {
 
   // answer ends a client the engine will not serve. The client is resumed so
   // whatever it still sends is read and dropped, and the close completes.
-  function answer(client: net.Socket, response: string) {
+  function answer(client: net.Socket, response: string | Buffer) {
     client.resume();
     client.end(response);
   }
@@ -1302,23 +1354,23 @@ export async function start(cfg: EngineConfig): Promise<{ stop: () => void }> {
           // tunnel.
           if (!(await gateConnection(host, port, "connect"))) { answer(client, "HTTP/1.1 403 Forbidden\r\n\r\n"); return; }
 
-          // A connection that will be tunneled is checked before the 200, so a
-          // refused address is answered with a status the box can read, and
-          // connected to after the box's first bytes. An inspected one is
-          // checked later, when the engine dials it.
+          // A connection that will be tunneled is opened before the 200, so
+          // a refused address, a failed connection or an upstream's refusal
+          // is answered with a status the box can read. An inspected one is
+          // opened later, when the engine dials it for a request.
           const passthrough = failOpen && pinnedHosts.has(host);
           const inspect = shouldInspect(host) && !passthrough;
-          let addrs: string[] = [];
+          let up: net.Socket | null = null;
           if (!inspect) {
-            try { addrs = await checkTarget(host, port, "connect"); }
+            try { up = await dial(host, port, "connect"); }
             catch (e) { answer(client, egressResponse(e)); return; }
           }
           client.resume();
           client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
 
           const hello = await firstChunk(client);
-          if (!hello) { connLog(host, port, "no-hello"); client.destroy(); return; }
-          if (!ALLOW_ECH && helloHasECH(hello)) { connLog(host, port, "ech-drop"); client.destroy(); return; } // ECH hides the SNI
+          if (!hello) { connLog(host, port, "no-hello"); client.destroy(); up?.destroy(); return; }
+          if (!ALLOW_ECH && helloHasECH(hello)) { connLog(host, port, "ech-drop"); client.destroy(); up?.destroy(); return; } // ECH hides the SNI
 
           if (inspect) {
             let termSock: string;
@@ -1359,12 +1411,7 @@ export async function start(cfg: EngineConfig): Promise<{ stop: () => void }> {
           // connection straight to the real host — a pinning client is not broken,
           // and any protocol reaches an allowed domain.
           connLog(host, port, passthrough ? "tunnel-pinned" : "tunnel");
-          client.pause();
-          let up: net.Socket;
-          try { up = await connectTarget(addrs, host, port, "connect"); }
-          catch { client.destroy(); return; }
-          client.resume();
-          tunnel(client, up, hello);
+          tunnel(client, up!, hello);
           return;
         }
         const httpReq = line.match(/^([A-Z]+)\s+(http:\/\/\S+)\s+HTTP\/1\.[01]/i);

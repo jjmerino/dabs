@@ -365,8 +365,18 @@ function connectLine(sock: string, host: string, port: number): Promise<string> 
 
 // documentationAddress resolves every name to 192.0.2.1, a public documentation
 // address (RFC 5737), so a CONNECT the gate allows passes the address check
-// without a real lookup. connectLine sends no ClientHello, so nothing is dialed.
+// without a real lookup. The engine connects before it answers 200, so
+// sinkConnect sends that connection to a local server that accepts it and
+// does nothing, instead of to 192.0.2.1.
 const documentationAddress = async () => ["192.0.2.1"];
+let sinkPort = 0;
+beforeAll(async () => {
+  const sink = net.createServer((c) => { c.on("error", () => {}); });
+  await new Promise<void>((r) => sink.listen(0, "127.0.0.1", r));
+  sinkPort = (sink.address() as net.AddressInfo).port;
+  sink.unref();
+});
+const sinkConnect = () => net.connect(sinkPort, "127.0.0.1");
 
 // ledgerLines reads the connection ledger written so far.
 function ledgerLines(path: string): Record<string, unknown>[] {
@@ -389,7 +399,7 @@ test("onConnect denies a connection the static policy allows, and the ledger say
     socket,
     caDir: join(work, "ca"),
     allow: ["example.com"], // the apex and every subdomain: BOTH hosts below pass the static gate
-    resolve: documentationAddress,
+    resolve: documentationAddress, connect: sinkConnect,
     chain: [{ name: "gate", module: gateMod, config: { block: "blocked.example.com" } }],
   });
 
@@ -428,7 +438,7 @@ export default (config) => ({
     socket,
     caDir: join(work, "ca"),
     allow: ["good.example.com"],
-    resolve: documentationAddress,
+    resolve: documentationAddress, connect: sinkConnect,
     chain: [{ name: "yes", module: yesMod, config: { seen } }],
   });
 
@@ -463,7 +473,7 @@ test("the connection tier fails closed: a throwing or hanging onConnect denies",
     socket,
     caDir: join(work, "ca"),
     allow: ["example.com"],
-    resolve: documentationAddress,
+    resolve: documentationAddress, connect: sinkConnect,
     chain: [{ name: "broken", module: brokenMod, config: {} }],
   });
 

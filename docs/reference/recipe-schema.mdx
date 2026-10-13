@@ -156,7 +156,10 @@ such as a VM with a closed network. In that mode the engine checks IP literals
 other names: the upstream proxy must refuse a name that resolves to a local
 address. dabs starts the engine without `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`
 or their lowercase forms in this mode, so a hook's own requests cannot leave by
-another proxy. A malformed value stops the boot.
+another proxy. A malformed value stops the boot. When the upstream answers a
+CONNECT with a 4xx or 5xx, the box gets that status, its body and its
+`X-Dabs-Egress-Refused` or `X-Dabs-Egress-Failed` header, so a refusal by an
+upstream dabs engine reaches the box with its reason. A 407 becomes a 502.
 
 Proxy egress needs `bun` and `openssl` on the host PATH, and a forwarder binary
 to mount in the box: the CLI carries one embedded (`-tags withforwarder`), and a

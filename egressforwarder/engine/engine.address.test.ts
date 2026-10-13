@@ -330,6 +330,7 @@ test("a name that does not resolve, or a connection that fails, is a 502 that sa
     ["CONNECT empty.test", (await connectThrough(socket, `empty.test:${o.port}`)).head],
     ["GET nowhere.test", await plainGet(socket, `http://nowhere.test:${o.port}/`)],
     ["GET dead port", await plainGet(socket, `http://ok.test:${dead}/`)],
+    ["CONNECT dead port", (await connectThrough(socket, `ok.test:${dead}`)).head],
   ];
   for (const [what, response] of answers) {
     expect([what, response.split("\r\n")[0]]).toEqual([what, "HTTP/1.1 502 Bad Gateway"]);
@@ -340,8 +341,9 @@ test("a name that does not resolve, or a connection that fails, is a 502 that sa
     ["CONNECT empty.test", "empty.test has no address"],
     ["GET nowhere.test", "looking up nowhere.test: no test name nowhere.test"],
     ["GET dead port", expect.stringMatching(/^connecting to ok\.test: 127\.0\.0\.1: .+/)],
+    ["CONNECT dead port", expect.stringMatching(/^connecting to ok\.test: 127\.0\.0\.1: .+/)],
   ]);
-  expect(ledger().filter((e) => e.verdict === "unreachable").map((e) => [e.host, e.proto])).toEqual([["nowhere.test", "connect"], ["empty.test", "connect"], ["nowhere.test", "http"], ["ok.test", "http"]]);
+  expect(ledger().filter((e) => e.verdict === "unreachable").map((e) => [e.host, e.proto])).toEqual([["nowhere.test", "connect"], ["empty.test", "connect"], ["nowhere.test", "http"], ["ok.test", "http"], ["ok.test", "connect"]]);
   expect(ledger().filter((e) => e.verdict === "deny-address")).toEqual([]);
 });
 
@@ -369,7 +371,10 @@ test("an address that never answers is given up on, and the next address is trie
   const r = await within(plainGet(socket, `http://silent.test:${o.port}/`));
   expect(r).toStartWith("HTTP/1.1 502 Bad Gateway");
   expect(failedHeader(r as string)).toBe("connecting to silent.test: 127.0.0.3: no answer within 200 ms");
-  expect(ledger().filter((e) => e.verdict === "unreachable").map((e) => e.host)).toEqual(["silent.test"]);
+  const t = await within(connectThrough(socket, `silent.test:${o.port}`));
+  expect((t as { head: string }).head.split("\r\n")[0]).toBe("HTTP/1.1 502 Bad Gateway");
+  expect(failedHeader((t as { head: string }).head)).toBe("connecting to silent.test: 127.0.0.3: no answer within 200 ms");
+  expect(ledger().filter((e) => e.verdict === "unreachable").map((e) => [e.host, e.proto])).toEqual([["silent.test", "http"], ["silent.test", "connect"]]);
   expect(o.connections()).toBe(1);
 });
 

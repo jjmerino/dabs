@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as net from "node:net";
 import * as tls from "node:tls";
-import { start, refusedAddress, parseIP, parsePrefix, literalAddress, parseAllowLocal, hostNetworks, REFUSED_HEADER, FAILED_HEADER, type Prefix } from "./engine.ts";
+import { start, firstChunk, refusedAddress, parseIP, parsePrefix, literalAddress, parseAllowLocal, hostNetworks, REFUSED_HEADER, FAILED_HEADER, type Prefix } from "./engine.ts";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => { while (cleanups.length) cleanups.pop()!(); });
@@ -129,18 +129,22 @@ function listen(server: net.Server): Promise<number> {
 }
 
 // origin is a TCP server on loopback that counts the connections it gets and
-// answers each first chunk with "echo:" and the chunk.
+// how many are still open, and answers each first chunk with "echo:" and the
+// chunk.
 async function origin() {
   const got: string[] = [];
   let connections = 0;
+  let open = 0;
   const server = net.createServer((c) => {
     connections++;
+    open++;
+    c.on("close", () => open--);
     c.on("error", () => {});
     c.on("data", (d) => { got.push(d.toString("latin1")); c.write("echo:" + d.toString("latin1")); });
   });
   const port = await listen(server);
   cleanups.push(() => server.close());
-  return { port, got, connections: () => connections };
+  return { port, got, connections: () => connections, open: () => open };
 }
 
 // NAMES is what the test resolver answers. ok.test is the anchor: opted in
@@ -172,7 +176,7 @@ const NAMES: Record<string, string[]> = {
   "silent.test": ["127.0.0.3"],
 };
 
-async function engineWith(cfg: { allowLocal?: string[]; resolve?: (h: string) => Promise<string[]>; chain?: object[]; networks?: () => Prefix[] | null; connect?: (address: string, port: number) => net.Socket; connectTimeoutMs?: number } = {}) {
+async function engineWith(cfg: { allowLocal?: string[]; resolve?: (h: string) => Promise<string[]>; chain?: object[]; networks?: () => Prefix[] | null; connect?: (address: string, port: number) => net.Socket; connectTimeoutMs?: number; helloTimeoutMs?: number } = {}) {
   const work = mkdtempSync(join(tmpdir(), "dabs-address-"));
   const socket = join(work, "engine.sock");
   const caDir = join(work, "ca");
@@ -184,7 +188,7 @@ async function engineWith(cfg: { allowLocal?: string[]; resolve?: (h: string) =>
   console.warn = () => {};
   let engine;
   try {
-    engine = await start({ socket, caDir, allow: ["*"], chain: (cfg.chain ?? []) as never, resolve, ...("allowLocal" in cfg ? { allowLocal: cfg.allowLocal } : {}), ...(cfg.networks ? { networks: cfg.networks } : {}), ...(cfg.connect ? { connect: cfg.connect, connectTimeoutMs: cfg.connectTimeoutMs } : {}) });
+    engine = await start({ socket, caDir, allow: ["*"], chain: (cfg.chain ?? []) as never, resolve, ...("allowLocal" in cfg ? { allowLocal: cfg.allowLocal } : {}), ...(cfg.networks ? { networks: cfg.networks } : {}), ...(cfg.connect ? { connect: cfg.connect, connectTimeoutMs: cfg.connectTimeoutMs } : {}), ...(cfg.helloTimeoutMs ? { helloTimeoutMs: cfg.helloTimeoutMs } : {}) });
   } finally { console.warn = realWarn; delete process.env.DABS_CONNECT_LOG; }
   cleanups.push(() => engine.stop());
   const ledger = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
@@ -602,4 +606,119 @@ test("fail-open without a terminator: the raw tunnel to a refused address is clo
   expect(o.connections()).toBe(1);
   const lines = readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l)).filter((e) => e.t === "connect");
   expect(lines.map((e) => [e.host, e.verdict, e.address])).toEqual([["ok.test", "tunnel-noterminator", "127.0.0.1"], ["lan.test", "deny-address", "192.168.1.10"]]);
+});
+
+// --- a tunnel the box never uses ------------------------------------------------
+
+// until polls cond every 20 ms and resolves with its last value after ms.
+async function until<T>(cond: () => T, ms = 3000): Promise<T> {
+  const end = Date.now() + ms;
+  while (!cond() && Date.now() < end) await Bun.sleep(20);
+  return cond();
+}
+
+// boxSends plays a box that sends a CONNECT, then after the 200 sends
+// payload (or nothing when payload is null) and waits. It resolves when the
+// engine closes the connection.
+function boxSends(socket: string, authority: string, payload: Buffer | string | null): Promise<string> {
+  return new Promise((resolve) => {
+    const c = net.connect(socket, () => c.write(`CONNECT ${authority} HTTP/1.1\r\nHost: ${authority}\r\n\r\n`));
+    let buf = "";
+    c.on("error", () => {});
+    c.on("data", (d) => {
+      const first = !buf;
+      buf += d.toString("latin1");
+      if (first && payload !== null && buf.startsWith("HTTP/1.1 200")) c.write(payload);
+    });
+    c.on("close", () => resolve(buf));
+  });
+}
+
+test("a box that closes during the dial: the opened connection is closed and recorded with its address", async () => {
+  const o = await origin();
+  // The connection opens 300 ms after the engine asks for it, and the box
+  // closes after 50 ms, so the engine finishes the dial for a box that is gone.
+  const dialed: net.Socket[] = [];
+  const connect = (address: string, port: number) => {
+    const sock = new net.Socket();
+    dialed.push(sock);
+    setTimeout(() => sock.connect(port, address), 300);
+    return sock;
+  };
+  const { socket, ledger } = await engineWith({ allowLocal: ["127.0.0.1"], connect });
+  for (let i = 0; i < 3; i++) {
+    const c = net.connect(socket, () => { c.write(`CONNECT ok.test:${o.port} HTTP/1.1\r\n\r\n`); setTimeout(() => c.destroy(), 50); });
+    c.on("error", () => {});
+  }
+  // The anchor: every dial reached the origin.
+  expect(await until(() => o.connections() === 3)).toBe(true);
+  expect(await until(() => o.open() === 0)).toBe(true);
+  expect(dialed.map((s) => s.destroyed)).toEqual([true, true, true]);
+  expect(ledger().filter((e) => e.t === "connect").map((e) => [e.host, e.verdict, e.address, e.reason])).toEqual(
+    Array(3).fill(["ok.test", "no-hello", "127.0.0.1", "the box closed before the connection opened"]));
+});
+
+test("a box that closes after the 200 without sending: the connection is closed and recorded with its address", async () => {
+  const o = await origin();
+  const { socket, ledger } = await engineWith({ allowLocal: ["127.0.0.1"] });
+  await new Promise<void>((resolve) => {
+    const c = net.connect(socket, () => c.write(`CONNECT ok.test:${o.port} HTTP/1.1\r\n\r\n`));
+    c.on("error", () => {});
+    c.once("data", (d) => { expect(d.toString("latin1")).toStartWith("HTTP/1.1 200"); c.destroy(); resolve(); });
+  });
+  expect(await until(() => ledger().length > 0)).toBe(true);
+  expect(await until(() => o.open() === 0)).toBe(true);
+  expect(o.connections()).toBe(1);
+  expect(ledger().map((e) => [e.host, e.verdict, e.address, e.reason])).toEqual([["ok.test", "no-hello", "127.0.0.1", "the box closed before sending anything"]]);
+});
+
+test("a box that sends nothing after the 200 is closed after helloTimeoutMs, and so is its connection", async () => {
+  const o = await origin();
+  const { socket, ledger } = await engineWith({ allowLocal: ["127.0.0.1"], helloTimeoutMs: 200 });
+  // The anchor: a box that sends at once gets its tunnel from the same engine.
+  expect((await connectThrough(socket, `ok.test:${o.port}`)).reply).toBe("echo:ping");
+  // A liveness bound, not a benchmark: without the deadline the engine holds
+  // the box and its connection until the box gives up, and the race ends on
+  // the guard instead.
+  const r = await Promise.race([boxSends(socket, `ok.test:${o.port}`, null), Bun.sleep(3000).then(() => "still open after 3 s")]);
+  expect(r).toBe("HTTP/1.1 200 Connection Established\r\n\r\n");
+  expect(await until(() => o.open() === 0)).toBe(true);
+  expect(o.connections()).toBe(2);
+  expect(ledger().filter((e) => e.t === "connect").map((e) => [e.host, e.verdict, e.address, e.reason])).toEqual([
+    ["ok.test", "tunnel", "127.0.0.1", undefined],
+    ["ok.test", "no-hello", "127.0.0.1", "the box sent nothing within 200 ms"],
+  ]);
+});
+
+// clientHello is a minimal TLS ClientHello carrying the given extension types.
+function clientHello(extTypes: number[]): Buffer {
+  const u16 = (n: number) => { const b = Buffer.alloc(2); b.writeUInt16BE(n, 0); return b; };
+  const exts = Buffer.concat(extTypes.map((t) => Buffer.concat([u16(t), u16(0)])));
+  const body = Buffer.concat([Buffer.from([0x03, 0x03]), Buffer.alloc(32), Buffer.from([0x00]), Buffer.from([0x00, 0x02, 0x00, 0x2f]), Buffer.from([0x01, 0x00]), u16(exts.length), exts]);
+  const hs = Buffer.concat([Buffer.from([0x01, (body.length >> 16) & 0xff, (body.length >> 8) & 0xff, body.length & 0xff]), body]);
+  return Buffer.concat([Buffer.from([0x16, 0x03, 0x01]), u16(hs.length), hs]);
+}
+
+test("a ClientHello with ECH is dropped, its connection closed, and recorded with the address", async () => {
+  const o = await origin();
+  const { socket, ledger } = await engineWith({ allowLocal: ["127.0.0.1"] });
+  // The anchor: the same hello without ECH reaches the origin.
+  const plain = clientHello([0x0000]);
+  expect((await connectThrough(socket, `ok.test:${o.port}`, plain.toString("latin1"))).reply).toBe("echo:" + plain.toString("latin1"));
+  const r = await boxSends(socket, `ok.test:${o.port}`, clientHello([0x0000, 0xfe0d]));
+  expect(r).toBe("HTTP/1.1 200 Connection Established\r\n\r\n");
+  expect(await until(() => o.open() === 0)).toBe(true);
+  expect(o.got).toEqual([plain.toString("latin1")]);
+  expect(ledger().filter((e) => e.t === "connect").map((e) => [e.host, e.verdict, e.address])).toEqual([
+    ["ok.test", "tunnel", "127.0.0.1"],
+    ["ok.test", "ech-drop", "127.0.0.1"],
+  ]);
+});
+
+test("firstChunk answers \"closed\" at once for a socket that already closed", async () => {
+  const s = new net.Socket();
+  s.destroy();
+  await Bun.sleep(10);
+  const r = await Promise.race([firstChunk(s), Bun.sleep(1000).then(() => "still waiting after 1 s")]);
+  expect(r).toBe("closed");
 });

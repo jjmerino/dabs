@@ -86,10 +86,11 @@ interface HopConfig { name?: string; tls?: string; domains?: string[]; failOpen?
 // interfaces. The engine calls it on every address check. Like resolve, only
 // a caller of start() can pass it.
 // connect replaces net.connect for the direct-mode dial of one address, and
-// connectTimeoutMs replaces CONNECT_ATTEMPT_MS. Both are for tests.
+// connectTimeoutMs replaces CONNECT_ATTEMPT_MS, and helloTimeoutMs replaces
+// HELLO_WAIT_MS. All three are for tests.
 // upstream: an HTTP proxy URL every destination is reached through (see
 // parseUpstream). Absent, the engine reads DABS_UPSTREAM_PROXY.
-interface EngineConfig { socket: string; caDir: string; allow?: string[]; deny?: string[]; chain: HopConfig[]; allowLocal?: string[]; resolve?: Resolve; networks?: Networks; connect?: Connect; connectTimeoutMs?: number; upstream?: string; }
+interface EngineConfig { socket: string; caDir: string; allow?: string[]; deny?: string[]; chain: HopConfig[]; allowLocal?: string[]; resolve?: Resolve; networks?: Networks; connect?: Connect; connectTimeoutMs?: number; helloTimeoutMs?: number; upstream?: string; }
 
 interface Hop { name: string; kind: "tls-terminate" | "tls-originate" | "module"; handler?: Handler; domains?: string[]; failOpen?: boolean; }
 
@@ -798,12 +799,27 @@ export function helloHasECH(buf: Buffer): boolean {
   }
 }
 
+// HELLO_WAIT_MS bounds how long the engine waits for a box's first bytes
+// after it answers a CONNECT with 200. A tunneled connection is already open
+// by then, so a box that sends nothing would hold it open.
+export const HELLO_WAIT_MS = 10_000;
+
 // firstChunk resolves with the next data event from a socket (the client's
-// ClientHello after our CONNECT 200), or null if it closes first.
-function firstChunk(sock: net.Socket): Promise<Buffer | null> {
+// ClientHello after our CONNECT 200), "closed" if the socket closes first or
+// is already closed, and "timeout" if timeoutMs passes first. A socket that
+// closed while paused has already emitted close, so it is checked up front.
+export function firstChunk(sock: net.Socket, timeoutMs?: number): Promise<Buffer | "closed" | "timeout"> {
+  if (sock.destroyed) return Promise.resolve("closed");
   return new Promise((resolve) => {
-    const onData = (d: Buffer) => { sock.removeListener("close", onClose); resolve(d); };
-    const onClose = () => { sock.removeListener("data", onData); resolve(null); };
+    const finish = (r: Buffer | "closed" | "timeout") => {
+      clearTimeout(timer);
+      sock.removeListener("data", onData);
+      sock.removeListener("close", onClose);
+      resolve(r);
+    };
+    const onData = (d: Buffer) => finish(d);
+    const onClose = () => finish("closed");
+    const timer = timeoutMs === undefined ? undefined : setTimeout(() => finish("timeout"), timeoutMs);
     sock.once("data", onData);
     sock.once("close", onClose);
   });
@@ -1210,6 +1226,7 @@ export async function start(cfg: EngineConfig): Promise<{ stop: () => void }> {
   const networks = cfg.networks ?? hostNetworks;
   const connectAddress = cfg.connect ?? systemConnect;
   const connectTimeoutMs = cfg.connectTimeoutMs ?? CONNECT_ATTEMPT_MS;
+  const helloTimeoutMs = cfg.helloTimeoutMs ?? HELLO_WAIT_MS;
 
   // checkTarget checks host and returns what to connect to: in direct mode
   // every address the name resolves to, through an upstream the one host
@@ -1304,7 +1321,7 @@ export async function start(cfg: EngineConfig): Promise<{ stop: () => void }> {
   // upstream and tunnel the decrypted bytes untouched.
   async function onDecrypted(tlsSock: tls.TLSSocket, host: string, port: number) {
     const first = await firstChunk(tlsSock as unknown as net.Socket);
-    if (first === null) { tlsSock.destroy(); return; }
+    if (!Buffer.isBuffer(first)) { tlsSock.destroy(); return; }
     const isHTTP1 = (tlsSock.alpnProtocol === "http/1.1" || tlsSock.alpnProtocol === false) && looksLikeHTTP1(first);
     if (isHTTP1) {
       await serveHTTP(tlsSock as unknown as net.Socket, contentHops, originates, host, port, "https", first, dialAs("originate"));
@@ -1372,17 +1389,26 @@ export async function start(cfg: EngineConfig): Promise<{ stop: () => void }> {
           // opened later, when the engine dials it for a request.
           const passthrough = failOpen && pinnedHosts.has(host);
           const inspect = shouldInspect(host) && !passthrough;
+          // The address is read right after the dial, because a destroyed
+          // socket no longer has one and every ledger line below names it.
           let up: net.Socket | null = null;
+          let to: Json = {};
           if (!inspect) {
             try { up = await dial(host, port, "connect"); }
             catch (e) { answer(client, egressResponse(e)); return; }
+            to = dialedTo(up);
           }
+          // The box may close during the dial. Nothing on the box's side will
+          // close the open connection then, so it is closed here.
+          const noHello = (reason: string) => { connLog(host, port, "no-hello", "connect", { ...to, reason }); client.destroy(); up?.destroy(); };
+          if (client.destroyed) { noHello("the box closed before the connection opened"); return; }
           client.resume();
           client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
 
-          const hello = await firstChunk(client);
-          if (!hello) { connLog(host, port, "no-hello"); client.destroy(); up?.destroy(); return; }
-          if (!ALLOW_ECH && helloHasECH(hello)) { connLog(host, port, "ech-drop"); client.destroy(); up?.destroy(); return; } // ECH hides the SNI
+          const hello = await firstChunk(client, helloTimeoutMs);
+          if (hello === "closed") { noHello("the box closed before sending anything"); return; }
+          if (hello === "timeout") { noHello(`the box sent nothing within ${helloTimeoutMs} ms`); return; }
+          if (!ALLOW_ECH && helloHasECH(hello)) { connLog(host, port, "ech-drop", "connect", to); client.destroy(); up?.destroy(); return; } // ECH hides the SNI
 
           if (inspect) {
             let termSock: string;
@@ -1424,7 +1450,7 @@ export async function start(cfg: EngineConfig): Promise<{ stop: () => void }> {
           // No terminate window (or a learned-pinned host): raw-tunnel the allowed
           // connection straight to the real host — a pinning client is not broken,
           // and any protocol reaches an allowed domain.
-          connLog(host, port, passthrough ? "tunnel-pinned" : "tunnel", "connect", dialedTo(up!));
+          connLog(host, port, passthrough ? "tunnel-pinned" : "tunnel", "connect", to);
           tunnel(client, up!, hello);
           return;
         }

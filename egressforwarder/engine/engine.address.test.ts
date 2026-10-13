@@ -457,6 +457,21 @@ test("DABS_EGRESS_ALLOW_LOCAL opens the addresses it names when the config names
   expect(o.connections()).toBe(1);
 });
 
+// An IPv4-mapped entry is kept as the IPv4 prefix it names: /104 of
+// ::ffff:127.0.0.0 is 127.0.0.0/8. The host part of each fixture is not zero,
+// so a prefix that kept the IPv6 length would match only the one address.
+test("an IPv4-mapped opt-in opens the IPv4 prefix it names, and nothing next to it", async () => {
+  expect(parseAllowLocal("::ffff:127.0.0.0/104, ::ffff:10.1.2.3, ::ffff:0:0/96").map((p) => [p.ip.join("."), p.bits])).toEqual([["127.0.0.0", 8], ["10.1.2.3", 32], ["0.0.0.0", 0]]);
+  const o = await origin();
+  const { socket } = await engineWith({ allowLocal: ["::ffff:127.0.0.0/104"] });
+  // 127.0.0.1 is reached; 127.0.0.2 gets past the check and finds nothing
+  // listening; ::1 and a private address stay refused.
+  expect((await connectThrough(socket, `ok.test:${o.port}`)).reply).toBe("echo:ping");
+  expect(await plainGet(socket, `http://loop2.test:${o.port}/`)).toStartWith("HTTP/1.1 502 Bad Gateway");
+  for (const name of ["loop6.test", "lan.test"]) expect([name, (await connectThrough(socket, `${name}:${o.port}`)).head.split("\r\n")[0]]).toEqual([name, "HTTP/1.1 403 Forbidden"]);
+  expect(o.connections()).toBe(1);
+});
+
 test("an opt-in is announced at boot", async () => {
   const work = mkdtempSync(join(tmpdir(), "dabs-address-"));
   const warnings: string[] = [];

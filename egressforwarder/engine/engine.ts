@@ -375,24 +375,32 @@ export function parseAllowLocal(value: string[] | string | undefined): Prefix[] 
   return out;
 }
 
-// EgressRefused is a connection the engine would not open: status is the
-// HTTP status the box is answered with, reason the text it is told.
+// EgressRefused is a connection the engine's address check would not open.
+// The box gets a 403 with the reason in REFUSED_HEADER. address is the
+// refused address, for the ledger.
 export class EgressRefused extends Error {
-  constructor(readonly status: number, reason: string, readonly address?: string) { super(reason); }
+  constructor(reason: string, readonly address?: string) { super(reason); }
 }
 
-// REFUSED_HEADER carries the reason on a refusal, one line, so `curl -v`
+// EgressFailed is a connection the engine tried to open and could not: the
+// name did not resolve, or no address answered. The box gets a 502 with the
+// reason in FAILED_HEADER, so a client can tell it from a refusal.
+export class EgressFailed extends Error {}
+
+// REFUSED_HEADER and FAILED_HEADER carry the reason, one line, so `curl -v`
 // shows it for a CONNECT whose body curl does not print.
 export const REFUSED_HEADER = "X-Dabs-Egress-Refused";
+export const FAILED_HEADER = "X-Dabs-Egress-Failed";
 
-// refusalResponse is a complete HTTP response for a refusal.
-export function refusalResponse(e: unknown): string {
-  const r = e instanceof EgressRefused ? e : new EgressRefused(502, (e as Error)?.message ?? String(e));
-  const reason = r.message.trim();
+// egressResponse is a complete HTTP response for a connection the engine did
+// not open: a 403 for an EgressRefused, a 502 for anything else.
+export function egressResponse(e: unknown): string {
+  const refused = e instanceof EgressRefused;
+  const reason = ((e as Error)?.message ?? String(e)).trim();
   const line = reason.replace(/[\x00-\x1f\x7f]/g, " ");
   const body = reason + "\n";
-  const text = r.status === 403 ? "Forbidden" : r.status === 400 ? "Bad Request" : "Bad Gateway";
-  return `HTTP/1.1 ${r.status} ${text}\r\nContent-Type: text/plain; charset=utf-8\r\n${REFUSED_HEADER}: ${line}\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`;
+  const head = refused ? `403 Forbidden\r\nContent-Type: text/plain; charset=utf-8\r\n${REFUSED_HEADER}: ${line}` : `502 Bad Gateway\r\nContent-Type: text/plain; charset=utf-8\r\n${FAILED_HEADER}: ${line}`;
+  return `HTTP/1.1 ${head}\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`;
 }
 
 // Resolve looks a name up and returns every address it has.
@@ -413,20 +421,21 @@ function checkAddress(addr: string, allowLocal: Prefix[], networks: Prefix[] | n
 }
 
 // resolveChecked returns the addresses host may be dialled at, or throws an
-// EgressRefused: 403 when any address is refused, 502 when there is none.
+// EgressRefused when any address is refused, or an EgressFailed when there is
+// none.
 async function resolveChecked(host: string, allowLocal: Prefix[], resolve: Resolve, networks: Networks): Promise<string[]> {
   const lit = literalAddress(host);
   let addrs: string[];
   if (lit) addrs = [lit];
   else {
     try { addrs = await resolve(host); }
-    catch (e) { throw new EgressRefused(502, `looking up ${host}: ${(e as Error)?.message ?? e}`); }
+    catch (e) { throw new EgressFailed(`looking up ${host}: ${(e as Error)?.message ?? e}`); }
   }
-  if (!addrs.length) throw new EgressRefused(502, `${host} has no address`);
+  if (!addrs.length) throw new EgressFailed(`${host} has no address`);
   const nets = networks();
   for (const a of addrs) {
     const why = checkAddress(a, allowLocal, nets);
-    if (why) throw new EgressRefused(403, `${host} is ${a}, ${why}; egress never reaches this host, its networks or a private range`, a);
+    if (why) throw new EgressRefused(`${host} is ${a}, ${why}; egress never reaches this host, its networks or a private range`, a);
   }
   return addrs;
 }
@@ -436,7 +445,7 @@ function connectTo(addrs: string[], port: number, host: string): Promise<net.Soc
   return new Promise((resolve, reject) => {
     const failures: string[] = [];
     const attempt = (i: number) => {
-      if (i >= addrs.length) { reject(new EgressRefused(502, `connecting to ${host}: ${failures.join("; ")}`)); return; }
+      if (i >= addrs.length) { reject(new EgressFailed(`connecting to ${host}: ${failures.join("; ")}`)); return; }
       const sock = net.connect({ host: addrs[i], port });
       const onError = (e: Error) => { failures.push(`${addrs[i]}: ${e.message}`); sock.destroy(); attempt(i + 1); };
       sock.once("error", onError);
@@ -508,7 +517,7 @@ export function parseUpstream(value: string | undefined): Upstream | null {
 
 // upstreamTarget checks a destination the engine will hand to an upstream
 // unresolved. It returns the host to send: an IP literal in its standard
-// form, or the name as it was. It throws an EgressRefused (403) for a
+// form, or the name as it was. It throws an EgressRefused for a
 // refused address, a localhost name, or a host that is neither a name nor an
 // address. networks is as for refusedAddress.
 export function upstreamTarget(host: string, allowLocal: Prefix[], networks: Prefix[] | null): string {
@@ -516,11 +525,11 @@ export function upstreamTarget(host: string, allowLocal: Prefix[], networks: Pre
   const lit = literalAddress(h);
   if (lit) {
     const why = checkAddress(lit, allowLocal, networks);
-    if (why) throw new EgressRefused(403, `${host} is ${lit}, ${why}; egress never reaches this host, its networks or a private range`, lit);
+    if (why) throw new EgressRefused(`${host} is ${lit}, ${why}; egress never reaches this host, its networks or a private range`, lit);
     return lit;
   }
-  if (h === "localhost" || h.endsWith(".localhost")) throw new EgressRefused(403, `${host} names this host; egress never reaches this host, its networks or a private range`);
-  if (/^\[.*\]$/.test(host) || h.includes(":") || h.includes("%")) throw new EgressRefused(403, `${host} is neither a host name nor an IP address`);
+  if (h === "localhost" || h.endsWith(".localhost")) throw new EgressRefused(`${host} names this host; egress never reaches this host, its networks or a private range`);
+  if (/^\[.*\]$/.test(host) || h.includes(":") || h.includes("%")) throw new EgressRefused(`${host} is neither a host name nor an IP address`);
   return h;
 }
 
@@ -972,7 +981,7 @@ async function serveHTTP(
   try { sock = await dial(host, port, scheme === "https" ? "connect" : "http"); }
   catch (e) {
     await drain(bodyChunks(reader, reqHead.headers, method));
-    client.end(refusalResponse(e));
+    client.end(egressResponse(e));
     return;
   }
   const mod = scheme === "https" ? https : http;
@@ -1129,11 +1138,12 @@ export async function start(cfg: EngineConfig): Promise<{ stop: () => void }> {
   // upstreamTarget returns. connectTarget connects to what checkTarget
   // returned; dial is the two in a row, and opens every connection the
   // engine makes for a box. A refusal or a failure is recorded in the ledger
-  // and thrown as an EgressRefused for the caller to answer the box with.
-  const failed = (e: unknown, host: string, port: number, proto: string): EgressRefused => {
-    const r = e instanceof EgressRefused ? e : new EgressRefused(502, (e as Error)?.message ?? String(e));
-    const verdict = r.status === 403 ? "deny-address" : upstream ? "upstream-refused" : "unreachable";
-    connLog(host, port, verdict, proto, { ...(r.address ? { address: r.address } : {}), reason: clampReason(r.message) });
+  // and thrown as an EgressRefused or an EgressFailed for the caller to
+  // answer the box with.
+  const failed = (e: unknown, host: string, port: number, proto: string): Error => {
+    const r = e instanceof EgressRefused || e instanceof EgressFailed ? e : new EgressFailed((e as Error)?.message ?? String(e));
+    const verdict = r instanceof EgressRefused ? "deny-address" : upstream ? "upstream-refused" : "unreachable";
+    connLog(host, port, verdict, proto, { ...(r instanceof EgressRefused && r.address ? { address: r.address } : {}), reason: clampReason(r.message) });
     return r;
   };
   const checkTarget = async (host: string, port: number, proto: string): Promise<string[]> => {
@@ -1275,7 +1285,7 @@ export async function start(cfg: EngineConfig): Promise<{ stop: () => void }> {
           let addrs: string[] = [];
           if (!inspect) {
             try { addrs = await checkTarget(host, port, "connect"); }
-            catch (e) { answer(client, refusalResponse(e)); return; }
+            catch (e) { answer(client, egressResponse(e)); return; }
           }
           client.resume();
           client.write("HTTP/1.1 200 Connection Established\r\n\r\n");

@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as net from "node:net";
 import * as tls from "node:tls";
-import { start, refusedAddress, parseIP, parsePrefix, literalAddress, parseAllowLocal, hostNetworks, REFUSED_HEADER, type Prefix } from "./engine.ts";
+import { start, refusedAddress, parseIP, parsePrefix, literalAddress, parseAllowLocal, hostNetworks, REFUSED_HEADER, FAILED_HEADER, type Prefix } from "./engine.ts";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => { while (cleanups.length) cleanups.pop()!(); });
@@ -164,6 +164,7 @@ const NAMES: Record<string, string[]> = {
   "neighbour.test": ["203.0.113.50"],
   "neighbour6.test": ["2001:db8:1::99"],
   "public.test": ["198.51.100.20"],
+  "empty.test": [],
 };
 
 async function engineWith(cfg: { allowLocal?: string[]; resolve?: (h: string) => Promise<string[]>; chain?: object[]; networks?: () => Prefix[] | null } = {}) {
@@ -241,7 +242,17 @@ function throughWindow(socket: string, caDir: string, host: string, port: number
   });
 }
 
-const refusedHeader = (response: string) => response.split("\r\n\r\n")[0].split("\r\n").find((l) => l.startsWith(REFUSED_HEADER + ": "))?.slice(REFUSED_HEADER.length + 2);
+const headerOf = (name: string) => (response: string) => response.split("\r\n\r\n")[0].split("\r\n").find((l) => l.startsWith(name + ": "))?.slice(name.length + 2);
+const refusedHeader = headerOf(REFUSED_HEADER);
+const failedHeader = headerOf(FAILED_HEADER);
+
+// closedPort is a loopback port nothing listens on.
+async function closedPort(): Promise<number> {
+  const s = net.createServer();
+  const port = await listen(s);
+  await new Promise((r) => s.close(r));
+  return port;
+}
 
 test("CONNECT tunnel: a name that resolves to a refused address gets 403 with the reason, before any tunnel", async () => {
   const o = await origin();
@@ -301,6 +312,34 @@ test("interfaces that cannot be read refuse every address the opt-in does not na
   expect(r.head.split("\r\n")[0]).toBe("HTTP/1.1 403 Forbidden");
   expect(refusedHeader(r.head)).toBe("public.test is 198.51.100.20, unknown: this host's interfaces could not be read; egress never reaches this host, its networks or a private range");
   expect(o.connections()).toBe(1);
+});
+
+test("a name that does not resolve, or a connection that fails, is a 502 that says so and is not a refusal", async () => {
+  const o = await origin();
+  const dead = await closedPort();
+  const { socket, ledger } = await engineWith({ allowLocal: ["127.0.0.1"] });
+
+  // The anchor: the same engine reaches ok.test.
+  expect((await connectThrough(socket, `ok.test:${o.port}`)).reply).toBe("echo:ping");
+
+  const answers: [string, string][] = [
+    ["CONNECT nowhere.test", (await connectThrough(socket, `nowhere.test:${o.port}`)).head],
+    ["CONNECT empty.test", (await connectThrough(socket, `empty.test:${o.port}`)).head],
+    ["GET nowhere.test", await plainGet(socket, `http://nowhere.test:${o.port}/`)],
+    ["GET dead port", await plainGet(socket, `http://ok.test:${dead}/`)],
+  ];
+  for (const [what, response] of answers) {
+    expect([what, response.split("\r\n")[0]]).toEqual([what, "HTTP/1.1 502 Bad Gateway"]);
+    expect([what, refusedHeader(response)]).toEqual([what, undefined]);
+  }
+  expect(answers.map(([what, response]) => [what, failedHeader(response)])).toEqual([
+    ["CONNECT nowhere.test", "looking up nowhere.test: no test name nowhere.test"],
+    ["CONNECT empty.test", "empty.test has no address"],
+    ["GET nowhere.test", "looking up nowhere.test: no test name nowhere.test"],
+    ["GET dead port", expect.stringMatching(/^connecting to ok\.test: 127\.0\.0\.1: .+/)],
+  ]);
+  expect(ledger().filter((e) => e.verdict === "unreachable").map((e) => [e.host, e.proto])).toEqual([["nowhere.test", "connect"], ["empty.test", "connect"], ["nowhere.test", "http"], ["ok.test", "http"]]);
+  expect(ledger().filter((e) => e.verdict === "deny-address")).toEqual([]);
 });
 
 test("plain HTTP forward: a name that resolves to a refused address gets 403 with the reason", async () => {

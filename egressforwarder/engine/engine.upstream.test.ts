@@ -290,6 +290,18 @@ test("an upstream that refuses the CONNECT closes the box's tunnel, and the ledg
   expect(refused?.reason).toContain("HTTP/1.1 403 Forbidden");
 });
 
+test("an upstream that cannot be reached is a 502 that says so and is not a refusal", async () => {
+  const gone = net.createServer();
+  const port = await listen(gone);
+  await new Promise((r) => gone.close(r));
+  const { socket } = await engineWith({ upstream: `http://127.0.0.1:${port}` });
+  const r = await plainGet(socket, "http://plain.test/");
+  expect(r).toStartWith("HTTP/1.1 502 Bad Gateway");
+  const head = r.split("\r\n\r\n")[0];
+  expect(head).not.toContain("X-Dabs-Egress-Refused");
+  expect(head).toMatch(new RegExp(`\r\nX-Dabs-Egress-Failed: upstream proxy 127\\.0\\.0\\.1:${port}: .+`));
+});
+
 test("a plain forward-proxy request rides a CONNECT tunnel to port 80", async () => {
   const got: string[] = [];
   const origin = http.createServer((q, s) => { got.push(`${q.method} ${q.url} host=${q.headers.host}`); s.end("from origin"); });

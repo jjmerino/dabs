@@ -85,9 +85,11 @@ interface HopConfig { name?: string; tls?: string; domains?: string[]; failOpen?
 // networks replaces hostNetworks, which reads the networks of this host's
 // interfaces. The engine calls it on every address check. Like resolve, only
 // a caller of start() can pass it.
+// connect replaces net.connect for the direct-mode dial of one address, and
+// connectTimeoutMs replaces CONNECT_ATTEMPT_MS. Both are for tests.
 // upstream: an HTTP proxy URL every destination is reached through (see
 // parseUpstream). Absent, the engine reads DABS_UPSTREAM_PROXY.
-interface EngineConfig { socket: string; caDir: string; allow?: string[]; deny?: string[]; chain: HopConfig[]; allowLocal?: string[]; resolve?: Resolve; networks?: Networks; upstream?: string; }
+interface EngineConfig { socket: string; caDir: string; allow?: string[]; deny?: string[]; chain: HopConfig[]; allowLocal?: string[]; resolve?: Resolve; networks?: Networks; connect?: Connect; connectTimeoutMs?: number; upstream?: string; }
 
 interface Hop { name: string; kind: "tls-terminate" | "tls-originate" | "module"; handler?: Handler; domains?: string[]; failOpen?: boolean; }
 
@@ -440,20 +442,42 @@ async function resolveChecked(host: string, allowLocal: Prefix[], resolve: Resol
   return addrs;
 }
 
-// connectTo connects to the first address that answers.
-function connectTo(addrs: string[], port: number, host: string): Promise<net.Socket> {
+// Connect opens a TCP connection to one address.
+export type Connect = (address: string, port: number) => net.Socket;
+const systemConnect: Connect = (address, port) => net.connect({ host: address, port });
+
+// CONNECT_ATTEMPT_MS bounds how long connectTo waits on one address before it
+// gives up on it and tries the next.
+export const CONNECT_ATTEMPT_MS = 5_000;
+
+// connectTo connects to the first address that answers. An address that
+// neither connects nor fails within timeoutMs counts as failed, so one silent
+// address does not hold up the rest.
+function connectTo(addrs: string[], port: number, host: string, connect: Connect, timeoutMs: number): Promise<net.Socket> {
   return new Promise((resolve, reject) => {
     const failures: string[] = [];
     const attempt = (i: number) => {
       if (i >= addrs.length) { reject(new EgressFailed(`connecting to ${host}: ${failures.join("; ")}`)); return; }
-      const sock = net.connect({ host: addrs[i], port });
-      const onError = (e: Error) => { failures.push(`${addrs[i]}: ${e.message}`); sock.destroy(); attempt(i + 1); };
-      sock.once("error", onError);
-      sock.once("connect", () => {
+      const sock = connect(addrs[i], port);
+      const giveUp = (why: string) => {
+        clearTimeout(timer);
+        sock.removeListener("connect", onConnect);
+        sock.removeListener("error", onError);
+        sock.on("error", () => {});
+        sock.destroy();
+        failures.push(`${addrs[i]}: ${why}`);
+        attempt(i + 1);
+      };
+      const onError = (e: Error) => giveUp(e.message);
+      const onConnect = () => {
+        clearTimeout(timer);
         sock.removeListener("error", onError);
         sock.on("error", () => {}); // the caller adds its own; this keeps an early error from throwing
         resolve(sock);
-      });
+      };
+      const timer = setTimeout(() => giveUp(`no answer within ${timeoutMs} ms`), timeoutMs);
+      sock.once("error", onError);
+      sock.once("connect", onConnect);
     };
     attempt(0);
   });
@@ -1132,6 +1156,8 @@ export async function start(cfg: EngineConfig): Promise<{ stop: () => void }> {
   if (allowLocal.length) console.warn(`warning: egress may reach these local or private addresses: ${allowLocal.map((p) => `${formatIP(p.ip)}/${p.bits}`).join(", ")}`);
   const resolve = cfg.resolve ?? systemResolve;
   const networks = cfg.networks ?? hostNetworks;
+  const connect = cfg.connect ?? systemConnect;
+  const connectTimeoutMs = cfg.connectTimeoutMs ?? CONNECT_ATTEMPT_MS;
 
   // checkTarget checks host and returns what to connect to: in direct mode
   // every address the name resolves to, through an upstream the one host
@@ -1151,7 +1177,7 @@ export async function start(cfg: EngineConfig): Promise<{ stop: () => void }> {
     catch (e) { throw failed(e, host, port, proto); }
   };
   const connectTarget = async (addrs: string[], host: string, port: number, proto: string): Promise<net.Socket> => {
-    try { return upstream ? await dialUpstream(upstream, addrs[0], port) : await connectTo(addrs, port, host); }
+    try { return upstream ? await dialUpstream(upstream, addrs[0], port) : await connectTo(addrs, port, host, connect, connectTimeoutMs); }
     catch (e) { throw failed(e, host, port, proto); }
   };
   const dial: Dial = async (host, port, proto) => connectTarget(await checkTarget(host, port, proto), host, port, proto);

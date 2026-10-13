@@ -165,9 +165,12 @@ const NAMES: Record<string, string[]> = {
   "neighbour6.test": ["2001:db8:1::99"],
   "public.test": ["198.51.100.20"],
   "empty.test": [],
+  // 127.0.0.3 never answers in the connect-timeout test.
+  "slowfirst.test": ["127.0.0.3", "127.0.0.1"],
+  "silent.test": ["127.0.0.3"],
 };
 
-async function engineWith(cfg: { allowLocal?: string[]; resolve?: (h: string) => Promise<string[]>; chain?: object[]; networks?: () => Prefix[] | null } = {}) {
+async function engineWith(cfg: { allowLocal?: string[]; resolve?: (h: string) => Promise<string[]>; chain?: object[]; networks?: () => Prefix[] | null; connect?: (address: string, port: number) => net.Socket; connectTimeoutMs?: number } = {}) {
   const work = mkdtempSync(join(tmpdir(), "dabs-address-"));
   const socket = join(work, "engine.sock");
   const caDir = join(work, "ca");
@@ -179,7 +182,7 @@ async function engineWith(cfg: { allowLocal?: string[]; resolve?: (h: string) =>
   console.warn = () => {};
   let engine;
   try {
-    engine = await start({ socket, caDir, allow: ["*"], chain: (cfg.chain ?? []) as never, resolve, ...("allowLocal" in cfg ? { allowLocal: cfg.allowLocal } : {}), ...(cfg.networks ? { networks: cfg.networks } : {}) });
+    engine = await start({ socket, caDir, allow: ["*"], chain: (cfg.chain ?? []) as never, resolve, ...("allowLocal" in cfg ? { allowLocal: cfg.allowLocal } : {}), ...(cfg.networks ? { networks: cfg.networks } : {}), ...(cfg.connect ? { connect: cfg.connect, connectTimeoutMs: cfg.connectTimeoutMs } : {}) });
   } finally { console.warn = realWarn; delete process.env.DABS_CONNECT_LOG; }
   cleanups.push(() => engine.stop());
   const ledger = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
@@ -340,6 +343,34 @@ test("a name that does not resolve, or a connection that fails, is a 502 that sa
   ]);
   expect(ledger().filter((e) => e.verdict === "unreachable").map((e) => [e.host, e.proto])).toEqual([["nowhere.test", "connect"], ["empty.test", "connect"], ["nowhere.test", "http"], ["ok.test", "http"]]);
   expect(ledger().filter((e) => e.verdict === "deny-address")).toEqual([]);
+});
+
+test("an address that never answers is given up on, and the next address is tried", async () => {
+  const o = await origin();
+  // 127.0.0.3 gets a socket that is never connected, so it neither connects
+  // nor fails: only the engine's timer can move past it.
+  const attempts: { address: string; sock: net.Socket }[] = [];
+  const connect = (address: string, port: number) => {
+    const sock = address === "127.0.0.3" ? new net.Socket() : net.connect({ host: address, port });
+    attempts.push({ address, sock });
+    return sock;
+  };
+  const { socket, ledger } = await engineWith({ allowLocal: ["127.0.0.0/8"], connect, connectTimeoutMs: 200 });
+
+  // A liveness bound, not a benchmark: without the timer the first address
+  // holds the request forever, and the race ends on the guard instead.
+  const within = <T>(p: Promise<T>) => Promise.race([p, Bun.sleep(3000).then(() => "still waiting after 3 s" as const)]);
+
+  const tunnel = await within(connectThrough(socket, `slowfirst.test:${o.port}`));
+  expect(tunnel).toEqual({ head: "HTTP/1.1 200 Connection Established", reply: "echo:ping" });
+  expect(attempts.map((a) => a.address)).toEqual(["127.0.0.3", "127.0.0.1"]);
+  expect(attempts[0].sock.destroyed).toBe(true);
+
+  const r = await within(plainGet(socket, `http://silent.test:${o.port}/`));
+  expect(r).toStartWith("HTTP/1.1 502 Bad Gateway");
+  expect(failedHeader(r as string)).toBe("connecting to silent.test: 127.0.0.3: no answer within 200 ms");
+  expect(ledger().filter((e) => e.verdict === "unreachable").map((e) => e.host)).toEqual(["silent.test"]);
+  expect(o.connections()).toBe(1);
 });
 
 test("plain HTTP forward: a name that resolves to a refused address gets 403 with the reason", async () => {

@@ -136,7 +136,8 @@ egress:
   IPv6 address that carries one of those IPv4 addresses (IPv4-mapped, NAT64,
   6to4), to IPv4-compatible, IPv4-translated, local-use NAT64 or Teredo IPv6
   addresses, or to any address on a network of one of the host's own
-  interfaces. If any address of a name is refused, the name is refused. The box
+  interfaces. If any address of a name is refused, the name is refused. It
+  tries the addresses in order and gives each 5 seconds to answer. The box
   gets a 403 with the reason in the body and in the `X-Dabs-Egress-Refused`
   header (inside the TLS stream for a terminated host, or a closed stream for a
   non-HTTP one), and the connection ledger gets a `deny-address` line with the

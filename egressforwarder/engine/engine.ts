@@ -1234,6 +1234,18 @@ export async function start(cfg: EngineConfig): Promise<{ stop: () => void }> {
   };
   const dial: Dial = async (host, port, proto) => connectTarget(await checkTarget(host, port, proto), host, port, proto);
 
+  // A ledger line that says a connection was opened is written after it
+  // opened, and names where it went: the address in direct mode, the
+  // upstream through one. A refused or failed dial writes only its own line
+  // (see failed). dialedTo is those fields for an open socket; dialAs is a
+  // dial that writes verdict when it succeeds.
+  const dialedTo = (sock: net.Socket): Json => upstream ? { upstream: authorityOf(upstream.host, upstream.port) } : { address: sock.remoteAddress };
+  const dialAs = (verdict: string): Dial => async (host, port, proto) => {
+    const sock = await dial(host, port, proto);
+    connLog(host, port, verdict, proto, dialedTo(sock));
+    return sock;
+  };
+
   // Always mint the CA: dabs mounts ca.crt into every proxy box (the mount origin
   // must exist), and a chain that gains a `tls: terminate` later needs it anyway.
   ensureCA(cfg.caDir);
@@ -1295,13 +1307,13 @@ export async function start(cfg: EngineConfig): Promise<{ stop: () => void }> {
     if (first === null) { tlsSock.destroy(); return; }
     const isHTTP1 = (tlsSock.alpnProtocol === "http/1.1" || tlsSock.alpnProtocol === false) && looksLikeHTTP1(first);
     if (isHTTP1) {
-      await serveHTTP(tlsSock as unknown as net.Socket, contentHops, originates, host, port, "https", first, dial);
+      await serveHTTP(tlsSock as unknown as net.Socket, contentHops, originates, host, port, "https", first, dialAs("originate"));
       return;
     }
     // The box's stream is already past its TLS handshake, so a refusal can
     // only close it; dial has recorded why in the ledger.
     let raw: net.Socket;
-    try { raw = await dial(host, port, "connect"); }
+    try { raw = await dialAs("originate")(host, port, "connect"); }
     catch { tlsSock.destroy(); return; }
     const up = tls.connect({ socket: raw, host, servername: net.isIP(host) ? undefined : host, rejectUnauthorized: true }, () => {
       up.write(first);
@@ -1381,10 +1393,9 @@ export async function start(cfg: EngineConfig): Promise<{ stop: () => void }> {
               // Best-effort tunnels raw and records it; strict inspection refuses
               // cleanly. Either way the engine stays up.
               if (failOpen) {
-                connLog(host, port, "tunnel-noterminator");
                 client.pause();
                 let raw: net.Socket;
-                try { raw = await dial(host, port, "connect"); }
+                try { raw = await dialAs("tunnel-noterminator")(host, port, "connect"); }
                 catch { client.destroy(); return; }
                 client.resume();
                 tunnel(client, raw, hello);
@@ -1395,6 +1406,9 @@ export async function start(cfg: EngineConfig): Promise<{ stop: () => void }> {
               client.destroy();
               return;
             }
+            // "inspect" records the termination, which opens no connection.
+            // A connection the engine then opens for what the box sends
+            // gets its own "originate" line.
             connLog(host, port, "inspect");
             // Pipe the client's raw TLS into the host's terminator, replaying the
             // buffered ClientHello. The terminator decrypts and calls onDecrypted.
@@ -1410,7 +1424,7 @@ export async function start(cfg: EngineConfig): Promise<{ stop: () => void }> {
           // No terminate window (or a learned-pinned host): raw-tunnel the allowed
           // connection straight to the real host — a pinning client is not broken,
           // and any protocol reaches an allowed domain.
-          connLog(host, port, passthrough ? "tunnel-pinned" : "tunnel");
+          connLog(host, port, passthrough ? "tunnel-pinned" : "tunnel", "connect", dialedTo(up!));
           tunnel(client, up!, hello);
           return;
         }
@@ -1422,10 +1436,15 @@ export async function start(cfg: EngineConfig): Promise<{ stop: () => void }> {
           const host = canonicalHost(url.hostname);
           const port = Number(url.port || 80);
           if (!(await gateConnection(host, port, "http"))) { answer(client, "HTTP/1.1 403 Forbidden\r\n\r\n"); return; }
-          connLog(host, port, shouldInspect(host) ? "inspect" : "forward", "http");
-          const hooks = shouldInspect(host) ? contentHops : [];
+          // An inspected request is recorded when the hooks get it, since a
+          // hook may answer it without a connection; the connection, if any,
+          // gets an "originate" line. A forwarded one is recorded once its
+          // connection opens.
+          const inspect = shouldInspect(host);
+          if (inspect) connLog(host, port, "inspect", "http");
+          const hooks = inspect ? contentHops : [];
           client.resume();
-          await serveHTTP(client, hooks, hooks.length ? originates : true, host, port, "http", buf, dial);
+          await serveHTTP(client, hooks, hooks.length ? originates : true, host, port, "http", buf, dialAs(inspect ? "originate" : "forward"));
           return;
         }
         connLog(line.split(/\s+/)[0] || "?", 0, "unhandled");

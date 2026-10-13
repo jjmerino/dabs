@@ -165,6 +165,8 @@ const NAMES: Record<string, string[]> = {
   "neighbour6.test": ["2001:db8:1::99"],
   "public.test": ["198.51.100.20"],
   "empty.test": [],
+  "ledgerok.test": ["127.0.0.1"],
+  "ledgerlan.test": ["192.168.1.10"],
   // 127.0.0.3 never answers in the connect-timeout test.
   "slowfirst.test": ["127.0.0.3", "127.0.0.1"],
   "silent.test": ["127.0.0.3"],
@@ -378,6 +380,42 @@ test("an address that never answers is given up on, and the next address is trie
   expect(o.connections()).toBe(1);
 });
 
+test("the ledger records a connection after it opens, with the address, and a refused one only as refused", async () => {
+  const o = await origin();
+  const { socket, ledger } = await engineWith({ allowLocal: ["127.0.0.1"] });
+  await connectThrough(socket, `ok.test:${o.port}`);
+  await connectThrough(socket, `lan.test:${o.port}`);
+  await plainGet(socket, `http://ok.test:${o.port}/`);
+  await plainGet(socket, `http://lan.test:${o.port}/`);
+  expect(o.connections()).toBe(2);
+  expect(ledger().filter((e) => e.t === "connect").map((e) => [e.host, e.proto, e.verdict, e.address])).toEqual([
+    ["ok.test", "connect", "tunnel", "127.0.0.1"],
+    ["lan.test", "connect", "deny-address", "192.168.1.10"],
+    ["ok.test", "http", "forward", "127.0.0.1"],
+    ["lan.test", "http", "deny-address", "192.168.1.10"],
+  ]);
+});
+
+test("the ledger records an inspected request, then the connection opened for it or its refusal", async () => {
+  const o = await origin();
+  const { socket, caDir, ledger } = await engineWith({ allowLocal: ["127.0.0.1"], chain: [{ tls: "terminate" }, { tls: "originate" }] });
+  await throughWindow(socket, caDir, "ledgerok.test", o.port, "GET / HTTP/1.1\r\nHost: ledgerok.test\r\n\r\n");
+  await throughWindow(socket, caDir, "ledgerlan.test", o.port, "GET / HTTP/1.1\r\nHost: ledgerlan.test\r\n\r\n");
+  await plainGet(socket, `http://ok.test:${o.port}/`);
+  await plainGet(socket, `http://lan.test:${o.port}/`);
+  expect(o.connections()).toBe(2);
+  expect(ledger().filter((e) => e.t === "connect").map((e) => [e.host, e.proto, e.verdict, e.address])).toEqual([
+    ["ledgerok.test", "connect", "inspect", undefined],
+    ["ledgerok.test", "connect", "originate", "127.0.0.1"],
+    ["ledgerlan.test", "connect", "inspect", undefined],
+    ["ledgerlan.test", "connect", "deny-address", "192.168.1.10"],
+    ["ok.test", "http", "inspect", undefined],
+    ["ok.test", "http", "originate", "127.0.0.1"],
+    ["lan.test", "http", "inspect", undefined],
+    ["lan.test", "http", "deny-address", "192.168.1.10"],
+  ]);
+});
+
 test("plain HTTP forward: a name that resolves to a refused address gets 403 with the reason", async () => {
   const o = await origin();
   const { socket, ledger } = await engineWith({ allowLocal: ["127.0.0.1"] });
@@ -562,6 +600,6 @@ test("fail-open without a terminator: the raw tunnel to a refused address is clo
   expect(r.head.split("\r\n")[0]).toBe("HTTP/1.1 200 Connection Established");
   expect(r.reply).toBe("");
   expect(o.connections()).toBe(1);
-  const lines = readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l)).filter((e) => e.host === "lan.test");
-  expect(lines.map((e) => e.verdict)).toEqual(["tunnel-noterminator", "deny-address"]);
+  const lines = readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l)).filter((e) => e.t === "connect");
+  expect(lines.map((e) => [e.host, e.verdict, e.address])).toEqual([["ok.test", "tunnel-noterminator", "127.0.0.1"], ["lan.test", "deny-address", "192.168.1.10"]]);
 });

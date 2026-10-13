@@ -225,7 +225,8 @@ test("a CONNECT tunnel goes through the upstream and the bytes arrive", async ()
   expect(r.reply).toBe("echo:ping");
   expect(up.seen).toEqual(["CONNECT origin.test:443 HTTP/1.1"]);
   expect(target.got).toEqual(["ping"]);
-  expect(ledger().map((e) => e.verdict)).toEqual(["tunnel"]);
+  // Through an upstream the ledger names the upstream, not an address.
+  expect(ledger().map((e) => [e.verdict, e.upstream, e.address])).toEqual([["tunnel", `127.0.0.1:${up.port}`, undefined]]);
 });
 
 test("with an upstream, a box cannot reach loopback: not the upstream's own port, not localhost, not by plain HTTP", async () => {
@@ -314,7 +315,7 @@ test("an upstream's error answer reaches the box with its status and body, on bo
     expect([what, header(r, "X-Dabs-Egress-Failed")]).toEqual([what, [`upstream proxy refused CONNECT ${authority}: HTTP/1.1 403 Forbidden`]]);
   }
   expect(up.seen).toEqual(["CONNECT refused.test:443 HTTP/1.1", "CONNECT refused.test:80 HTTP/1.1"]);
-  expect(ledger().filter((e) => e.verdict === "upstream-refused").map((e) => [e.verdict, e.proto, e.reason])).toEqual([
+  expect(ledger().filter((e) => e.t === "connect").map((e) => [e.verdict, e.proto, e.reason])).toEqual([
     ["upstream-refused", "connect", "upstream proxy refused CONNECT refused.test:443: HTTP/1.1 403 Forbidden"],
     ["upstream-refused", "http", "upstream proxy refused CONNECT refused.test:80: HTTP/1.1 403 Forbidden"],
   ]);
@@ -399,12 +400,13 @@ test("a plain forward-proxy request rides a CONNECT tunnel to port 80", async ()
   const originPort = await listen(origin);
   cleanups.push(() => origin.close());
   const up = await fakeUpstream({ "plain.test:80": originPort });
-  const { socket } = await engineWith({ upstream: `http://127.0.0.1:${up.port}` });
+  const { socket, ledger } = await engineWith({ upstream: `http://127.0.0.1:${up.port}` });
 
   const answer = await plainGet(socket, "http://plain.test/x?y=1");
   expect(answer).toStartWith("HTTP/1.1 200");
   expect(answer).toContain("from origin");
   expect(up.seen).toEqual(["CONNECT plain.test:80 HTTP/1.1"]);
+  expect(ledger().filter((e) => e.t === "connect").map((e) => [e.verdict, e.proto, e.upstream])).toEqual([["forward", "http", `127.0.0.1:${up.port}`]]);
   expect(got).toEqual(["GET /x?y=1 host=plain.test"]);
 });
 

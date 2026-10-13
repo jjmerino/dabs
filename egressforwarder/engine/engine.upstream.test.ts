@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as net from "node:net";
 import * as http from "node:http";
-import { start, parseUpstream, upstreamTarget, dialUpstream, ensureCA, leafFor } from "./engine.ts";
+import { start, parseUpstream, upstreamTarget, dialUpstream, ensureCA, leafFor, parsePrefix, type Prefix } from "./engine.ts";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => { while (cleanups.length) cleanups.pop()!(); });
@@ -53,12 +53,12 @@ async function echoTarget() {
 // engineWith starts an engine in this process. An upstream left out of cfg is
 // left out of the engine's config too, so the engine reads
 // DABS_UPSTREAM_PROXY; pass "" for direct mode.
-async function engineWith(cfg: { allow?: string[]; upstream?: string; chain?: object[]; allowLocal?: string[] }) {
+async function engineWith(cfg: { allow?: string[]; upstream?: string; chain?: object[]; allowLocal?: string[]; networks?: () => Prefix[] | null }) {
   const work = mkdtempSync(join(tmpdir(), "dabs-upstream-"));
   const socket = join(work, "engine.sock");
   const log = join(work, "connect.jsonl");
   process.env.DABS_CONNECT_LOG = log;
-  const engine = await start({ socket, caDir: join(work, "ca"), allow: cfg.allow ?? ["*"], chain: (cfg.chain ?? []) as never, ...("upstream" in cfg ? { upstream: cfg.upstream } : {}), ...(cfg.allowLocal ? { allowLocal: cfg.allowLocal } : {}) });
+  const engine = await start({ socket, caDir: join(work, "ca"), allow: cfg.allow ?? ["*"], chain: (cfg.chain ?? []) as never, ...("upstream" in cfg ? { upstream: cfg.upstream } : {}), ...(cfg.allowLocal ? { allowLocal: cfg.allowLocal } : {}), ...(cfg.networks ? { networks: cfg.networks } : {}) });
   delete process.env.DABS_CONNECT_LOG;
   cleanups.push(() => engine.stop());
   const ledger = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
@@ -126,7 +126,7 @@ test("parseUpstream: anything else is refused by name, so the engine never falls
 // whole check: a literal against the direct mode's table, a localhost name by
 // name, and anything that is neither a name nor an address.
 test("upstreamTarget: every spelling of a refused address, a localhost name, and nothing else", () => {
-  const refused = (h: string) => { try { upstreamTarget(h); return false; } catch { return true; } };
+  const refused = (h: string) => { try { upstreamTarget(h, [], []); return false; } catch { return true; } };
   for (const h of ["localhost", "LOCALHOST.", "app.localhost", "127.0.0.1", "127.9.9.9", "127.1", "2130706433", "0x7f.0.0.1", "0177.0.0.1", "0.0.0.0", "0",
     "169.254.169.254", "::1", "[::1]", "::", "[::]", "0:0:0:0:0:0:0:1", "::ffff:127.0.0.1", "fe80::1", "fe80::1%eth0", "febf::1", "FE80::1",
     // The hex forms the URL parser writes for an IPv4 inside IPv6, and the
@@ -145,11 +145,11 @@ test("upstreamTarget: every spelling of a refused address, a localhost name, and
     expect([h, refused(h)]).toEqual([h, false]);
   }
   // A literal goes to the upstream in its standard form, a name as it was.
-  expect(upstreamTarget("134744072")).toBe("8.8.8.8");
-  expect(upstreamTarget("[2001:DB8::1]")).toBe("2001:db8::1");
-  expect(upstreamTarget("Origin.Test.")).toBe("origin.test");
+  expect(upstreamTarget("134744072", [], [])).toBe("8.8.8.8");
+  expect(upstreamTarget("[2001:DB8::1]", [], [])).toBe("2001:db8::1");
+  expect(upstreamTarget("Origin.Test.", [], [])).toBe("origin.test");
   // allowLocal opens what it names here too.
-  expect(upstreamTarget("127.0.0.1", [{ ip: [127, 0, 0, 1], bits: 32 }])).toBe("127.0.0.1");
+  expect(upstreamTarget("127.0.0.1", [{ ip: [127, 0, 0, 1], bits: 32 }], [])).toBe("127.0.0.1");
 });
 
 test("DABS_UPSTREAM_PROXY from the environment is the upstream when the config names none", async () => {
@@ -246,6 +246,20 @@ test("with an upstream, a box cannot reach loopback: not the upstream's own port
   expect(up.seen).toEqual(["CONNECT origin.test:443 HTTP/1.1"]);
   expect(target.got).toEqual(["ping"]);
   expect(ledger().filter((e) => e.verdict === "deny-address").length).toBe(6);
+});
+
+// 203.0.113.0/24 is a documentation range the address table does not refuse,
+// standing in for a public network this host has an interface on.
+test("with an upstream, a literal on a network of this host's interfaces is refused with the reason", async () => {
+  const target = await echoTarget();
+  const up = await fakeUpstream({ "198.51.100.7:443": target.port, "203.0.113.9:443": target.port });
+  const { socket, ledger } = await engineWith({ upstream: `http://127.0.0.1:${up.port}`, networks: () => [parsePrefix("203.0.113.1/24")!] });
+  // The anchor: an address off that network goes through.
+  expect((await connectThrough(socket, "198.51.100.7:443")).reply).toBe("echo:ping");
+  const r = await connectThrough(socket, "203.0.113.9:443");
+  expect(r.status).toBe("HTTP/1.1 403 Forbidden");
+  expect(up.seen).toEqual(["CONNECT 198.51.100.7:443 HTTP/1.1"]);
+  expect(ledger().filter((e) => e.verdict === "deny-address").map((e) => e.reason)).toEqual(["203.0.113.9 is 203.0.113.9, on 203.0.113.1/24, a network of this host's interfaces; egress never reaches this host, its networks or a private range"]);
 });
 
 test("an IP literal in another spelling reaches the upstream in its standard form", async () => {

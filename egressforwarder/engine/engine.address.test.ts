@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as net from "node:net";
 import * as tls from "node:tls";
-import { start, refusedAddress, parseIP, parsePrefix, literalAddress, parseAllowLocal, hostNetworks, REFUSED_HEADER } from "./engine.ts";
+import { start, refusedAddress, parseIP, parsePrefix, literalAddress, parseAllowLocal, hostNetworks, REFUSED_HEADER, type Prefix } from "./engine.ts";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => { while (cleanups.length) cleanups.pop()!(); });
@@ -160,9 +160,13 @@ const NAMES: Record<string, string[]> = {
   "tlslan.test": ["192.168.1.10"],
   "rawok.test": ["127.0.0.1"],
   "rawlan.test": ["192.168.1.10"],
+  // On the stand-in host networks of the interface test, and in no refused range.
+  "neighbour.test": ["203.0.113.50"],
+  "neighbour6.test": ["2001:db8:1::99"],
+  "public.test": ["198.51.100.20"],
 };
 
-async function engineWith(cfg: { allowLocal?: string[]; resolve?: (h: string) => Promise<string[]>; chain?: object[] } = {}) {
+async function engineWith(cfg: { allowLocal?: string[]; resolve?: (h: string) => Promise<string[]>; chain?: object[]; networks?: () => Prefix[] | null } = {}) {
   const work = mkdtempSync(join(tmpdir(), "dabs-address-"));
   const socket = join(work, "engine.sock");
   const caDir = join(work, "ca");
@@ -174,7 +178,7 @@ async function engineWith(cfg: { allowLocal?: string[]; resolve?: (h: string) =>
   console.warn = () => {};
   let engine;
   try {
-    engine = await start({ socket, caDir, allow: ["*"], chain: (cfg.chain ?? []) as never, resolve, ...("allowLocal" in cfg ? { allowLocal: cfg.allowLocal } : {}) });
+    engine = await start({ socket, caDir, allow: ["*"], chain: (cfg.chain ?? []) as never, resolve, ...("allowLocal" in cfg ? { allowLocal: cfg.allowLocal } : {}), ...(cfg.networks ? { networks: cfg.networks } : {}) });
   } finally { console.warn = realWarn; delete process.env.DABS_CONNECT_LOG; }
   cleanups.push(() => engine.stop());
   const ledger = () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
@@ -256,6 +260,47 @@ test("CONNECT tunnel: a name that resolves to a refused address gets 403 with th
   expect(o.got).toEqual(["ping"]);
   const denied = ledger().filter((e) => e.verdict === "deny-address");
   expect(denied.map((e) => [e.host, e.address, e.proto])).toEqual([["lan.test", "192.168.1.10", "connect"], ["metadata.test", "169.254.169.254", "connect"], ["loop6.test", "::1", "connect"], ["mixed.test", "10.0.0.5", "connect"]]);
+});
+
+// 203.0.113.0/24 and 2001:db8:1::/64 are documentation ranges the address
+// table does not refuse. They stand in for public networks this host has an
+// interface on, so only the interface check can refuse them.
+test("an address on a network of this host's interfaces is refused on both proxy paths, with the reason", async () => {
+  const o = await origin();
+  let reads = 0;
+  const networks = () => { reads++; return [parsePrefix("203.0.113.7/24")!, parsePrefix("2001:db8:1::5/64")!]; };
+  const { socket, ledger } = await engineWith({ allowLocal: ["127.0.0.1"], networks });
+
+  // The anchor: the same engine reaches ok.test.
+  expect((await connectThrough(socket, `ok.test:${o.port}`)).reply).toBe("echo:ping");
+
+  for (const [authority, reason] of [
+    [`neighbour.test:${o.port}`, "neighbour.test is 203.0.113.50, on 203.0.113.7/24, a network of this host's interfaces"],
+    [`neighbour6.test:${o.port}`, "neighbour6.test is 2001:db8:1::99, on 2001:db8:1::5/64, a network of this host's interfaces"],
+    [`203.0.113.60:${o.port}`, "203.0.113.60 is 203.0.113.60, on 203.0.113.7/24, a network of this host's interfaces"],
+  ]) {
+    const r = await connectThrough(socket, authority);
+    expect([authority, r.head.split("\r\n")[0]]).toEqual([authority, "HTTP/1.1 403 Forbidden"]);
+    expect([authority, refusedHeader(r.head)]).toEqual([authority, `${reason}; egress never reaches this host, its networks or a private range`]);
+  }
+  const r = await plainGet(socket, `http://neighbour.test:${o.port}/`);
+  expect(r).toStartWith("HTTP/1.1 403 Forbidden");
+  expect(refusedHeader(r)).toBe("neighbour.test is 203.0.113.50, on 203.0.113.7/24, a network of this host's interfaces; egress never reaches this host, its networks or a private range");
+  expect(o.connections()).toBe(1);
+  expect(reads).toBe(5);
+  expect(ledger().filter((e) => e.verdict === "deny-address").map((e) => [e.host, e.address, e.proto])).toEqual([
+    ["neighbour.test", "203.0.113.50", "connect"], ["neighbour6.test", "2001:db8:1::99", "connect"], ["203.0.113.60", "203.0.113.60", "connect"], ["neighbour.test", "203.0.113.50", "http"],
+  ]);
+});
+
+test("interfaces that cannot be read refuse every address the opt-in does not name", async () => {
+  const o = await origin();
+  const { socket } = await engineWith({ allowLocal: ["127.0.0.1"], networks: () => null });
+  expect((await connectThrough(socket, `ok.test:${o.port}`)).reply).toBe("echo:ping");
+  const r = await connectThrough(socket, `public.test:${o.port}`);
+  expect(r.head.split("\r\n")[0]).toBe("HTTP/1.1 403 Forbidden");
+  expect(refusedHeader(r.head)).toBe("public.test is 198.51.100.20, unknown: this host's interfaces could not be read; egress never reaches this host, its networks or a private range");
+  expect(o.connections()).toBe(1);
 });
 
 test("plain HTTP forward: a name that resolves to a refused address gets 403 with the reason", async () => {

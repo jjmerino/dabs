@@ -82,9 +82,12 @@ interface HopConfig { name?: string; tls?: string; domains?: string[]; failOpen?
 // refusedAddress refuses them (see the ADDRESS section). Absent, the engine
 // reads DABS_EGRESS_ALLOW_LOCAL. resolve replaces the system resolver; only a
 // caller of start() can pass it, since JSON cannot carry a function.
+// networks replaces hostNetworks, which reads the networks of this host's
+// interfaces. The engine calls it on every address check. Like resolve, only
+// a caller of start() can pass it.
 // upstream: an HTTP proxy URL every destination is reached through (see
 // parseUpstream). Absent, the engine reads DABS_UPSTREAM_PROXY.
-interface EngineConfig { socket: string; caDir: string; allow?: string[]; deny?: string[]; chain: HopConfig[]; allowLocal?: string[]; resolve?: Resolve; upstream?: string; }
+interface EngineConfig { socket: string; caDir: string; allow?: string[]; deny?: string[]; chain: HopConfig[]; allowLocal?: string[]; resolve?: Resolve; networks?: Networks; upstream?: string; }
 
 interface Hop { name: string; kind: "tls-terminate" | "tls-originate" | "module"; handler?: Handler; domains?: string[]; failOpen?: boolean; }
 
@@ -198,7 +201,7 @@ function compilePolicy(allow: string[], deny: string[]): (host: string) => boole
 
 // An IP address as bytes: 4 for IPv4, 16 for IPv6.
 type IP = number[];
-interface Prefix { ip: IP; bits: number; }
+export interface Prefix { ip: IP; bits: number; }
 
 // ipv6Groups parses an IPv6 address (no brackets, no zone) into its eight
 // 16-bit groups, or null when it is not one. The URL parser does the
@@ -306,9 +309,11 @@ const REFUSED_RANGES: [Prefix, string][] = [
 const NAT64 = prefix("64:ff9b::/96");    // the last 4 bytes
 const SIX_TO_FOUR = prefix("2002::/16"); // bytes 2 to 5
 
-// hostNetworks lists the networks this host's interfaces are on, or null when
-// they cannot be read.
-export function hostNetworks(): Prefix[] | null {
+// Networks lists the networks this host's interfaces are on, or null when
+// they cannot be read. hostNetworks reads them from the system; the engine
+// uses it unless its config gives another.
+export type Networks = () => Prefix[] | null;
+export const hostNetworks: Networks = () => {
   try {
     const out: Prefix[] = [];
     for (const list of Object.values(os.networkInterfaces())) {
@@ -321,7 +326,7 @@ export function hostNetworks(): Prefix[] | null {
   } catch {
     return null;
   }
-}
+};
 
 // refusedAddress answers why the engine may not dial ip, or "" when it may.
 // It refuses loopback, unspecified, private (RFC 1918), shared, benchmarking,
@@ -329,9 +334,9 @@ export function hostNetworks(): Prefix[] | null {
 // carry an IPv4 address (IPv4-mapped is checked as that address, NAT64 and
 // 6to4 as the address inside, IPv4-compatible, IPv4-translated, local-use
 // NAT64 and Teredo are refused whole); and any address on a network of
-// `networks`, the host's own interfaces by default. When the networks cannot
+// `networks`, the networks of the host's own interfaces. When those could not
 // be read (null), every address is refused.
-export function refusedAddress(ip: IP, networks: Prefix[] | null = hostNetworks()): string {
+export function refusedAddress(ip: IP, networks: Prefix[] | null): string {
   const addr = unmap(ip);
   if (addr.length === 16) {
     if (inPrefix(NAT64, addr)) {
@@ -400,16 +405,16 @@ type Dial = (host: string, port: number, proto: string) => Promise<net.Socket>;
 
 // checkAddress answers why addr may not be dialled, or "" when it may: an
 // address inside an allowLocal prefix may always be dialled.
-function checkAddress(addr: string, allowLocal: Prefix[]): string {
+function checkAddress(addr: string, allowLocal: Prefix[], networks: Prefix[] | null): string {
   const ip = parseIP(addr);
   if (!ip) return "not an IP address";
   if (allowLocal.some((p) => inPrefix(p, unmap(ip)))) return "";
-  return refusedAddress(ip);
+  return refusedAddress(ip, networks);
 }
 
 // resolveChecked returns the addresses host may be dialled at, or throws an
 // EgressRefused: 403 when any address is refused, 502 when there is none.
-async function resolveChecked(host: string, allowLocal: Prefix[], resolve: Resolve): Promise<string[]> {
+async function resolveChecked(host: string, allowLocal: Prefix[], resolve: Resolve, networks: Networks): Promise<string[]> {
   const lit = literalAddress(host);
   let addrs: string[];
   if (lit) addrs = [lit];
@@ -418,8 +423,9 @@ async function resolveChecked(host: string, allowLocal: Prefix[], resolve: Resol
     catch (e) { throw new EgressRefused(502, `looking up ${host}: ${(e as Error)?.message ?? e}`); }
   }
   if (!addrs.length) throw new EgressRefused(502, `${host} has no address`);
+  const nets = networks();
   for (const a of addrs) {
-    const why = checkAddress(a, allowLocal);
+    const why = checkAddress(a, allowLocal, nets);
     if (why) throw new EgressRefused(403, `${host} is ${a}, ${why}; egress never reaches this host, its networks or a private range`, a);
   }
   return addrs;
@@ -504,12 +510,12 @@ export function parseUpstream(value: string | undefined): Upstream | null {
 // unresolved. It returns the host to send: an IP literal in its standard
 // form, or the name as it was. It throws an EgressRefused (403) for a
 // refused address, a localhost name, or a host that is neither a name nor an
-// address.
-export function upstreamTarget(host: string, allowLocal: Prefix[] = []): string {
+// address. networks is as for refusedAddress.
+export function upstreamTarget(host: string, allowLocal: Prefix[], networks: Prefix[] | null): string {
   const h = host.toLowerCase().replace(/^\[(.*)\]$/, "$1").replace(/\.+$/, "");
   const lit = literalAddress(h);
   if (lit) {
-    const why = checkAddress(lit, allowLocal);
+    const why = checkAddress(lit, allowLocal, networks);
     if (why) throw new EgressRefused(403, `${host} is ${lit}, ${why}; egress never reaches this host, its networks or a private range`, lit);
     return lit;
   }
@@ -1116,6 +1122,7 @@ export async function start(cfg: EngineConfig): Promise<{ stop: () => void }> {
   const allowLocal = parseAllowLocal(cfg.allowLocal ?? process.env.DABS_EGRESS_ALLOW_LOCAL);
   if (allowLocal.length) console.warn(`warning: egress may reach these local or private addresses: ${allowLocal.map((p) => `${formatIP(p.ip)}/${p.bits}`).join(", ")}`);
   const resolve = cfg.resolve ?? systemResolve;
+  const networks = cfg.networks ?? hostNetworks;
 
   // checkTarget checks host and returns what to connect to: in direct mode
   // every address the name resolves to, through an upstream the one host
@@ -1130,7 +1137,7 @@ export async function start(cfg: EngineConfig): Promise<{ stop: () => void }> {
     return r;
   };
   const checkTarget = async (host: string, port: number, proto: string): Promise<string[]> => {
-    try { return upstream ? [upstreamTarget(host, allowLocal)] : await resolveChecked(host, allowLocal, resolve); }
+    try { return upstream ? [upstreamTarget(host, allowLocal, networks())] : await resolveChecked(host, allowLocal, resolve, networks); }
     catch (e) { throw failed(e, host, port, proto); }
   };
   const connectTarget = async (addrs: string[], host: string, port: number, proto: string): Promise<net.Socket> => {

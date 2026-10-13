@@ -18,6 +18,10 @@
 //     protocol) is re-originated untouched (a transparent tunnel), so
 //     terminating a domain never costs the box its other protocols to it.
 //
+// Under all three, every connection the engine opens is to an address it has
+// checked: no loopback, private, link-local or other local address, and none
+// on a network of the host's interfaces (see the ADDRESS section).
+//
 // The no-buffering law: request and response bodies flow through chunk by chunk,
 // so a stream stays a stream and the wire framing/timing is preserved. A hook
 // that needs whole-body context accumulates it ITSELF across chunks.
@@ -49,6 +53,8 @@ import * as net from "node:net";
 import * as tls from "node:tls";
 import * as http from "node:http";
 import * as https from "node:https";
+import * as dns from "node:dns";
+import * as os from "node:os";
 import { existsSync, mkdirSync, unlinkSync, copyFileSync, appendFileSync } from "node:fs";
 
 // logEvent appends a JSON line to the connection ledger (DABS_CONNECT_LOG). It is
@@ -72,7 +78,11 @@ interface Handler {
   onResponseChunk?(chunk: Buffer | null, ctx: Json): Promise<ChunkResult> | ChunkResult;
 }
 interface HopConfig { name?: string; tls?: string; domains?: string[]; failOpen?: boolean; module?: string; config?: Json; }
-interface EngineConfig { socket: string; caDir: string; allow?: string[]; deny?: string[]; chain: HopConfig[]; }
+// allowLocal: addresses or CIDR prefixes the engine may dial although
+// refusedAddress refuses them (see the ADDRESS section). Absent, the engine
+// reads DABS_EGRESS_ALLOW_LOCAL. resolve replaces the system resolver; only a
+// caller of start() can pass it, since JSON cannot carry a function.
+interface EngineConfig { socket: string; caDir: string; allow?: string[]; deny?: string[]; chain: HopConfig[]; allowLocal?: string[]; resolve?: Resolve; }
 
 interface Hop { name: string; kind: "tls-terminate" | "tls-originate" | "module"; handler?: Handler; domains?: string[]; failOpen?: boolean; }
 
@@ -135,9 +145,12 @@ async function mintLeaf(dir: string, host: string): Promise<{ cert: string; key:
 
 // canonicalHost normalizes a host for policy: DNS names are case-insensitive and
 // a trailing dot is the same server, so lowercase and strip it — otherwise
-// "WWW.X.COM" or "www.x.com." would slip past a deny of "www.x.com".
+// "WWW.X.COM" or "www.x.com." would slip past a deny of "www.x.com". An IPv6
+// literal loses its brackets (`[::1]` from a CONNECT authority or a URL's
+// hostname): the host is bare everywhere after this, and serveHTTP puts the
+// brackets back in the Host header.
 function canonicalHost(host: string): string {
-  return host.toLowerCase().replace(/\.+$/, "");
+  return host.toLowerCase().replace(/^\[(.*)\]$/, "$1").replace(/\.+$/, "");
 }
 
 // matchHost tests one canonical host against one pattern, with ONE meaning of a
@@ -160,6 +173,273 @@ function compilePolicy(allow: string[], deny: string[]): (host: string) => boole
   if (allow.length) return (host) => allow.some((p) => matchHost(p, host));
   if (deny.length) return (host) => !deny.some((p) => matchHost(p, host));
   return () => true;
+}
+
+// --- ADDRESS: the engine dials no local or private address. ------------------
+//
+// Every connection the engine opens for a box is checked here first:
+// resolveChecked resolves the name once and checks EVERY address with
+// refusedAddress, and connectTo connects to one of those addresses, never to
+// the name. A name with one public and one refused address is refused. A
+// second lookup could answer differently from the one that was checked, so
+// there is none.
+//
+// The check runs when a connection is opened, after the gate: a request a
+// hook answers itself opens none, so it is never refused for its address. A
+// CONNECT that will be tunneled is checked before its 200, so the box can be
+// told why with a 403.
+//
+// An operator can open given addresses with `allowLocal` in the config or
+// DABS_EGRESS_ALLOW_LOCAL (comma-separated addresses or CIDR prefixes) in the
+// engine's environment. dabs's own tests use it for upstreams they run on
+// loopback. A box cannot set either.
+
+// An IP address as bytes: 4 for IPv4, 16 for IPv6.
+type IP = number[];
+interface Prefix { ip: IP; bits: number; }
+
+// ipv6Groups parses an IPv6 address (no brackets, no zone) into its eight
+// 16-bit groups, or null when it is not one. The URL parser does the
+// validating: it accepts every textual form (`::` compression, a dotted IPv4
+// tail, upper case) and serializes all of them as compressed hex.
+function ipv6Groups(addr: string): number[] | null {
+  let c: string;
+  try { c = new URL(`http://[${addr}]/`).hostname.slice(1, -1); } catch { return null; }
+  const halves = c.split("::");
+  if (halves.length > 2) return null;
+  const head = halves[0] ? halves[0].split(":") : [];
+  const tail = halves.length === 2 && halves[1] ? halves[1].split(":") : [];
+  const fill = halves.length === 2 ? 8 - head.length - tail.length : 0;
+  const groups = [...head, ...Array(fill).fill("0"), ...tail].map((g) => parseInt(g, 16));
+  return groups.length === 8 && groups.every((g) => g >= 0 && g <= 0xffff) ? groups : null;
+}
+
+// parseIP reads an IPv4 or IPv6 address in its standard spelling, with or
+// without brackets, dropping an IPv6 zone. Anything else is null; see
+// literalAddress for the other IPv4 spellings.
+export function parseIP(s: string): IP | null {
+  const h = s.replace(/^\[(.*)\]$/, "$1").replace(/%.*$/, "");
+  switch (net.isIP(h)) {
+    case 4: return h.split(".").map(Number);
+    case 6: { const g = ipv6Groups(h); return g ? g.flatMap((x) => [x >> 8, x & 0xff]) : null; }
+    default: return null;
+  }
+}
+
+// literalAddress returns the address a host names when it is an IP literal in
+// any spelling the URL parser accepts (`127.1`, `2130706433`, `0x7f.0.0.1`,
+// `[::ffff:7f00:1]`), or null when it is a name.
+export function literalAddress(host: string): string | null {
+  const h = host.replace(/^\[(.*)\]$/, "$1").replace(/%.*$/, "");
+  if (net.isIP(h)) return h;
+  if (h.includes(":")) return null;
+  let norm: string;
+  try { norm = new URL(`http://${h}/`).hostname; } catch { return null; }
+  return net.isIPv4(norm) ? norm : null;
+}
+
+function formatIP(ip: IP): string {
+  if (ip.length === 4) return ip.join(".");
+  const groups: string[] = [];
+  for (let i = 0; i < 16; i += 2) groups.push(((ip[i] << 8) | ip[i + 1]).toString(16));
+  return new URL(`http://[${groups.join(":")}]/`).hostname.slice(1, -1);
+}
+
+export function parsePrefix(s: string): Prefix | null {
+  const [addr, len, ...rest] = s.trim().split("/");
+  if (rest.length) return null;
+  const ip = parseIP(addr);
+  if (!ip) return null;
+  const max = ip.length * 8;
+  if (len === undefined) return { ip, bits: max };
+  if (!/^\d+$/.test(len) || Number(len) > max) return null;
+  return { ip, bits: Number(len) };
+}
+
+function inPrefix(p: Prefix, ip: IP): boolean {
+  if (p.ip.length !== ip.length) return false;
+  for (let bit = 0; bit < p.bits; bit += 8) {
+    const n = Math.min(8, p.bits - bit);
+    const mask = (0xff << (8 - n)) & 0xff;
+    if ((p.ip[bit / 8] & mask) !== (ip[bit / 8] & mask)) return false;
+  }
+  return true;
+}
+
+// unmap turns an IPv4-mapped IPv6 address (::ffff:a.b.c.d) into its IPv4 address.
+function unmap(ip: IP): IP {
+  if (ip.length === 16 && ip.slice(0, 10).every((b) => b === 0) && ip[10] === 0xff && ip[11] === 0xff) return ip.slice(12);
+  return ip;
+}
+
+const prefix = (s: string): Prefix => parsePrefix(s)!;
+
+// REFUSED_RANGES are the ranges the engine never dials, each with the words a
+// refusal names it by.
+const REFUSED_RANGES: [Prefix, string][] = [
+  [prefix("0.0.0.0/8"), "an address of this network (0.0.0.0/8)"],
+  [prefix("10.0.0.0/8"), "a private address (10.0.0.0/8)"],
+  [prefix("100.64.0.0/10"), "a shared address (100.64.0.0/10, carrier NAT and tailnets)"],
+  [prefix("127.0.0.0/8"), "a loopback address"],
+  [prefix("169.254.0.0/16"), "a link-local address (169.254.0.0/16, cloud metadata among them)"],
+  [prefix("172.16.0.0/12"), "a private address (172.16.0.0/12)"],
+  [prefix("192.0.0.0/24"), "an IETF protocol address (192.0.0.0/24)"],
+  [prefix("192.168.0.0/16"), "a private address (192.168.0.0/16)"],
+  [prefix("198.18.0.0/15"), "a benchmarking address (198.18.0.0/15)"],
+  [prefix("224.0.0.0/4"), "a multicast address"],
+  [prefix("240.0.0.0/4"), "a reserved address (240.0.0.0/4, broadcast among them)"],
+  [prefix("::/128"), "the unspecified address"],
+  [prefix("::1/128"), "a loopback address"],
+  [prefix("::/96"), "an IPv4-compatible address (::/96)"],
+  [prefix("::ffff:0:0:0/96"), "an IPv4-translated address (::ffff:0:0:0/96)"],
+  [prefix("64:ff9b:1::/48"), "a local-use NAT64 address (64:ff9b:1::/48)"],
+  [prefix("100::/64"), "a discard address (100::/64)"],
+  [prefix("2001::/32"), "a Teredo address (2001::/32)"],
+  [prefix("fc00::/7"), "a unique local address (fc00::/7)"],
+  [prefix("fe80::/10"), "a link-local address"],
+  [prefix("fec0::/10"), "a site-local address (fec0::/10)"],
+  [prefix("ff00::/8"), "a multicast address"],
+];
+// The IPv6 ranges that carry an IPv4 address, checked as that address.
+const NAT64 = prefix("64:ff9b::/96");    // the last 4 bytes
+const SIX_TO_FOUR = prefix("2002::/16"); // bytes 2 to 5
+
+// hostNetworks lists the networks this host's interfaces are on, or null when
+// they cannot be read.
+export function hostNetworks(): Prefix[] | null {
+  try {
+    const out: Prefix[] = [];
+    for (const list of Object.values(os.networkInterfaces())) {
+      for (const a of list ?? []) {
+        const p = a.cidr ? parsePrefix(a.cidr) : parsePrefix(a.address);
+        if (p) out.push(p);
+      }
+    }
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+// refusedAddress answers why the engine may not dial ip, or "" when it may.
+// It refuses loopback, unspecified, private (RFC 1918), shared, benchmarking,
+// link-local, multicast, reserved and unique local ranges; IPv6 forms that
+// carry an IPv4 address (IPv4-mapped is checked as that address, NAT64 and
+// 6to4 as the address inside, IPv4-compatible, IPv4-translated, local-use
+// NAT64 and Teredo are refused whole); and any address on a network of
+// `networks`, the host's own interfaces by default. When the networks cannot
+// be read (null), every address is refused.
+export function refusedAddress(ip: IP, networks: Prefix[] | null = hostNetworks()): string {
+  const addr = unmap(ip);
+  if (addr.length === 16) {
+    if (inPrefix(NAT64, addr)) {
+      const v4 = addr.slice(12);
+      const why = refusedAddress(v4, networks);
+      if (why) return `a NAT64 address of ${formatIP(v4)}, ${why}`;
+    } else if (inPrefix(SIX_TO_FOUR, addr)) {
+      const v4 = addr.slice(2, 6);
+      const why = refusedAddress(v4, networks);
+      if (why) return `a 6to4 address of ${formatIP(v4)}, ${why}`;
+    }
+  }
+  for (const [p, why] of REFUSED_RANGES) if (inPrefix(p, addr)) return why;
+  if (networks === null) return "unknown: this host's interfaces could not be read";
+  for (const n of networks) {
+    if (inPrefix(n, addr)) return `on ${formatIP(n.ip)}/${n.bits}, a network of this host's interfaces`;
+  }
+  return "";
+}
+
+// parseAllowLocal reads the operator's opt-in: addresses or CIDR prefixes,
+// as a list or one comma-separated string. A malformed entry throws, so the
+// engine refuses to boot rather than open more or less than was meant.
+export function parseAllowLocal(value: string[] | string | undefined): Prefix[] {
+  const items = Array.isArray(value) ? value : (value ?? "").split(",");
+  const out: Prefix[] = [];
+  for (const raw of items) {
+    const s = raw.trim();
+    if (!s) continue;
+    const p = parsePrefix(s);
+    if (!p) throw new Error(`allowLocal: ${JSON.stringify(s)} is not an IP address or CIDR prefix`);
+    // An IPv4-mapped entry is stored as the IPv4 prefix it names.
+    const ip = unmap(p.ip);
+    out.push({ ip, bits: ip.length === p.ip.length ? p.bits : Math.max(0, p.bits - 96) });
+  }
+  return out;
+}
+
+// EgressRefused is a connection the engine would not open: status is the
+// HTTP status the box is answered with, reason the text it is told.
+export class EgressRefused extends Error {
+  constructor(readonly status: number, reason: string, readonly address?: string) { super(reason); }
+}
+
+// REFUSED_HEADER carries the reason on a refusal, one line, so `curl -v`
+// shows it for a CONNECT whose body curl does not print.
+export const REFUSED_HEADER = "X-Dabs-Egress-Refused";
+
+// refusalResponse is a complete HTTP response for a refusal.
+export function refusalResponse(e: unknown): string {
+  const r = e instanceof EgressRefused ? e : new EgressRefused(502, (e as Error)?.message ?? String(e));
+  const reason = r.message.trim();
+  const line = reason.replace(/[\x00-\x1f\x7f]/g, " ");
+  const body = reason + "\n";
+  const text = r.status === 403 ? "Forbidden" : r.status === 400 ? "Bad Request" : "Bad Gateway";
+  return `HTTP/1.1 ${r.status} ${text}\r\nContent-Type: text/plain; charset=utf-8\r\n${REFUSED_HEADER}: ${line}\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`;
+}
+
+// Resolve looks a name up and returns every address it has.
+export type Resolve = (host: string) => Promise<string[]>;
+const systemResolve: Resolve = async (host) =>
+  (await dns.promises.lookup(host, { all: true, verbatim: true })).map((a) => a.address);
+
+// Dial opens a connection for a box. proto names the proxy path, for the ledger.
+type Dial = (host: string, port: number, proto: string) => Promise<net.Socket>;
+
+// checkAddress answers why addr may not be dialled, or "" when it may: an
+// address inside an allowLocal prefix may always be dialled.
+function checkAddress(addr: string, allowLocal: Prefix[]): string {
+  const ip = parseIP(addr);
+  if (!ip) return "not an IP address";
+  if (allowLocal.some((p) => inPrefix(p, unmap(ip)))) return "";
+  return refusedAddress(ip);
+}
+
+// resolveChecked returns the addresses host may be dialled at, or throws an
+// EgressRefused: 403 when any address is refused, 502 when there is none.
+async function resolveChecked(host: string, allowLocal: Prefix[], resolve: Resolve): Promise<string[]> {
+  const lit = literalAddress(host);
+  let addrs: string[];
+  if (lit) addrs = [lit];
+  else {
+    try { addrs = await resolve(host); }
+    catch (e) { throw new EgressRefused(502, `looking up ${host}: ${(e as Error)?.message ?? e}`); }
+  }
+  if (!addrs.length) throw new EgressRefused(502, `${host} has no address`);
+  for (const a of addrs) {
+    const why = checkAddress(a, allowLocal);
+    if (why) throw new EgressRefused(403, `${host} is ${a}, ${why}; egress never reaches this host, its networks or a private range`, a);
+  }
+  return addrs;
+}
+
+// connectTo connects to the first address that answers.
+function connectTo(addrs: string[], port: number, host: string): Promise<net.Socket> {
+  return new Promise((resolve, reject) => {
+    const failures: string[] = [];
+    const attempt = (i: number) => {
+      if (i >= addrs.length) { reject(new EgressRefused(502, `connecting to ${host}: ${failures.join("; ")}`)); return; }
+      const sock = net.connect({ host: addrs[i], port });
+      const onError = (e: Error) => { failures.push(`${addrs[i]}: ${e.message}`); sock.destroy(); attempt(i + 1); };
+      sock.once("error", onError);
+      sock.once("connect", () => {
+        sock.removeListener("error", onError);
+        sock.on("error", () => {}); // the caller adds its own; this keeps an early error from throwing
+        resolve(sock);
+      });
+    };
+    attempt(0);
+  });
 }
 
 // --- chain: load module hooks at boot; classify tls boundary directives. ----
@@ -483,6 +763,7 @@ async function serveHTTP(
   port: number,
   scheme: "http" | "https",
   initial: Buffer,
+  dial: Dial,
 ): Promise<void> {
   const reader = new BufReader(makePull(client), initial);
   const rawHead = await reader.readUntil("\r\n\r\n");
@@ -540,7 +821,9 @@ async function serveHTTP(
 
   // Forward upstream, streaming the request body through onRequestChunk.
   const isDefaultPort = (scheme === "https" && port === 443) || (scheme === "http" && port === 80);
-  const authority = isDefaultPort ? host : `${host}:${port}`;
+  // An IPv6 literal goes back into brackets in the Host header.
+  const hostLiteral = host.includes(":") ? `[${host}]` : host;
+  const authority = isDefaultPort ? hostLiteral : `${hostLiteral}:${port}`;
   const outHeaders: Record<string, string> = {};
   for (const [k, v] of Object.entries(reqHead.headers)) {
     const lk = k.toLowerCase();
@@ -550,8 +833,19 @@ async function serveHTTP(
   outHeaders["host"] = authority;
   outHeaders["connection"] = "close";
 
+  // The connection is opened by dial, which checks the address; the HTTP
+  // client gets that socket and never looks the name up itself. TLS to the
+  // origin runs over it and checks the certificate against the name.
+  let sock: net.Socket;
+  try { sock = await dial(host, port, scheme === "https" ? "connect" : "http"); }
+  catch (e) {
+    await drain(bodyChunks(reader, reqHead.headers, method));
+    client.end(refusalResponse(e));
+    return;
+  }
   const mod = scheme === "https" ? https : http;
-  const upReq = mod.request({ host, port, method, path, headers: outHeaders, servername: scheme === "https" ? host : undefined, rejectUnauthorized: true });
+  const createConnection = () => (scheme === "https" ? tls.connect({ socket: sock, host, servername: net.isIP(host) ? undefined : host, rejectUnauthorized: true }) : sock);
+  const upReq = mod.request({ host, port, method, path, headers: outHeaders, createConnection } as http.RequestOptions);
 
   const upResPromise = new Promise<http.IncomingMessage>((resolve, reject) => {
     upReq.on("response", resolve);
@@ -679,24 +973,39 @@ export async function start(cfg: EngineConfig): Promise<{ stop: () => void }> {
   // is recorded in the ledger and nowhere else — the same treatment a static
   // deny gets, and the ledger keeps the two apart ("deny" is the recipe's own
   // allow/deny, "deny-module" a hook's onConnect, with the hop and its reason).
-  //
-  // The client socket is PAUSED across the module verdict. This runs inside the
-  // accept handler's `once("data")`, so between that listener firing and the
-  // reader the next stage attaches, the socket is flowing with nothing listening
-  // — and an onConnect hook is allowed to be async, so the gap is a real await.
-  // Bytes emitted into it would be dropped and the request would never complete.
-  // Pausing holds them in the socket's own buffer; the resume lands in the same
-  // tick as the next stage, before any I/O callback can run.
-  async function gateConnection(client: net.Socket, host: string, port: number, proto: string): Promise<boolean> {
+  // The address check comes later, in dial, when a connection is opened.
+  async function gateConnection(host: string, port: number, proto: string): Promise<boolean> {
     if (!policyAllows(host)) { connLog(host, port, "deny", proto); return false; }
-    client.pause();
-    let decision: ConnectDecision;
-    try { decision = await askConnectHops(connectHops, host, port); }
-    finally { client.resume(); }
+    const decision = await askConnectHops(connectHops, host, port);
     if (decision.allowed) return true;
     connLog(host, port, "deny-module", proto, { hop: decision.hop, reason: decision.reason });
     return false;
   }
+
+  // The operator's opt-in to local addresses; a malformed one stops the boot.
+  const allowLocal = parseAllowLocal(cfg.allowLocal ?? process.env.DABS_EGRESS_ALLOW_LOCAL);
+  if (allowLocal.length) console.warn(`warning: egress may reach these local or private addresses: ${allowLocal.map((p) => `${formatIP(p.ip)}/${p.bits}`).join(", ")}`);
+  const resolve = cfg.resolve ?? systemResolve;
+
+  // checkTarget resolves host and checks every address; connectTarget opens
+  // a connection to addresses checkTarget returned; dial is the two in a row, and
+  // opens every connection the engine makes for a box. A refusal or a failure
+  // is recorded in the ledger and thrown as an EgressRefused for the caller to
+  // answer the box with.
+  const failed = (e: unknown, host: string, port: number, proto: string): EgressRefused => {
+    const r = e instanceof EgressRefused ? e : new EgressRefused(502, (e as Error)?.message ?? String(e));
+    connLog(host, port, r.status === 403 ? "deny-address" : "unreachable", proto, { ...(r.address ? { address: r.address } : {}), reason: clampReason(r.message) });
+    return r;
+  };
+  const checkTarget = async (host: string, port: number, proto: string): Promise<string[]> => {
+    try { return await resolveChecked(host, allowLocal, resolve); }
+    catch (e) { throw failed(e, host, port, proto); }
+  };
+  const connectTarget = async (addrs: string[], host: string, port: number, proto: string): Promise<net.Socket> => {
+    try { return await connectTo(addrs, port, host); }
+    catch (e) { throw failed(e, host, port, proto); }
+  };
+  const dial: Dial = async (host, port, proto) => connectTarget(await checkTarget(host, port, proto), host, port, proto);
 
   // Always mint the CA: dabs mounts ca.crt into every proxy box (the mount origin
   // must exist), and a chain that gains a `tls: terminate` later needs it anyway.
@@ -759,10 +1068,15 @@ export async function start(cfg: EngineConfig): Promise<{ stop: () => void }> {
     if (first === null) { tlsSock.destroy(); return; }
     const isHTTP1 = (tlsSock.alpnProtocol === "http/1.1" || tlsSock.alpnProtocol === false) && looksLikeHTTP1(first);
     if (isHTTP1) {
-      await serveHTTP(tlsSock as unknown as net.Socket, contentHops, originates, host, port, "https", first);
+      await serveHTTP(tlsSock as unknown as net.Socket, contentHops, originates, host, port, "https", first, dial);
       return;
     }
-    const up = tls.connect({ host, port, servername: host }, () => {
+    // The box's stream is already past its TLS handshake, so a refusal can
+    // only close it; dial has recorded why in the ledger.
+    let raw: net.Socket;
+    try { raw = await dial(host, port, "connect"); }
+    catch { tlsSock.destroy(); return; }
+    const up = tls.connect({ socket: raw, host, servername: net.isIP(host) ? undefined : host, rejectUnauthorized: true }, () => {
       up.write(first);
       up.pipe(tlsSock);
       tlsSock.pipe(up);
@@ -771,13 +1085,39 @@ export async function start(cfg: EngineConfig): Promise<{ stop: () => void }> {
     tlsSock.on("close", done); up.on("close", done); up.on("error", done);
   }
 
+  // tunnel carries an allowed connection's raw bytes to an open upstream
+  // socket, replaying the first chunk the box sent.
+  function tunnel(client: net.Socket, up: net.Socket, first: Buffer) {
+    if (client.destroyed) { up.destroy(); return; }
+    up.on("error", () => client.destroy());
+    client.on("close", () => up.destroy());
+    up.write(first);
+    client.pipe(up);
+    up.pipe(client);
+  }
+
+  // answer ends a client the engine will not serve. The client is resumed so
+  // whatever it still sends is read and dropped, and the close completes.
+  function answer(client: net.Socket, response: string) {
+    client.resume();
+    client.end(response);
+  }
+
   if (existsSync(cfg.socket)) { try { unlinkSync(cfg.socket); } catch {} }
   const server = net.createServer((client) => {
     client.on("error", () => {});
     client.once("data", async (buf) => {
+      // The client is PAUSED from here until the next stage attaches its
+      // reader. Between this listener firing and that reader, the socket would
+      // otherwise flow with nothing listening, across real awaits (an async
+      // onConnect hook, a name lookup, a dial), and bytes emitted then would be
+      // dropped. Pausing holds them in the socket's own buffer; each resume
+      // lands in the same tick as the reader that takes them.
+      client.pause();
       try {
         const line = buf.toString("latin1").split("\r\n")[0];
-        const connect = line.match(/^CONNECT\s+([^:]+):(\d+)/i);
+        // The authority is host:port, or [v6]:port for an IPv6 literal.
+        const connect = line.match(/^CONNECT\s+(\[[^\]\s]+\]|[^\s:[\]]+):(\d+)(?:\s|$)/i);
         if (connect) {
           const host = canonicalHost(connect[1]);
           const port = Number(connect[2]);
@@ -785,15 +1125,27 @@ export async function start(cfg: EngineConfig): Promise<{ stop: () => void }> {
           // plaintext host, before any tunnel — for every protocol — and then
           // the module hops outside a tls window. A refused host never gets a
           // tunnel.
-          if (!(await gateConnection(client, host, port, "connect"))) { client.end("HTTP/1.1 403 Forbidden\r\n\r\n"); return; }
+          if (!(await gateConnection(host, port, "connect"))) { answer(client, "HTTP/1.1 403 Forbidden\r\n\r\n"); return; }
+
+          // A connection that will be tunneled is looked up and checked before
+          // the 200, so a refused address is answered with a status the box can
+          // read, and connected to after the box's first bytes. An inspected
+          // one is checked later, when the engine dials it.
+          const passthrough = failOpen && pinnedHosts.has(host);
+          const inspect = shouldInspect(host) && !passthrough;
+          let addrs: string[] = [];
+          if (!inspect) {
+            try { addrs = await checkTarget(host, port, "connect"); }
+            catch (e) { answer(client, refusalResponse(e)); return; }
+          }
+          client.resume();
           client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
 
           const hello = await firstChunk(client);
           if (!hello) { connLog(host, port, "no-hello"); client.destroy(); return; }
           if (!ALLOW_ECH && helloHasECH(hello)) { connLog(host, port, "ech-drop"); client.destroy(); return; } // ECH hides the SNI
 
-          const passthrough = failOpen && pinnedHosts.has(host);
-          if (shouldInspect(host) && !passthrough) {
+          if (inspect) {
             let termSock: string;
             try {
               termSock = await terminatorFor(host, port);
@@ -803,8 +1155,12 @@ export async function start(cfg: EngineConfig): Promise<{ stop: () => void }> {
               // cleanly. Either way the engine stays up.
               if (failOpen) {
                 connLog(host, port, "tunnel-noterminator");
-                const up = net.connect(port, host, () => { up.write(hello); client.pipe(up); up.pipe(client); });
-                up.on("error", () => client.destroy());
+                client.pause();
+                let raw: net.Socket;
+                try { raw = await dial(host, port, "connect"); }
+                catch { client.destroy(); return; }
+                client.resume();
+                tunnel(client, raw, hello);
                 return;
               }
               connLog(host, port, "refused-noterminator");
@@ -828,8 +1184,12 @@ export async function start(cfg: EngineConfig): Promise<{ stop: () => void }> {
           // connection straight to the real host — a pinning client is not broken,
           // and any protocol reaches an allowed domain.
           connLog(host, port, passthrough ? "tunnel-pinned" : "tunnel");
-          const up = net.connect(port, host, () => { up.write(hello); client.pipe(up); up.pipe(client); });
-          up.on("error", () => client.destroy());
+          client.pause();
+          let up: net.Socket;
+          try { up = await connectTarget(addrs, host, port, "connect"); }
+          catch { client.destroy(); return; }
+          client.resume();
+          tunnel(client, up, hello);
           return;
         }
         const httpReq = line.match(/^([A-Z]+)\s+(http:\/\/\S+)\s+HTTP\/1\.[01]/i);
@@ -839,17 +1199,18 @@ export async function start(cfg: EngineConfig): Promise<{ stop: () => void }> {
           const url = new URL(httpReq[2]);
           const host = canonicalHost(url.hostname);
           const port = Number(url.port || 80);
-          if (!(await gateConnection(client, host, port, "http"))) { client.end("HTTP/1.1 403 Forbidden\r\n\r\n"); return; }
+          if (!(await gateConnection(host, port, "http"))) { answer(client, "HTTP/1.1 403 Forbidden\r\n\r\n"); return; }
           connLog(host, port, shouldInspect(host) ? "inspect" : "forward", "http");
           const hooks = shouldInspect(host) ? contentHops : [];
-          await serveHTTP(client, hooks, hooks.length ? originates : true, host, port, "http", buf);
+          client.resume();
+          await serveHTTP(client, hooks, hooks.length ? originates : true, host, port, "http", buf, dial);
           return;
         }
         connLog(line.split(/\s+/)[0] || "?", 0, "unhandled");
-        client.end("HTTP/1.1 501 Not Implemented\r\n\r\n");
+        answer(client, "HTTP/1.1 501 Not Implemented\r\n\r\n");
       } catch (e) {
         console.error(`warning: proxy connection error: ${(e as Error)?.message ?? e}`);
-        try { client.end("HTTP/1.1 403 Forbidden\r\n\r\n"); } catch {}
+        try { answer(client, "HTTP/1.1 403 Forbidden\r\n\r\n"); } catch {}
       }
     });
   });

@@ -200,7 +200,7 @@ test("engine gates CONNECT by allow list and streams a forward with chunk rewrit
   const eng2 = await start({
     socket: socket2,
     caDir: join(work2, "ca"),
-    allow: ["127.0.0.1"],
+    allow: ["127.0.0.1"], allowLocal: ["127.0.0.1"],
     chain: [{ tls: "terminate" }, { name: "swap", module: swapMod, config: {} }, { tls: "originate" }],
   });
 
@@ -301,7 +301,7 @@ test("connect ledger records every dialed destination and its verdict", async ()
   process.env.DABS_CONNECT_LOG = ledger; // inherited by the engine (same process here)
 
   const socket = join(work, "engine.sock");
-  const eng = await start({ socket, caDir: join(work, "ca"), allow: ["127.0.0.1"], chain: [] });
+  const eng = await start({ socket, caDir: join(work, "ca"), allow: ["127.0.0.1"], allowLocal: ["127.0.0.1"], chain: [] });
 
   // Allowed plain-HTTP forward → a "forward" line; denied host → a "deny" line.
   await forwardProxy(socket, `http://127.0.0.1:${uport}/x`, "GET", "");
@@ -363,6 +363,11 @@ function connectLine(sock: string, host: string, port: number): Promise<string> 
   });
 }
 
+// documentationAddress resolves every name to 192.0.2.1, a public documentation
+// address (RFC 5737), so a CONNECT the gate allows passes the address check
+// without a real lookup. connectLine sends no ClientHello, so nothing is dialed.
+const documentationAddress = async () => ["192.0.2.1"];
+
 // ledgerLines reads the connection ledger written so far.
 function ledgerLines(path: string): Record<string, unknown>[] {
   return readFileSync(path, "utf8").trim().split("\n").map((l) => JSON.parse(l));
@@ -384,6 +389,7 @@ test("onConnect denies a connection the static policy allows, and the ledger say
     socket,
     caDir: join(work, "ca"),
     allow: ["example.com"], // the apex and every subdomain: BOTH hosts below pass the static gate
+    resolve: documentationAddress,
     chain: [{ name: "gate", module: gateMod, config: { block: "blocked.example.com" } }],
   });
 
@@ -422,6 +428,7 @@ export default (config) => ({
     socket,
     caDir: join(work, "ca"),
     allow: ["good.example.com"],
+    resolve: documentationAddress,
     chain: [{ name: "yes", module: yesMod, config: { seen } }],
   });
 
@@ -456,6 +463,7 @@ test("the connection tier fails closed: a throwing or hanging onConnect denies",
     socket,
     caDir: join(work, "ca"),
     allow: ["example.com"],
+    resolve: documentationAddress,
     chain: [{ name: "broken", module: brokenMod, config: {} }],
   });
 
@@ -522,7 +530,7 @@ test("the plain forward-proxy path consults onConnect too", async () => {
   const eng = await start({
     socket,
     caDir: join(work, "ca"),
-    allow: ["127.0.0.1"],
+    allow: ["127.0.0.1"], allowLocal: ["127.0.0.1"],
     chain: [{ name: "ports", module: portMod, config: { block: uport } }],
   });
 
@@ -560,7 +568,7 @@ export default (config) => ({
     eng = await start({
       socket,
       caDir: join(work, "ca"),
-      allow: ["127.0.0.1"],
+      allow: ["127.0.0.1"], allowLocal: ["127.0.0.1"],
       chain: [{ name: "contentonly", module: contentMod, config: { calls } }],
     });
   } finally { console.warn = realWarn; }
@@ -626,7 +634,7 @@ test("an async onConnect keeps the plain forward-proxy body that arrives while i
   const eng = await start({
     socket,
     caDir: join(work, "ca"),
-    allow: ["127.0.0.1"],
+    allow: ["127.0.0.1"], allowLocal: ["127.0.0.1"],
     chain: [{ name: "slow", module: slowGateModule(work, 40), config: { delay: 40 } }],
   });
 
@@ -661,7 +669,7 @@ test("an async onConnect keeps a CONNECT tunnel's first bytes that arrive while 
   const eng = await start({
     socket,
     caDir: join(work, "ca"),
-    allow: ["127.0.0.1"],
+    allow: ["127.0.0.1"], allowLocal: ["127.0.0.1"],
     chain: [{ name: "slow", module: slowGateModule(work, 40), config: { delay: 40 } }],
   });
 

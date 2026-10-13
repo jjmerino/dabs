@@ -75,6 +75,7 @@ func TestCredentialBodySwapScope(t *testing.T) {
 	// The upstream: plays Anthropic on host loopback, recording what each
 	// request looked like AFTER the broker — per path, the Authorization it
 	// carried and the body it delivered.
+	allowLoopbackEgress(t)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

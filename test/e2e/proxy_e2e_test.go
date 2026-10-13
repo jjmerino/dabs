@@ -345,6 +345,64 @@ echo "allowed $(curl -s --noproxy '' --cacert /out/ca.pem -m 12 https://127.0.0.
 	}
 }
 
+// TestEgressRefusesHostLoopback proves a proxied box cannot reach a service on
+// the host's loopback, even under `allow: "*"`: the engine checks the address
+// before it dials and answers 403 with the reason in X-Dabs-Egress-Refused. The
+// suite itself reaches the same listener first, so the refusal is about the
+// address and not a dead server. No DABS_EGRESS_ALLOW_LOCAL is set here.
+func TestEgressRefusesHostLoopback(t *testing.T) {
+	clean(t)
+	const mark = "HOST-LOOPBACK-SERVICE"
+	port := startLoopbackHTTP(t, mark)
+	client := &http.Client{Transport: &http.Transport{Proxy: nil}, Timeout: 5 * time.Second}
+	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/", port))
+	if err != nil {
+		t.Fatalf("the suite should reach its own loopback listener: %v", err)
+	}
+	resp.Body.Close()
+	dir, err := os.MkdirTemp(home, "proxyloopback-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	outDir := filepath.Join(dir, "out")
+	if err := os.MkdirAll(outDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	yaml := fmt.Sprintf("default: l\nrecipes:\n  l:\n    image: dabs-e2e\n    keep: true\n    egress:\n      allow: \"*\"\n    sources:\n      - mount: %s\n        path: /out\n", outDir)
+	if err := os.WriteFile(filepath.Join(dir, "dabs.yaml"), []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// --noproxy '' sends 127.0.0.1 and localhost through the engine instead of
+	// the box's own loopback. The first two are plain forward-proxy requests;
+	// -p makes the third a CONNECT tunnel.
+	script := fmt.Sprintf(`#!/bin/sh
+curl -s --noproxy '' -m 10 -D /out/plain.txt -o /out/plain.body http://127.0.0.1:%[1]d/
+curl -s --noproxy '' -m 10 -D /out/name.txt -o /dev/null http://localhost:%[1]d/
+curl -s --noproxy '' -m 10 -p -o /dev/null -w '%%{http_connect}' http://127.0.0.1:%[1]d/ > /out/connect.txt
+`, port)
+	if err := os.WriteFile(filepath.Join(outDir, "run.sh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out, code := run("dabs recipe " + dir + " --no-command")
+	if code != 0 {
+		t.Fatalf("boot failed (%d):\n%s", code, out)
+	}
+	inst := instanceLine(t, out)
+	run("dabs exec " + inst + " -- sh /out/run.sh")
+	for _, f := range []string{"plain.txt", "name.txt"} {
+		head := readFile(t, filepath.Join(outDir, f))
+		if !strings.HasPrefix(head, "HTTP/1.1 403") || !strings.Contains(head, "X-Dabs-Egress-Refused: ") || !strings.Contains(head, "a loopback address") {
+			t.Errorf("%s: the engine should refuse host loopback with a 403 and the reason, got:\n%s", f, head)
+		}
+	}
+	if body := readFile(t, filepath.Join(outDir, "plain.body")); strings.Contains(body, mark) {
+		t.Errorf("the box reached the host's loopback service:\n%s", body)
+	}
+	if got := strings.TrimSpace(readFile(t, filepath.Join(outDir, "connect.txt"))); got != "403" {
+		t.Errorf("a CONNECT to host loopback should be answered 403, got %q", got)
+	}
+}
+
 // TestProxyDenyCarriesHeaders is the regression for the `deny`-drops-headers bug:
 // a content-tier deny (a hook answering with action:"deny") must emit its custom
 // response headers, like respond.
@@ -781,6 +839,7 @@ func TestProxyPlainHTTP(t *testing.T) {
 	clean(t)
 
 	const upstreamMark = "LOOPBACK-UPSTREAM-BODY"
+	allowLoopbackEgress(t)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

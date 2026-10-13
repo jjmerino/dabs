@@ -72,6 +72,7 @@ func positionHarness(t *testing.T, realAccess, realRefresh, hosts string) (inst 
 	}
 	write(filepath.Join(dir, "broker.ts"), string(brokerSrc), 0o644)
 
+	allowLoopbackEgress(t)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

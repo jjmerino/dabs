@@ -303,8 +303,8 @@ test("a plain forward-proxy request rides a CONNECT tunnel to port 80", async ()
 // stream to forged.test that the origin's certificate is checked on it.
 // The engine also removes the proxy variables from its own process.env, for
 // module code that reads them. That does not change bun's own fetch and
-// node:http, which read them once at start (measured on bun 1.4.2), so the
-// process that starts the engine must leave them out.
+// node:http, which read them once at start (measured on bun 1.4.2), so
+// engine.go starts the engine without them; engine_env_test.go covers that.
 test("a terminated HTTPS request is re-originated through the upstream, with the origin's certificate checked", async () => {
   const work = mkdtempSync(join(tmpdir(), "dabs-upstream-tls-"));
   const tlsMod = await import("node:tls");

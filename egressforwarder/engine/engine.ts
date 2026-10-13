@@ -470,7 +470,7 @@ function connectTo(addrs: string[], port: number, host: string): Promise<net.Soc
 // process that runs dabs, and bun's fetch and node:http honour them, so a
 // module hop that made a request of its own would leave through that proxy
 // instead of the upstream. bun reads them once at start (measured on bun
-// 1.4.2), so the process that starts the engine must leave them out. The
+// 1.4.2), so engine.go starts the engine without them (engineEnv). The
 // engine also deletes them from process.env, for module code and child
 // processes that read them later.
 

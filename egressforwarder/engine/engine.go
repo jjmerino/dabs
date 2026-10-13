@@ -97,6 +97,7 @@ func Start(dir string, policy Policy, chain []HopConfig) (*Engine, error) {
 		return nil, err
 	}
 	cmd := exec.Command("bun", enginePath, cfgPath)
+	cmd.Env = engineEnv(os.Environ())
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
@@ -114,6 +115,40 @@ func Start(dir string, policy Policy, chain []HopConfig) (*Engine, error) {
 	// The engine died before binding — its log holds the real reason (a module
 	// that would not import, a bad chain). Surface it instead of a bare timeout.
 	return nil, fmt.Errorf("proxy engine did not start: %s", engineLogTail(logPath))
+}
+
+// proxyEnv is what engineEnv removes when DABS_UPSTREAM_PROXY is set.
+var proxyEnv = map[string]bool{
+	"HTTP_PROXY": true, "HTTPS_PROXY": true, "ALL_PROXY": true,
+	"http_proxy": true, "https_proxy": true, "all_proxy": true,
+}
+
+// engineEnv is the environment the engine runs with: the caller's, minus
+// HTTP_PROXY, HTTPS_PROXY, ALL_PROXY and their lowercase forms when
+// DABS_UPSTREAM_PROXY is set. The engine then reaches every destination
+// through that upstream and nothing else. bun reads the proxy variables once
+// at start for fetch and node:http, so removing them inside the engine
+// (engine.ts does that too) would come too late; they have to be gone
+// before bun starts. Without DABS_UPSTREAM_PROXY the environment is passed
+// through unchanged.
+func engineEnv(environ []string) []string {
+	upstream := false
+	for _, kv := range environ {
+		if v, ok := strings.CutPrefix(kv, "DABS_UPSTREAM_PROXY="); ok && strings.TrimSpace(v) != "" {
+			upstream = true
+		}
+	}
+	if !upstream {
+		return environ
+	}
+	out := make([]string, 0, len(environ))
+	for _, kv := range environ {
+		k, _, _ := strings.Cut(kv, "=")
+		if !proxyEnv[k] {
+			out = append(out, kv)
+		}
+	}
+	return out
 }
 
 // engineLogTail returns the last few non-empty lines of the engine log, for an

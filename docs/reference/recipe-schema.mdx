@@ -151,7 +151,9 @@ dial the network itself. It is for a host whose only way out is another proxy,
 such as a VM with a closed network. In that mode the engine checks IP literals
 (against the same table) and refuses `localhost` names, but does not resolve
 other names: the upstream proxy must refuse a name that resolves to a local
-address. A malformed value stops the boot.
+address. dabs starts the engine without `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`
+or their lowercase forms in this mode, so a hook's own requests cannot leave by
+another proxy. A malformed value stops the boot.
 
 Proxy egress needs `bun` and `openssl` on the host PATH, and a forwarder binary
 to mount in the box: the CLI carries one embedded (`-tags withforwarder`), and a

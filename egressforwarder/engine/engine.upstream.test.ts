@@ -487,3 +487,64 @@ process.exit(0);
   expect(answers.proxyEnvLeft).toEqual([]);
   expect(trapHits).toEqual([]);
 });
+
+// holdingUpstream answers every CONNECT with answer and keeps the connection
+// open, so the engine relays only what the answer's own framing allows.
+async function holdingUpstream(answer: string) {
+  const server = net.createServer((c) => { c.on("error", () => {}); c.once("data", () => c.write(answer, "latin1")); });
+  const port = await listen(server);
+  cleanups.push(() => server.close());
+  return port;
+}
+
+// A liveness bound, not a benchmark: an engine that waited for more of the
+// body would answer after UPSTREAM_ANSWER_MS (30 s), and the race ends here.
+const within3s = (p: Promise<string>) => Promise.race([p, Bun.sleep(3000).then(() => "still waiting after 3 s")]);
+
+test("an upstream's error body reaches the box cut at 16 KiB", async () => {
+  const body = "a".repeat(16384) + "b".repeat(4000);
+  const port = await holdingUpstream(`HTTP/1.1 403 Forbidden\r\nContent-Length: ${body.length}\r\n\r\n${body}`);
+  const { socket } = await engineWith({ upstream: `http://127.0.0.1:${port}` });
+  const r = await within3s(rawExchange(socket, connectRequest("big.test:443")));
+  expect(r.split("\r\n")[0]).toBe("HTTP/1.1 403 Forbidden");
+  expect(bodyOf(r)).toBe("a".repeat(16384));
+  expect(header(r, "Content-Length")).toEqual(["16384"]);
+});
+
+test("an upstream's error answer with Transfer-Encoding and Content-Length reaches the box with no body", async () => {
+  // The anchor: the same answer without Transfer-Encoding carries its body.
+  const anchor = await holdingUpstream("HTTP/1.1 403 Forbidden\r\nContent-Length: 5\r\n\r\nabcde");
+  const both = await holdingUpstream("HTTP/1.1 403 Forbidden\r\nTransfer-Encoding: chunked\r\nContent-Length: 5\r\n\r\nabcde");
+  const a = await engineWith({ upstream: `http://127.0.0.1:${anchor}` });
+  expect(bodyOf(await within3s(rawExchange(a.socket, connectRequest("te.test:443"))))).toBe("abcde");
+  const b = await engineWith({ upstream: `http://127.0.0.1:${both}` });
+  const r = await within3s(rawExchange(b.socket, connectRequest("te.test:443")));
+  expect(r.split("\r\n")[0]).toBe("HTTP/1.1 403 Forbidden");
+  expect(bodyOf(r)).toBe("");
+  expect(header(r, "Content-Length")).toEqual(["0"]);
+  expect(header(r, "Transfer-Encoding")).toEqual([]);
+});
+
+test("control characters in a relayed header become spaces, so the upstream cannot add a header", async () => {
+  // parseHeadLines splits on CRLF only, so a bare CR or LF stays inside a
+  // value; written as is, it would start a header of its own.
+  const port = await holdingUpstream("HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\nX-Injected: yes\r\nX-Dabs-Egress-Refused: a\rb\nSet-Cookie: x=1\x01\x7f\tend\r\nContent-Length: 0\r\n\r\n");
+  const { socket } = await engineWith({ upstream: `http://127.0.0.1:${port}` });
+  const r = await within3s(rawExchange(socket, connectRequest("ctl.test:443")));
+  expect(r.split("\r\n")[0]).toBe("HTTP/1.1 403 Forbidden");
+  expect(header(r, "Content-Type")).toEqual(["text/plain X-Injected: yes"]);
+  expect(header(r, "X-Dabs-Egress-Refused")).toEqual(["a b Set-Cookie: x=1   end"]);
+  expect(header(r, "X-Injected")).toEqual([]);
+  expect(header(r, "Set-Cookie")).toEqual([]);
+  expect(headOf(r).split("\r\n").join("")).not.toMatch(/[\x00-\x1f\x7f]/);
+});
+
+test("control characters and non-ASCII bytes are dropped from a relayed status text", async () => {
+  const port = await holdingUpstream("HTTP/1.1 403 Not\x01 Al\x7flowed\xe9\tok\r\nContent-Length: 0\r\n\r\n");
+  const { socket } = await engineWith({ upstream: `http://127.0.0.1:${port}` });
+  const r = await within3s(rawExchange(socket, connectRequest("status.test:443")));
+  expect(r.split("\r\n")[0]).toBe("HTTP/1.1 403 Not Allowedok");
+  // The engine's own header quotes the upstream's line, with the control
+  // characters as spaces.
+  expect(header(r, "X-Dabs-Egress-Failed")).toEqual(["upstream proxy refused CONNECT status.test:443: HTTP/1.1 403 Not  Al lowed\xe9 ok"]);
+});

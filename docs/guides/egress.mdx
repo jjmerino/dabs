@@ -68,6 +68,20 @@ example.com  reached
 github.com   blocked
 ```
 
+Whatever the gate allows, a proxied box never reaches your host or your
+network: the engine refuses loopback, private, link-local and other local
+addresses, and any address on a network of your host's interfaces, after it
+resolves the name and before it connects. `allow: "*"` still cannot reach
+`127.0.0.1` or a machine on your LAN. The box gets a 403 that says why:
+
+```text
+X-Dabs-Egress-Refused: nas.lan is 192.168.1.20, a private address (192.168.0.0/16); egress never reaches this host, its networks or a private range
+```
+
+To let boxes reach a particular local address, set `DABS_EGRESS_ALLOW_LOCAL`
+(addresses or CIDR prefixes, comma-separated) in the environment you run dabs
+in. A recipe cannot set it.
+
 ## Route it through a hook
 
 An `http_proxy` chain hands the box's traffic to code you write. `tls: terminate`

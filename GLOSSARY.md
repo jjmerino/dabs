@@ -409,7 +409,11 @@ so boxes do not collide with each other or with the host over `:3000`. `none`
 leaves the namespace bare — loopback and nothing else. A MAP (`allow`/`deny`/
 `http_proxy`) is proxy egress: the namespace is bare too, and the box's one way
 out is its door — the host proxy answers one `EGRESS` crossing per connection —
-which crosses the namespace because it is filesystem, not network. A driver
+which crosses the namespace because it is filesystem, not network. The proxy
+engine never connects to a loopback, private or other local address, or to a
+network of the host's interfaces: it resolves the name, checks every address,
+and connects to an address it checked. `DABS_EGRESS_ALLOW_LOCAL` in the
+host's environment opens given addresses. A driver
 that cannot enforce a mode says so and the boot refuses — a mode is never
 quietly downgraded.
 *Where:* `recipe.Egress`, `sandbox.EgressEnforcer`, `core/proxy.Provision`.

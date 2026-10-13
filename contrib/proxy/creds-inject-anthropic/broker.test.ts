@@ -59,6 +59,8 @@ async function engineWithBroker(work: string, vaultSeed: object | null, upstream
   const eng = await start({
     socket,
     caDir: join(work, "ca"),
+    // The upstream below runs on loopback, which the engine refuses unless told.
+    allowLocal: ["127.0.0.1"],
     chain: [
       { tls: "terminate" },
       { name: "broker", module: join(import.meta.dir, "broker.ts"), config: { vault, debug: join(work, "trace.jsonl"), ...extra } },

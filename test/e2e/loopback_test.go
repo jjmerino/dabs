@@ -12,6 +12,11 @@
 // on the server started here. The box's proxy env exempts 127.0.0.1 via NO_PROXY,
 // so the in-box curl passes an empty --noproxy value to clear that exemption and
 // route the request through the engine (which then dials this loopback listener).
+//
+// The engine refuses loopback addresses unless its operator opts in, so a test
+// that stands one of these upstreams up also sets DABS_EGRESS_ALLOW_LOCAL for
+// the engines it boots (allowLoopbackEgress). The dabs it runs inherits the
+// variable, and so does the engine that dabs starts.
 package e2e
 
 import (
@@ -73,6 +78,7 @@ func mintSelfSignedLoopback(t *testing.T) (tls.Certificate, []byte) {
 // can --cacert it), and returns the port. It is torn down at test end.
 func startLoopbackTLS(t *testing.T, caPath, body string) int {
 	t.Helper()
+	allowLoopbackEgress(t)
 	cert, caPEM := mintSelfSignedLoopback(t)
 	ln, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{cert}})
 	if err != nil {
@@ -87,6 +93,13 @@ func startLoopbackTLS(t *testing.T, caPath, body string) int {
 		t.Fatal(err)
 	}
 	return ln.Addr().(*net.TCPAddr).Port
+}
+
+// allowLoopbackEgress lets the proxy engines this test boots dial 127.0.0.1,
+// where the suite runs its upstreams. It lasts until the test ends.
+func allowLoopbackEgress(t *testing.T) {
+	t.Helper()
+	t.Setenv("DABS_EGRESS_ALLOW_LOCAL", "127.0.0.1")
 }
 
 // startLoopbackHTTP runs a plain-HTTP server on 127.0.0.1 answering with body,

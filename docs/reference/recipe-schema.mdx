@@ -145,6 +145,14 @@ egress:
   `DABS_EGRESS_ALLOW_LOCAL` in the environment dabs runs in: a comma-separated
   list of addresses or CIDR prefixes, announced as a warning at boot.
 
+`DABS_UPSTREAM_PROXY=http://host:port` in the environment dabs runs in makes the
+engine reach every destination with a CONNECT through that HTTP proxy, and never
+dial the network itself. It is for a host whose only way out is another proxy,
+such as a VM with a closed network. In that mode the engine checks IP literals
+(against the same table) and refuses `localhost` names, but does not resolve
+other names: the upstream proxy must refuse a name that resolves to a local
+address. A malformed value stops the boot.
+
 Proxy egress needs `bun` and `openssl` on the host PATH, and a forwarder binary
 to mount in the box: the CLI carries one embedded (`-tags withforwarder`), and a
 program embedding dabs as a Go module — which has no embed — supplies its own

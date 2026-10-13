@@ -82,7 +82,9 @@ interface HopConfig { name?: string; tls?: string; domains?: string[]; failOpen?
 // refusedAddress refuses them (see the ADDRESS section). Absent, the engine
 // reads DABS_EGRESS_ALLOW_LOCAL. resolve replaces the system resolver; only a
 // caller of start() can pass it, since JSON cannot carry a function.
-interface EngineConfig { socket: string; caDir: string; allow?: string[]; deny?: string[]; chain: HopConfig[]; allowLocal?: string[]; resolve?: Resolve; }
+// upstream: an HTTP proxy URL every destination is reached through (see
+// parseUpstream). Absent, the engine reads DABS_UPSTREAM_PROXY.
+interface EngineConfig { socket: string; caDir: string; allow?: string[]; deny?: string[]; chain: HopConfig[]; allowLocal?: string[]; resolve?: Resolve; upstream?: string; }
 
 interface Hop { name: string; kind: "tls-terminate" | "tls-originate" | "module"; handler?: Handler; domains?: string[]; failOpen?: boolean; }
 
@@ -439,6 +441,126 @@ function connectTo(addrs: string[], port: number, host: string): Promise<net.Soc
       });
     };
     attempt(0);
+  });
+}
+
+// --- UPSTREAM: reaching every destination through another HTTP proxy. -------
+//
+// DABS_UPSTREAM_PROXY=http://host:port (or `upstream` in the config) makes the
+// engine reach every allowed destination with a CONNECT through that proxy,
+// and never dial the network itself. It is for a host whose only way out is
+// another proxy: a dabs host inside a VM whose network is closed, reaching
+// out through its parent's egress. A config `upstream` of "" means direct
+// mode even when the variable is set.
+//
+// The gate is unchanged. The address check runs on what the engine can see
+// without a lookup (upstreamTarget): an IP literal, in any spelling, is
+// checked against the same table as in direct mode and sent to the upstream
+// in its standard form; localhost and *.localhost are refused by name; a host
+// with brackets or a colon that is not an IPv6 address is refused, since the
+// upstream may read it some other way. Any other name goes to the upstream
+// unresolved: in this mode the engine has no network to look names up on, so
+// a name that RESOLVES to a local address is for the upstream to refuse, the
+// way this engine does in direct mode. The upstream is the one address the
+// engine dials on its own behalf, and a box cannot reach it by naming it,
+// since no target is dialed locally.
+//
+// With an upstream the engine must not see HTTP_PROXY, HTTPS_PROXY,
+// ALL_PROXY or their lowercase forms. It inherits the environment of the
+// process that runs dabs, and bun's fetch and node:http honour them, so a
+// module hop that made a request of its own would leave through that proxy
+// instead of the upstream. bun reads them once at start (measured on bun
+// 1.4.2), so the process that starts the engine must leave them out. The
+// engine also deletes them from process.env, for module code and child
+// processes that read them later.
+
+export interface Upstream { host: string; port: number; }
+
+// PROXY_ENV is what the engine deletes from its environment in upstream mode.
+export const PROXY_ENV = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"];
+
+// UPSTREAM_ANSWER_MS bounds how long dialUpstream waits for the upstream to
+// accept the connection and answer the CONNECT.
+export const UPSTREAM_ANSWER_MS = 30_000;
+
+// parseUpstream reads the upstream setting. Empty or absent is direct mode.
+// Anything else must be a plain http:// URL with a host and nothing past the
+// port; a malformed value throws, so the engine refuses to boot rather than
+// fall back to dialing the network.
+export function parseUpstream(value: string | undefined): Upstream | null {
+  const v = (value ?? "").trim();
+  if (v === "") return null;
+  let u: URL;
+  try { u = new URL(v); } catch { throw new Error(`upstream proxy ${JSON.stringify(v)} is not a URL`); }
+  if (u.protocol !== "http:") throw new Error(`upstream proxy ${JSON.stringify(v)}: only http:// is supported`);
+  if (u.username || u.password) throw new Error(`upstream proxy ${JSON.stringify(v)}: credentials in the URL are not supported`);
+  if ((u.pathname && u.pathname !== "/") || u.search || u.hash) throw new Error(`upstream proxy ${JSON.stringify(v)}: give only scheme, host and port`);
+  const host = u.hostname.replace(/^\[(.*)\]$/, "$1");
+  if (host === "") throw new Error(`upstream proxy ${JSON.stringify(v)} names no host`);
+  return { host, port: Number(u.port || 80) };
+}
+
+// upstreamTarget checks a destination the engine will hand to an upstream
+// unresolved. It returns the host to send: an IP literal in its standard
+// form, or the name as it was. It throws an EgressRefused (403) for a
+// refused address, a localhost name, or a host that is neither a name nor an
+// address.
+export function upstreamTarget(host: string, allowLocal: Prefix[] = []): string {
+  const h = host.toLowerCase().replace(/^\[(.*)\]$/, "$1").replace(/\.+$/, "");
+  const lit = literalAddress(h);
+  if (lit) {
+    const why = checkAddress(lit, allowLocal);
+    if (why) throw new EgressRefused(403, `${host} is ${lit}, ${why}; egress never reaches this host, its networks or a private range`, lit);
+    return lit;
+  }
+  if (h === "localhost" || h.endsWith(".localhost")) throw new EgressRefused(403, `${host} names this host; egress never reaches this host, its networks or a private range`);
+  if (/^\[.*\]$/.test(host) || h.includes(":") || h.includes("%")) throw new EgressRefused(403, `${host} is neither a host name nor an IP address`);
+  return h;
+}
+
+function authorityOf(host: string, port: number): string {
+  return host.includes(":") ? `[${host}]:${port}` : `${host}:${port}`;
+}
+
+// dialUpstream opens a CONNECT tunnel to host:port through the upstream and
+// resolves with the socket once the upstream answers 200. Any other answer,
+// a close before the answer, an oversized head, or no answer within
+// timeoutMs rejects. host is bare (no brackets). The socket is handed over
+// paused.
+export function dialUpstream(up: Upstream, host: string, port: number, timeoutMs = UPSTREAM_ANSWER_MS): Promise<net.Socket> {
+  const authority = authorityOf(host, port);
+  return new Promise((resolve, reject) => {
+    const sock = net.connect(up.port, up.host);
+    let head = Buffer.alloc(0);
+    let settled = false;
+    const timer = setTimeout(() => fail(new Error(`upstream proxy ${authorityOf(up.host, up.port)} did not answer CONNECT ${authority} within ${timeoutMs} ms`)), timeoutMs);
+    const fail = (e: Error) => { if (settled) return; settled = true; clearTimeout(timer); sock.destroy(); reject(e); };
+    const onError = (e: Error) => fail(new Error(`upstream proxy ${authorityOf(up.host, up.port)}: ${e.message}`));
+    const onClose = () => fail(new Error(`upstream proxy closed before answering CONNECT ${authority}`));
+    const onData = (d: Buffer) => {
+      head = Buffer.concat([head, d]);
+      const end = head.indexOf("\r\n\r\n");
+      if (end < 0) {
+        if (head.length > 16384) fail(new Error(`upstream proxy sent more than 16 KiB without ending its answer to CONNECT ${authority}`));
+        return;
+      }
+      sock.removeListener("data", onData);
+      sock.removeListener("error", onError);
+      sock.removeListener("close", onClose);
+      const status = head.toString("latin1", 0, head.indexOf("\r\n"));
+      if (!/^HTTP\/1\.[01] 200\b/.test(status)) { fail(new Error(`upstream proxy refused CONNECT ${authority}: ${status}`)); return; }
+      settled = true;
+      clearTimeout(timer);
+      sock.pause();
+      sock.on("error", () => {}); // the caller adds its own; this keeps an early error from throwing
+      const rest = head.subarray(end + 4);
+      if (rest.length) sock.unshift(rest);
+      resolve(sock);
+    };
+    sock.on("error", onError);
+    sock.on("close", onClose);
+    sock.on("data", onData);
+    sock.on("connect", () => sock.write(`CONNECT ${authority} HTTP/1.1\r\nHost: ${authority}\r\n\r\n`));
   });
 }
 
@@ -835,7 +957,11 @@ async function serveHTTP(
 
   // The connection is opened by dial, which checks the address; the HTTP
   // client gets that socket and never looks the name up itself. TLS to the
-  // origin runs over it and checks the certificate against the name.
+  // origin runs over it and checks the certificate against the name, so
+  // through an upstream's CONNECT tunnel the origin is checked exactly as on
+  // a direct dial. A socket from an upstream comes paused; TLS reads it by
+  // itself, and the plain HTTP client does not resume a socket it is given,
+  // so it is resumed here, in the same tick the client attaches its reader.
   let sock: net.Socket;
   try { sock = await dial(host, port, scheme === "https" ? "connect" : "http"); }
   catch (e) {
@@ -844,7 +970,7 @@ async function serveHTTP(
     return;
   }
   const mod = scheme === "https" ? https : http;
-  const createConnection = () => (scheme === "https" ? tls.connect({ socket: sock, host, servername: net.isIP(host) ? undefined : host, rejectUnauthorized: true }) : sock);
+  const createConnection = () => (scheme === "https" ? tls.connect({ socket: sock, host, servername: net.isIP(host) ? undefined : host, rejectUnauthorized: true }) : sock.resume());
   const upReq = mod.request({ host, port, method, path, headers: outHeaders, createConnection } as http.RequestOptions);
 
   const upResPromise = new Promise<http.IncomingMessage>((resolve, reject) => {
@@ -941,6 +1067,10 @@ export async function start(cfg: EngineConfig): Promise<{ stop: () => void }> {
   const hops = await resolveChain(cfg.chain);
   const { contentHops, connectHops, terminates, originates, terminateDomains, failOpen } = classify(hops);
   const policyAllows = compilePolicy(cfg.allow ?? [], cfg.deny ?? []);
+  // A malformed upstream stops the boot: an engine that fell back to dialing
+  // the network would reach out by a route its host meant to close.
+  const upstream = parseUpstream(cfg.upstream ?? process.env.DABS_UPSTREAM_PROXY);
+  if (upstream) for (const k of PROXY_ENV) delete process.env[k];
 
   // shouldInspect decides whether THIS host's TLS is terminated and its content
   // inspected. With no `domains` list a terminate window covers every host; a
@@ -987,22 +1117,24 @@ export async function start(cfg: EngineConfig): Promise<{ stop: () => void }> {
   if (allowLocal.length) console.warn(`warning: egress may reach these local or private addresses: ${allowLocal.map((p) => `${formatIP(p.ip)}/${p.bits}`).join(", ")}`);
   const resolve = cfg.resolve ?? systemResolve;
 
-  // checkTarget resolves host and checks every address; connectTarget opens
-  // a connection to addresses checkTarget returned; dial is the two in a row, and
-  // opens every connection the engine makes for a box. A refusal or a failure
-  // is recorded in the ledger and thrown as an EgressRefused for the caller to
-  // answer the box with.
+  // checkTarget checks host and returns what to connect to: in direct mode
+  // every address the name resolves to, through an upstream the one host
+  // upstreamTarget returns. connectTarget connects to what checkTarget
+  // returned; dial is the two in a row, and opens every connection the
+  // engine makes for a box. A refusal or a failure is recorded in the ledger
+  // and thrown as an EgressRefused for the caller to answer the box with.
   const failed = (e: unknown, host: string, port: number, proto: string): EgressRefused => {
     const r = e instanceof EgressRefused ? e : new EgressRefused(502, (e as Error)?.message ?? String(e));
-    connLog(host, port, r.status === 403 ? "deny-address" : "unreachable", proto, { ...(r.address ? { address: r.address } : {}), reason: clampReason(r.message) });
+    const verdict = r.status === 403 ? "deny-address" : upstream ? "upstream-refused" : "unreachable";
+    connLog(host, port, verdict, proto, { ...(r.address ? { address: r.address } : {}), reason: clampReason(r.message) });
     return r;
   };
   const checkTarget = async (host: string, port: number, proto: string): Promise<string[]> => {
-    try { return await resolveChecked(host, allowLocal, resolve); }
+    try { return upstream ? [upstreamTarget(host, allowLocal)] : await resolveChecked(host, allowLocal, resolve); }
     catch (e) { throw failed(e, host, port, proto); }
   };
   const connectTarget = async (addrs: string[], host: string, port: number, proto: string): Promise<net.Socket> => {
-    try { return await connectTo(addrs, port, host); }
+    try { return upstream ? await dialUpstream(upstream, addrs[0], port) : await connectTo(addrs, port, host); }
     catch (e) { throw failed(e, host, port, proto); }
   };
   const dial: Dial = async (host, port, proto) => connectTarget(await checkTarget(host, port, proto), host, port, proto);
@@ -1127,10 +1259,10 @@ export async function start(cfg: EngineConfig): Promise<{ stop: () => void }> {
           // tunnel.
           if (!(await gateConnection(host, port, "connect"))) { answer(client, "HTTP/1.1 403 Forbidden\r\n\r\n"); return; }
 
-          // A connection that will be tunneled is looked up and checked before
-          // the 200, so a refused address is answered with a status the box can
-          // read, and connected to after the box's first bytes. An inspected
-          // one is checked later, when the engine dials it.
+          // A connection that will be tunneled is checked before the 200, so a
+          // refused address is answered with a status the box can read, and
+          // connected to after the box's first bytes. An inspected one is
+          // checked later, when the engine dials it.
           const passthrough = failOpen && pinnedHosts.has(host);
           const inspect = shouldInspect(host) && !passthrough;
           let addrs: string[] = [];
@@ -1234,5 +1366,5 @@ if (import.meta.main) {
   if (!path) { console.error("usage: bun engine.ts <config.json>"); process.exit(2); }
   const cfg = (await Bun.file(path).json()) as EngineConfig;
   await start(cfg);
-  console.log(`proxy engine → ${cfg.socket} (${cfg.chain.length} hops, allow=${(cfg.allow ?? []).length} deny=${(cfg.deny ?? []).length})`);
+  console.log(`proxy engine → ${cfg.socket} (${cfg.chain.length} hops, allow=${(cfg.allow ?? []).length} deny=${(cfg.deny ?? []).length}${process.env.DABS_UPSTREAM_PROXY ? `, upstream=${process.env.DABS_UPSTREAM_PROXY}` : ""})`);
 }

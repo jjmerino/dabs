@@ -191,8 +191,12 @@ func (d Driver) Detach(instance string, cmd []string) error {
 	return err
 }
 
+// Down removes the container with -v so its anonymous volumes go with it: the
+// /tmp volume Up gives a nested box, and any volume an image's VOLUME line
+// created. Docker keeps anonymous volumes after `docker rm` unless -v is given.
+// -v removes only anonymous volumes; named volumes and bind mounts stay.
 func (Driver) Down(instance string) error {
-	_ = command("docker", "rm", "-f", containerName(instance)).Run()
+	_ = command("docker", "rm", "-f", "-v", containerName(instance)).Run()
 	return nil
 }
 

@@ -102,7 +102,9 @@ func (d Driver) Build(spec sandbox.BuildSpec) error {
 		return fmt.Errorf("bwrap: docker create %s: %w", tag, err)
 	}
 	cid := strings.TrimSpace(string(cidRaw))
-	defer exec.Command("docker", "rm", cid).Run()
+	// -v also removes the anonymous volumes `docker create` made for the
+	// image's VOLUME lines, which `docker rm` alone leaves behind.
+	defer exec.Command("docker", "rm", "-v", cid).Run()
 
 	tmp := d.imageDir(spec.Name) + ".new"
 	if err := os.RemoveAll(tmp); err != nil {

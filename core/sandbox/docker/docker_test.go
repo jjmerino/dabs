@@ -434,3 +434,20 @@ func TestLiveNonRootBoxConnectsToABoundSocket(t *testing.T) {
 		t.Fatalf("connected but read %q, want pong", out)
 	}
 }
+
+// CONTRACT: Down removes the container with -v. A nested box carries an
+// anonymous /tmp volume (and an image's VOLUME lines make more), and docker
+// keeps anonymous volumes after `docker rm` unless -v is given, so without it
+// every removed box leaves its volumes on the host.
+func TestDownRemovesAnonymousVolumes(t *testing.T) {
+	calls := captureDocker(t)
+	if err := (Driver{nested: true}).Down("box1"); err != nil {
+		t.Fatal(err)
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("Down ran %d docker commands, want 1: %v", len(*calls), *calls)
+	}
+	if got, want := (*calls)[0], []string{"rm", "-f", "-v", "dabs-box1"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Down argv = %v, want %v", got, want)
+	}
+}
